@@ -101,6 +101,62 @@ pub enum AciRecurringType {
     Repeated,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AciChallengeIndicator {
+    #[serde(rename = "01")]
+    NoPreference, 
+    #[serde(rename = "02")]
+    NoChallengeRequested, 
+    #[serde(rename = "03")]
+    ChallengeRequestedPreference, 
+    #[serde(rename = "04")]
+    ChallengeRequestedMandate, 
+    #[serde(rename = "05")]
+    NoChallengeTransactionRiskAnalysis, 
+    #[serde(rename = "06")]
+    NoChallengeDataShareOnly, 
+    #[serde(rename = "07")]
+    NoChallengeScaAlreadyPerformed, 
+    #[serde(rename = "08")]
+    NoChallengeWhitelistExemption, 
+    #[serde(rename = "09")]
+    ChallengeWhitelistPrompt,
+}
+
+fn to_aci_challenge_indicator(
+    exemption: &enums::ExemptionIndicator,
+) -> Option<AciChallengeIndicator> {
+    match exemption {
+        enums::ExemptionIndicator::LowValue => Some(AciChallengeIndicator::NoChallengeRequested),
+        enums::ExemptionIndicator::TransactionRiskAssessment => {
+            Some(AciChallengeIndicator::NoChallengeTransactionRiskAnalysis)
+        }
+        enums::ExemptionIndicator::TrustedListing => {
+            Some(AciChallengeIndicator::NoChallengeWhitelistExemption)
+        }
+        enums::ExemptionIndicator::ScaDelegation => {
+            Some(AciChallengeIndicator::NoChallengeScaAlreadyPerformed)
+        }
+        enums::ExemptionIndicator::SecureCorporatePayment => {
+            Some(AciChallengeIndicator::NoChallengeRequested)
+        }
+        enums::ExemptionIndicator::ThreeDsOutage
+        | enums::ExemptionIndicator::OutOfScaScope
+        | enums::ExemptionIndicator::Other
+        | enums::ExemptionIndicator::LowRiskProgram
+        | enums::ExemptionIndicator::RecurringOperation => None,
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AciThreeDSecureRequest {
+    #[serde(rename = "threeDSecure.challengeIndicator")]
+    pub challenge_indicator: Option<AciChallengeIndicator>,
+    #[serde(rename = "threeDSecure.exemptionFlag")]
+    pub exemption_flag: Option<bool>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AciPaymentsRequest {
@@ -114,6 +170,8 @@ pub struct AciPaymentsRequest {
     #[serde(rename = "customParameters[3DS2_enrolled]")]
     pub three_ds_two_enrolled: Option<bool>,
     pub recurring_type: Option<AciRecurringType>,
+    #[serde(flatten)]
+    pub three_d_secure: Option<AciThreeDSecureRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -668,6 +726,7 @@ impl TryFrom<(&AciRouterData<&PaymentsAuthorizeRouterData>, &WalletData)> for Ac
             shopper_result_url: item.router_data.request.router_return_url.clone(),
             three_ds_two_enrolled: None,
             recurring_type: None,
+            three_d_secure: None,
         })
     }
 }
@@ -696,6 +755,7 @@ impl
             shopper_result_url: item.router_data.request.router_return_url.clone(),
             three_ds_two_enrolled: None,
             recurring_type: None,
+            three_d_secure: None,
         })
     }
 }
@@ -716,6 +776,7 @@ impl TryFrom<(&AciRouterData<&PaymentsAuthorizeRouterData>, &PayLaterData)> for 
             shopper_result_url: item.router_data.request.router_return_url.clone(),
             three_ds_two_enrolled: None,
             recurring_type: None,
+            three_d_secure: None,
         })
     }
 }
@@ -735,6 +796,7 @@ impl TryFrom<(&AciRouterData<&PaymentsAuthorizeRouterData>, &Card)> for AciPayme
             .router_data
             .is_three_ds()
             .then_some(item.router_data.request.enrolled_for_3ds);
+        let three_d_secure = get_three_ds_request_data(item);
 
         Ok(Self {
             txn_details,
@@ -743,6 +805,7 @@ impl TryFrom<(&AciRouterData<&PaymentsAuthorizeRouterData>, &Card)> for AciPayme
             shopper_result_url: item.router_data.request.router_return_url.clone(),
             three_ds_two_enrolled,
             recurring_type,
+            three_d_secure,
         })
     }
 }
@@ -772,6 +835,7 @@ impl
             shopper_result_url: item.router_data.request.router_return_url.clone(),
             three_ds_two_enrolled: None,
             recurring_type: None,
+            three_d_secure: None,
         })
     }
 }
@@ -801,6 +865,7 @@ impl
             shopper_result_url: item.router_data.request.router_return_url.clone(),
             three_ds_two_enrolled: None,
             recurring_type,
+            three_d_secure: None,
         })
     }
 }
@@ -854,6 +919,33 @@ fn get_recurring_type(
         && item.router_data.request.setup_future_usage == Some(enums::FutureUsage::OffSession)
     {
         Some(AciRecurringType::Initial)
+    } else {
+        None
+    }
+}
+
+fn get_three_ds_request_data(
+    item: &AciRouterData<&PaymentsAuthorizeRouterData>,
+) -> Option<AciThreeDSecureRequest> {
+    if !item.router_data.is_three_ds() {
+        return None;
+    }
+
+    let challenge_indicator = item
+        .router_data
+        .request
+        .authentication_data
+        .as_ref()
+        .and_then(|auth| auth.exemption_indicator.as_ref())
+        .and_then(to_aci_challenge_indicator);
+
+    let exemption_flag = challenge_indicator.as_ref().map(|_| true);
+
+    if challenge_indicator.is_some() || exemption_flag.is_some() {
+        Some(AciThreeDSecureRequest {
+            challenge_indicator,
+            exemption_flag,
+        })
     } else {
         None
     }
@@ -982,6 +1074,8 @@ pub struct AciPaymentsResponse {
     build_number: String,
     pub(super) result: ResultCode,
     pub(super) redirect: Option<AciRedirectionData>,
+    #[serde(rename = "threeDSecure")]
+    pub three_d_secure: Option<AciThreeDSecureResponse>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Serialize)]
@@ -1029,6 +1123,22 @@ pub struct ErrorParameters {
     pub(super) name: String,
     pub(super) value: Option<String>,
     pub(super) message: String,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AciThreeDSecureResponse {    
+    pub eci: Option<String>,    
+    pub verification_id: Option<Secret<String>>,    
+    pub version: Option<String>,    
+    pub flow: Option<String>,    
+    pub ds_transaction_id: Option<Secret<String>>,    
+    pub acs_transaction_id: Option<String>,    
+    pub authentication_type: Option<String>,    
+    pub card_holder_info: Option<String>,    
+    pub error_code: Option<String>,    
+    pub error_description: Option<String>,    
+    pub error_source: Option<String>,
 }
 
 impl<F, Req> TryFrom<ResponseRouterData<F, AciPaymentsResponse, Req, PaymentsResponseData>>
@@ -1091,6 +1201,13 @@ where
             )
         };
 
+        // Build connector_metadata with 3DS data if present
+        let connector_metadata = item
+            .response
+            .three_d_secure
+            .as_ref()
+            .map(|three_ds| serde_json::json!({"three_ds_data": three_ds}));
+
         let response = if status == enums::AttemptStatus::Failure {
             Err(ErrorResponse {
                 code: item.response.result.code.clone(),
@@ -1102,14 +1219,14 @@ where
                 network_decline_code: None,
                 network_advice_code: None,
                 network_error_message: None,
-                connector_metadata: None,
+                connector_metadata: connector_metadata.clone().map(Secret::new),
             })
         } else {
             Ok(PaymentsResponseData::TransactionResponse {
                 resource_id: ResponseId::ConnectorTransactionId(item.response.id.clone()),
                 redirection_data: Box::new(redirection_data),
                 mandate_reference: Box::new(mandate_reference),
-                connector_metadata: None,
+                connector_metadata,
                 network_txn_id: None,
                 connector_response_reference_id: Some(item.response.id),
                 incremental_authorization_allowed: None,
