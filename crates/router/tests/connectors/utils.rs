@@ -593,6 +593,7 @@ pub trait ConnectorActions: Connector {
             Ok(types::PaymentsResponseData::PostProcessingResponse { .. }) => None,
             Ok(types::PaymentsResponseData::PaymentResourceUpdateResponse { .. }) => None,
             Ok(types::PaymentsResponseData::PaymentsCreateOrderResponse { .. }) => None,
+            Ok(types::PaymentsResponseData::PostCaptureVoidResponse { .. }) => None,
             Err(_) => None,
         }
     }
@@ -1189,6 +1190,7 @@ pub fn get_connector_transaction_id(
         Ok(types::PaymentsResponseData::PostProcessingResponse { .. }) => None,
         Ok(types::PaymentsResponseData::PaymentResourceUpdateResponse { .. }) => None,
         Ok(types::PaymentsResponseData::PaymentsCreateOrderResponse { .. }) => None,
+        Ok(types::PaymentsResponseData::PostCaptureVoidResponse { .. }) => None,
         Err(_) => None,
     }
 }
