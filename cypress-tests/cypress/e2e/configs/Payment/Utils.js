@@ -462,6 +462,7 @@ export const CONNECTOR_LISTS = {
       "worldpayvantiv",
     ],
     PAYMENTS_WEBHOOK: ["noon", "stripe", "authorizedotnet"],
+    THREEDS_EXEMPTIONS: ["aci"],
     // Add more inclusion lists
   },
 };
@@ -472,7 +473,7 @@ export const shouldExcludeConnector = (connectorId, list) => {
 };
 
 export const shouldIncludeConnector = (connectorId, list) => {
-  return !list.includes(connectorId);
+  return list.includes(connectorId);
 };
 
 export function setNormalizedValue(
