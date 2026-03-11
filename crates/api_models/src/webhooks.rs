@@ -495,6 +495,19 @@ pub struct ConnectorWebhookSecrets {
     pub additional_secret: Option<masking::Secret<String>>,
 }
 
+/// Details for external refunds initiated outside Hyperswitch (e.g., directly in connector dashboard)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalRefundDetails {
+    /// The refund's transaction ID at the connector
+    pub connector_refund_id: String,
+    /// The original payment's connector transaction ID (for lookup)
+    pub connector_transaction_id: Option<String>,
+    /// Refund amount in major units
+    pub amount: common_utils::types::StringMajorUnit,
+    /// Currency code
+    pub currency: String,
+}
+
 #[cfg(all(feature = "v2", feature = "revenue_recovery"))]
 impl IncomingWebhookEvent {
     pub fn is_recovery_transaction_event(&self) -> bool {

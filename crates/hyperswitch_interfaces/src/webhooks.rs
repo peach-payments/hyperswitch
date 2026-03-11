@@ -342,6 +342,18 @@ pub trait IncomingWebhook: ConnectorCommon + Sync {
         Err(errors::ConnectorError::NotImplemented("get_dispute_details method".to_string()).into())
     }
 
+    /// fn get_external_refund_details
+    /// Returns details for refunds initiated outside Hyperswitch (e.g., directly in connector dashboard)
+    fn get_external_refund_details(
+        &self,
+        _request: &IncomingWebhookRequestDetails<'_>,
+    ) -> CustomResult<api_models::webhooks::ExternalRefundDetails, errors::ConnectorError> {
+        Err(
+            errors::ConnectorError::NotImplemented("get_external_refund_details method".to_string())
+                .into(),
+        )
+    }
+
     /// fn get_external_authentication_details
     fn get_external_authentication_details(
         &self,

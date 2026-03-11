@@ -12,7 +12,7 @@ use common_utils::{
     errors::ReportSwitchExt,
     events::ApiEventsType,
     ext_traits::{AsyncExt, ByteSliceExt},
-    types::{AmountConvertor, StringMinorUnitForConnector},
+    types::{AmountConvertor, ConnectorTransactionId, StringMajorUnitForConnector, StringMinorUnitForConnector},
 };
 use diesel_models::{refund as diesel_refund, ConnectorMandateReferenceId};
 use error_stack::{report, ResultExt};
@@ -1133,6 +1133,8 @@ async fn process_webhook_business_logic(
                 connector_name,
                 source_verified,
                 event_type,
+                connector,
+                request_details,
             ))
             .await
             .attach_printable("Incoming webhook flow for refunds failed"),
@@ -2075,78 +2077,117 @@ async fn refunds_incoming_webhook_flow(
     connector_name: &str,
     source_verified: bool,
     event_type: webhooks::IncomingWebhookEvent,
+    connector: &ConnectorEnum,
+    request_details: &IncomingWebhookRequestDetails<'_>,
 ) -> CustomResult<WebhookResponseTracker, errors::ApiErrorResponse> {
     let db = &*state.store;
-    //find refund by connector refund id
-    let refund = match webhook_details.object_reference_id {
+    // Try to find refund by connector refund id
+    let option_refund = match &webhook_details.object_reference_id {
         webhooks::ObjectReferenceId::RefundId(refund_id_type) => match refund_id_type {
             webhooks::RefundIdType::RefundId(id) => db
                 .find_refund_by_merchant_id_refund_id(
                     platform.get_processor().get_account().get_id(),
-                    &id,
+                    id,
                     platform.get_processor().get_account().storage_scheme,
                 )
                 .await
-                .change_context(errors::ApiErrorResponse::WebhookResourceNotFound)
-                .attach_printable("Failed to fetch the refund")?,
+                .ok(),
             webhooks::RefundIdType::ConnectorRefundId(id) => db
                 .find_refund_by_merchant_id_connector_refund_id_connector(
                     platform.get_processor().get_account().get_id(),
-                    &id,
+                    id,
                     connector_name,
                     platform.get_processor().get_account().storage_scheme,
                 )
                 .await
-                .change_context(errors::ApiErrorResponse::WebhookResourceNotFound)
-                .attach_printable("Failed to fetch the refund")?,
+                .ok(),
         },
-        _ => Err(errors::ApiErrorResponse::WebhookProcessingFailure)
-            .attach_printable("received a non-refund id when processing refund webhooks")?,
-    };
-    let refund_id = refund.refund_id.to_owned();
-    //if source verified then update refund status else trigger refund sync
-    let updated_refund = if source_verified {
-        let refund_update = diesel_refund::RefundUpdate::StatusUpdate {
-            connector_refund_id: None,
-            sent_to_gateway: true,
-            refund_status: common_enums::RefundStatus::foreign_try_from(event_type)
-                .change_context(errors::ApiErrorResponse::WebhookProcessingFailure)
-                .attach_printable("failed refund status mapping from event type")?,
-            updated_by: platform
-                .get_processor()
-                .get_account()
-                .storage_scheme
-                .to_string(),
-            processor_refund_data: None,
-        };
-        db.update_refund(
-            refund.to_owned(),
-            refund_update,
-            platform.get_processor().get_account().storage_scheme,
-        )
-        .await
-        .to_not_found_response(errors::ApiErrorResponse::WebhookResourceNotFound)
-        .attach_printable_lazy(|| format!("Failed while updating refund: refund_id: {refund_id}"))?
-    } else {
-        Box::pin(refunds::refund_retrieve_core_with_refund_id(
-            state.clone(),
-            platform.clone(),
-            None,
-            api_models::refunds::RefundsRetrieveRequest {
-                refund_id: refund_id.to_owned(),
-                force_sync: Some(true),
-                merchant_connector_details: None,
-                all_keys_required: None,
-            },
-        ))
-        .await
-        .attach_printable_lazy(|| format!("Failed while updating refund: refund_id: {refund_id}"))?
-        .0
+        _ => {
+            return Err(errors::ApiErrorResponse::WebhookProcessingFailure)
+                .attach_printable("received a non-refund id when processing refund webhooks")?
+        }
     };
 
+    let refund_status = common_enums::RefundStatus::foreign_try_from(event_type)
+        .change_context(errors::ApiErrorResponse::WebhookProcessingFailure)
+        .attach_printable("failed refund status mapping from event type")?;
+
+    // Handle external refunds (refunds initiated outside Hyperswitch)
+    let updated_refund = match (&option_refund, source_verified) {
+        (Some(refund), true) => {
+            // Existing refund, update status
+            metrics::INCOMING_REFUND_WEBHOOK_UPDATE_RECORD_METRIC.add(1, &[]);
+            let refund_id = refund.refund_id.to_owned();
+            let refund_update = diesel_refund::RefundUpdate::StatusUpdate {
+                connector_refund_id: None,
+                sent_to_gateway: true,
+                refund_status,
+                updated_by: platform
+                    .get_processor()
+                    .get_account()
+                    .storage_scheme
+                    .to_string(),
+                processor_refund_data: None,
+            };
+            db.update_refund(
+                refund.to_owned(),
+                refund_update,
+                platform.get_processor().get_account().storage_scheme,
+            )
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::WebhookResourceNotFound)
+            .attach_printable_lazy(|| {
+                format!("Failed while updating refund: refund_id: {refund_id}")
+            })?
+        }
+        (Some(refund), false) => {
+            // Existing refund, source not verified - trigger force sync
+            let refund_id = refund.refund_id.to_owned();
+            Box::pin(refunds::refund_retrieve_core_with_refund_id(
+                state.clone(),
+                platform.clone(),
+                None,
+                api_models::refunds::RefundsRetrieveRequest {
+                    refund_id: refund_id.to_owned(),
+                    force_sync: Some(true),
+                    merchant_connector_details: None,
+                    all_keys_required: None,
+                },
+            ))
+            .await
+            .attach_printable_lazy(|| {
+                format!("Failed while updating refund: refund_id: {refund_id}")
+            })?
+            .0
+        }
+        (None, true) => {
+            // External refund from verified source - create new record
+            let external_refund_details = connector
+                .get_external_refund_details(request_details)
+                .switch()?;
+
+            get_or_create_refund_from_webhook(
+                &state,
+                None,
+                external_refund_details,
+                &platform,
+                connector_name,
+                refund_status,
+                &business_profile,
+            )
+            .await?
+        }
+        (None, false) => {
+            // External refund from unverified source - reject for security
+            return Err(errors::ApiErrorResponse::WebhookAuthenticationFailed)
+                .attach_printable("Cannot create external refund from unverified webhook source");
+        }
+    };
+
+    let refund_id = updated_refund.refund_id.clone();
     let payment_intent = db
         .find_payment_intent_by_payment_id_processor_merchant_id(
-            &refund.payment_id,
+            &updated_refund.payment_id,
             platform.get_processor().get_account().get_id(),
             platform.get_processor().get_key_store(),
             platform.get_processor().get_account().storage_scheme,
@@ -2156,7 +2197,7 @@ async fn refunds_incoming_webhook_flow(
         .attach_printable_lazy(|| {
             format!(
                 "Failed to find payment intent for payment_id: {:?}",
-                refund.payment_id
+                updated_refund.payment_id
             )
         })?;
     let state_task = state.clone();
@@ -2358,6 +2399,144 @@ pub async fn get_or_update_dispute_object(
             db.update_dispute(dispute, update_dispute)
                 .await
                 .to_not_found_response(errors::ApiErrorResponse::WebhookResourceNotFound)
+        }
+    }
+}
+
+/// Gets an existing refund record or creates a new one from an external webhook.
+/// External refunds are those initiated outside Hyperswitch (e.g., directly in connector dashboard).
+#[allow(clippy::too_many_arguments)]
+pub async fn get_or_create_refund_from_webhook(
+    state: &SessionState,
+    option_refund: Option<diesel_refund::Refund>,
+    external_refund_details: webhooks::ExternalRefundDetails,
+    platform: &domain::Platform,
+    connector_name: &str,
+    refund_status: common_enums::RefundStatus,
+    business_profile: &domain::Profile,
+) -> CustomResult<diesel_refund::Refund, errors::ApiErrorResponse> {
+    let db = &*state.store;
+    match option_refund {
+        Some(refund) => {
+            logger::info!("Refund already exists, updating the refund status");
+            metrics::INCOMING_REFUND_WEBHOOK_UPDATE_RECORD_METRIC.add(1, &[]);
+            let refund_update = diesel_refund::RefundUpdate::StatusUpdate {
+                connector_refund_id: None,
+                sent_to_gateway: true,
+                refund_status,
+                updated_by: platform
+                    .get_processor()
+                    .get_account()
+                    .storage_scheme
+                    .to_string(),
+                processor_refund_data: None,
+            };
+            db.update_refund(
+                refund,
+                refund_update,
+                platform.get_processor().get_account().storage_scheme,
+            )
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::WebhookResourceNotFound)
+        }
+        None => {
+            metrics::INCOMING_REFUND_WEBHOOK_NEW_RECORD_METRIC.add(1, &[]);
+
+            // Find the payment attempt using the referenced connector transaction ID
+            let connector_transaction_id = external_refund_details
+                .connector_transaction_id
+                .ok_or(errors::ApiErrorResponse::WebhookProcessingFailure)
+                .attach_printable(
+                    "External refund webhook missing referenced_id (original payment's connector transaction ID)",
+                )?;
+
+            let payment_attempt = db
+                .find_payment_attempt_by_processor_merchant_id_connector_txn_id(
+                    platform.get_processor().get_account().get_id(),
+                    &connector_transaction_id,
+                    platform.get_processor().get_account().storage_scheme,
+                    platform.get_processor().get_key_store(),
+                )
+                .await
+                .to_not_found_response(errors::ApiErrorResponse::WebhookResourceNotFound)
+                .attach_printable_lazy(|| {
+                    format!(
+                        "Failed to find payment attempt for connector_transaction_id: {}",
+                        connector_transaction_id
+                    )
+                })?;
+
+            // Convert amount from StringMajorUnit to MinorUnit
+            let currency = common_enums::Currency::from_str(&external_refund_details.currency)
+                .change_context(errors::ApiErrorResponse::InvalidDataValue {
+                    field_name: "currency",
+                })
+                .attach_printable_lazy(|| {
+                    format!(
+                        "Invalid currency code in webhook: {}",
+                        external_refund_details.currency
+                    )
+                })?;
+            let refund_amount = StringMajorUnitForConnector
+                .convert_back(external_refund_details.amount, currency)
+                .change_context(errors::ApiErrorResponse::InvalidDataValue {
+                    field_name: "amount",
+                })
+                .attach_printable("Failed to convert refund amount to minor units")?;
+
+            let refund_id = generate_id(consts::ID_LENGTH, "ref");
+            let (connector_txn_id_for_db, processor_transaction_data) =
+                ConnectorTransactionId::form_id_and_data(connector_transaction_id);
+
+            let refund_create_req = diesel_refund::RefundNew {
+                refund_id: refund_id.clone(),
+                internal_reference_id: generate_id(consts::ID_LENGTH, "refid"),
+                external_reference_id: Some(refund_id),
+                payment_id: payment_attempt.payment_id.clone(),
+                merchant_id: platform.get_processor().get_account().get_id().clone(),
+                connector_transaction_id: connector_txn_id_for_db,
+                connector: connector_name.to_string(),
+                connector_refund_id: Some(ConnectorTransactionId::TxnId(
+                    external_refund_details.connector_refund_id,
+                )),
+                refund_type: enums::RefundType::RegularRefund,
+                total_amount: payment_attempt.get_total_amount(),
+                refund_amount,
+                currency,
+                created_at: common_utils::date_time::now(),
+                modified_at: common_utils::date_time::now(),
+                refund_status,
+                metadata: None,
+                description: Some("External refund created from webhook".to_string()),
+                attempt_id: payment_attempt.attempt_id.clone(),
+                refund_reason: Some("External refund (initiated outside Hyperswitch)".to_string()),
+                profile_id: Some(business_profile.get_id().clone()),
+                merchant_connector_id: payment_attempt.merchant_connector_id.clone(),
+                charges: None,
+                split_refunds: None,
+                sent_to_gateway: true,
+                refund_arn: None,
+                updated_by: platform
+                    .get_processor()
+                    .get_account()
+                    .storage_scheme
+                    .to_string(),
+                organization_id: platform
+                    .get_processor()
+                    .get_account()
+                    .organization_id
+                    .clone(),
+                processor_transaction_data,
+                processor_refund_data: None,
+            };
+
+            db.insert_refund(
+                refund_create_req,
+                platform.get_processor().get_account().storage_scheme,
+            )
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::WebhookResourceNotFound)
+            .attach_printable("Failed to create external refund from webhook")
         }
     }
 }

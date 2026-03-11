@@ -970,6 +970,7 @@ impl IncomingWebhook for Aci {
                     Ok(IncomingWebhookEvent::EventNotSupported)
                 }
             }
+            aci::AciWebhookEventType::Test => Ok(IncomingWebhookEvent::EventNotSupported),
         }
     }
 
@@ -990,7 +991,32 @@ impl IncomingWebhook for Aci {
                         .attach_printable("Failed to deserialize ACI payment webhook payload")?;
                 Ok(Box::new(payment_payload))
             }
+            aci::AciWebhookEventType::Test => {
+                Ok(Box::new(aci_notification.payload))
+            }
         }
+    }
+
+    fn get_external_refund_details(
+        &self,
+        request: &IncomingWebhookRequestDetails<'_>,
+    ) -> CustomResult<api_models::webhooks::ExternalRefundDetails, errors::ConnectorError> {
+        let aci_notification: aci::AciWebhookNotification =
+            serde_json::from_slice(request.body)
+                .change_context(errors::ConnectorError::WebhookResourceObjectNotFound)
+                .attach_printable("Failed to deserialize ACI webhook notification for external refund details")?;
+
+        let payment_payload: aci::AciPaymentWebhookPayload =
+            serde_json::from_value(aci_notification.payload)
+                .change_context(errors::ConnectorError::WebhookResourceObjectNotFound)
+                .attach_printable("Failed to deserialize ACI payment webhook payload for external refund details")?;
+
+        Ok(api_models::webhooks::ExternalRefundDetails {
+            connector_refund_id: payment_payload.id,
+            connector_transaction_id: payment_payload.referenced_id,
+            amount: payment_payload.amount,
+            currency: payment_payload.currency,
+        })
     }
 }
 

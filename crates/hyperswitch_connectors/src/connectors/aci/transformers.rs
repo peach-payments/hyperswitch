@@ -1532,8 +1532,10 @@ impl
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum AciWebhookEventType {
     Payment,
+    Test,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1583,6 +1585,7 @@ pub struct AciWebhookRiskDetails {
 #[serde(rename_all = "camelCase")]
 pub struct AciPaymentWebhookPayload {
     pub id: String,
+    pub referenced_id: Option<String>,
     pub payment_type: String,
     pub payment_brand: String,
     pub amount: StringMajorUnit,
