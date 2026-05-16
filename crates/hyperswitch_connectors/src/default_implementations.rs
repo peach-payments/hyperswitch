@@ -2786,7 +2786,6 @@ default_imp_for_pre_processing_steps!(
     connectors::Opayo,
     connectors::Opennode,
     connectors::Paybox,
-    connectors::Paydunya,
     connectors::Payeezy,
     connectors::Payjustnow,
     connectors::Payjustnowinstore,

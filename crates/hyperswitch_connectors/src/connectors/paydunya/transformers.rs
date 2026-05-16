@@ -1,27 +1,38 @@
 use common_enums::enums;
-use common_utils::types::StringMinorUnit;
+use common_utils::types::MinorUnit;
 use hyperswitch_domain_models::{
     payment_method_data::PaymentMethodData,
     router_data::{ConnectorAuthType, RouterData},
     router_flow_types::refunds::{Execute, RSync},
     router_request_types::ResponseId,
-    router_response_types::{PaymentsResponseData, RefundsResponseData},
-    types::{PaymentsAuthorizeRouterData, RefundsRouterData},
+    router_response_types::{PaymentsResponseData, PreprocessingResponseId, RefundsResponseData},
+    types::{PaymentsAuthorizeRouterData, PaymentsPreProcessingRouterData, RefundsRouterData},
 };
 use hyperswitch_interfaces::errors;
 use hyperswitch_masking::Secret;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{RefundsResponseRouterData, ResponseRouterData};
+use crate::{
+    types::{
+        PaymentsPreprocessingResponseRouterData, RefundsResponseRouterData, ResponseRouterData,
+    },
+    utils::PaymentsPreProcessingRequestData,
+};
+
+pub mod paydunya_constants {
+    pub const PAYDUNYA_MASTER_KEY: &str = "PAYDUNYA-MASTER-KEY";
+    pub const PAYDUNYA_PRIVATE_KEY: &str = "PAYDUNYA-PRIVATE-KEY";
+    pub const PAYDUNYA_TOKEN: &str = "PAYDUNYA-TOKEN";
+}
 
 //TODO: Fill the struct with respective fields
 pub struct PaydunyaRouterData<T> {
-    pub amount: StringMinorUnit, // The type of amount that a connector accepts, for example, String, i64, f64, etc.
+    pub amount: MinorUnit, // The type of amount that a connector accepts, for example, String, i64, f64, etc.
     pub router_data: T,
 }
 
-impl<T> From<(StringMinorUnit, T)> for PaydunyaRouterData<T> {
-    fn from((amount, item): (StringMinorUnit, T)) -> Self {
+impl<T> From<(MinorUnit, T)> for PaydunyaRouterData<T> {
+    fn from((amount, item): (MinorUnit, T)) -> Self {
         //Todo :  use utils to convert the amount to the type of amount that a connector accepts
         Self {
             amount,
@@ -30,10 +41,85 @@ impl<T> From<(StringMinorUnit, T)> for PaydunyaRouterData<T> {
     }
 }
 
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Serialize, Default)]
+pub struct PaydunyaPreprocessingRequest {
+    pub invoice: Invoice,
+    pub store: Store,
+    pub actions: Actions,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct Invoice {
+    pub total_amount: MinorUnit,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct Store {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct Actions {
+    pub callback_url: String,
+    pub return_url: String,
+}
+
+impl TryFrom<&PaymentsPreProcessingRouterData> for PaydunyaPreprocessingRequest {
+    type Error = error_stack::Report<errors::ConnectorError>;
+    fn try_from(item: &PaymentsPreProcessingRouterData) -> Result<Self, Self::Error> {
+        Ok(Self {
+            invoice: Invoice {
+                total_amount: item.request.get_minor_amount(),
+            },
+            store: Store {
+                name: String::from("name"),
+            },
+            actions: Actions {
+                callback_url: String::from("callback_url"),
+                return_url: String::from("return_url"),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PaydunyaPaymentsPreProcessingResponse {
+    pub response_code: String,
+    pub response_text: String,
+    pub description: String,
+    pub token: String,
+}
+
+impl TryFrom<PaymentsPreprocessingResponseRouterData<PaydunyaPaymentsPreProcessingResponse>>
+    for PaymentsPreProcessingRouterData
+{
+    type Error = error_stack::Report<errors::ConnectorError>;
+    fn try_from(
+        item: PaymentsPreprocessingResponseRouterData<PaydunyaPaymentsPreProcessingResponse>,
+    ) -> Result<Self, Self::Error> {
+        let status = match item.response.response_code.as_str() {
+            "00" => enums::AttemptStatus::AuthenticationSuccessful,
+            _ => enums::AttemptStatus::AuthenticationFailed,
+        };
+        Ok(Self {
+            status,
+            description: Some(item.response.description),
+            response: Ok(PaymentsResponseData::PreProcessingResponse {
+                pre_processing_id: PreprocessingResponseId::PreProcessingId(item.response.token),
+                connector_metadata: None,
+                session_token: None,
+                connector_response_reference_id: None,
+            }),
+            ..item.data
+        })
+    }
+}
+
 //TODO: Fill the struct with respective fields
 #[derive(Default, Debug, Serialize, PartialEq)]
 pub struct PaydunyaPaymentsRequest {
-    amount: StringMinorUnit,
+    amount: MinorUnit,
     card: PaydunyaCard,
 }
 
@@ -64,15 +150,23 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
 //TODO: Fill the struct with respective fields
 // Auth Struct
 pub struct PaydunyaAuthType {
-    pub(super) api_key: Secret<String>,
+    pub(super) master_key: Secret<String>,
+    pub(super) private_key: Secret<String>,
+    pub(super) token: Secret<String>,
 }
 
 impl TryFrom<&ConnectorAuthType> for PaydunyaAuthType {
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(auth_type: &ConnectorAuthType) -> Result<Self, Self::Error> {
         match auth_type {
-            ConnectorAuthType::HeaderKey { api_key } => Ok(Self {
-                api_key: api_key.to_owned(),
+            ConnectorAuthType::SignatureKey {
+                api_key,
+                key1,
+                api_secret,
+            } => Ok(Self {
+                master_key: api_key.to_owned(),
+                private_key: key1.to_owned(),
+                token: api_secret.to_owned(),
             }),
             _ => Err(errors::ConnectorError::FailedToObtainAuthType.into()),
         }
@@ -136,7 +230,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, PaydunyaPaymentsResponse, T, PaymentsRe
 // Type definition for RefundRequest
 #[derive(Default, Debug, Serialize)]
 pub struct PaydunyaRefundRequest {
-    pub amount: StringMinorUnit,
+    pub amount: MinorUnit,
 }
 
 impl<F> TryFrom<&PaydunyaRouterData<&RefundsRouterData<F>>> for PaydunyaRefundRequest {

@@ -596,6 +596,7 @@ impl ConnectorIntegration<PostCaptureVoid, PaymentsCancelPostCaptureData, Paymen
 impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> for Nuvei {}
 
 impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Nuvei {
+    // get transaction details
     fn get_headers(
         &self,
         req: &PaymentsSyncRouterData,
@@ -765,6 +766,7 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
 
 #[async_trait::async_trait]
 impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData> for Nuvei {
+    // leg 2: payment authorize data
     fn get_headers(
         &self,
         req: &PaymentsAuthorizeRouterData,
@@ -1028,6 +1030,7 @@ impl ConnectorIntegration<PreAuthenticate, PaymentsPreAuthenticateData, Payments
 impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>
     for Nuvei
 {
+    // leg 1: create invoice
     fn get_headers(
         &self,
         req: &PaymentsPreProcessingRouterData,
