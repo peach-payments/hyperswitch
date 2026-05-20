@@ -47,7 +47,11 @@ use hyperswitch_interfaces::{
 use hyperswitch_masking::{ExposeInterface, Mask};
 use transformers as paydunya;
 
-use crate::{constants::headers, types::ResponseRouterData, utils};
+use crate::{
+    constants::headers,
+    types::ResponseRouterData,
+    utils::{self, PaymentsSyncRequestData},
+};
 
 #[derive(Clone)]
 pub struct Paydunya {
@@ -404,10 +408,19 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Pay
 
     fn get_url(
         &self,
-        _req: &PaymentsSyncRouterData,
-        _connectors: &Connectors,
+        req: &PaymentsSyncRouterData,
+        connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        Err(errors::ConnectorError::NotImplemented("get_url method".to_string()).into())
+        // Paydunya identifies a transaction solely by the invoice token
+        // returned during `checkout-invoice/create`, so PSync calls
+        // `GET checkout-invoice/confirm/{invoice_token}`.
+        // Note: the Authorize flow must therefore propagate the invoice token
+        // as the `connector_transaction_id`.
+        let invoice_token = req.request.get_connector_transaction_id()?;
+        Ok(format!(
+            "{}checkout-invoice/confirm/{invoice_token}",
+            ConnectorCommon::base_url(self, connectors),
+        ))
     }
 
     fn build_request(
@@ -431,7 +444,7 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Pay
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
     ) -> CustomResult<PaymentsSyncRouterData, errors::ConnectorError> {
-        let response: paydunya::PaydunyaPaymentsResponse = res
+        let response: paydunya::PaydunyaSyncResponse = res
             .response
             .parse_struct("paydunya PaymentsSyncResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;

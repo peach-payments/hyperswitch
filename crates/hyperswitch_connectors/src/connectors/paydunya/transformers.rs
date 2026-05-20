@@ -1,13 +1,16 @@
 use common_enums::enums;
 use common_utils::{pii::Email, types::MinorUnit};
 use hyperswitch_domain_models::{
-    router_data::{ConnectorAuthType, RouterData},
-    router_flow_types::refunds::{Execute, RSync},
-    router_request_types::ResponseId,
+    router_data::{ConnectorAuthType, ErrorResponse, RouterData},
+    router_flow_types::{refunds::{Execute, RSync}, PSync},
+    router_request_types::{PaymentsSyncData, ResponseId},
     router_response_types::{PaymentsResponseData, PreprocessingResponseId, RefundsResponseData},
     types::{PaymentsAuthorizeRouterData, PaymentsPreProcessingRouterData, RefundsRouterData},
 };
-use hyperswitch_interfaces::errors;
+use hyperswitch_interfaces::{
+    consts::{NO_ERROR_CODE, NO_ERROR_MESSAGE},
+    errors,
+};
 use hyperswitch_masking::Secret;
 use serde::{Deserialize, Serialize};
 
@@ -554,6 +557,174 @@ impl<F, T> TryFrom<ResponseRouterData<F, PaydunyaPaymentsResponse, T, PaymentsRe
                 authentication_data: None,
                 charges: None,
             }),
+            ..item.data
+        })
+    }
+}
+
+/// Lifecycle states reported by Paydunya's `checkout-invoice/confirm/{token}`
+/// endpoint. The set comes straight from the public API docs (`pending`,
+/// `completed`, `cancelled`, `failed`) — note that `pending` can flip to
+/// `cancelled` automatically 24h after invoice creation if it isn't paid.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PaydunyaSyncStatus {
+    #[default]
+    Pending,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl From<PaydunyaSyncStatus> for common_enums::AttemptStatus {
+    fn from(item: PaydunyaSyncStatus) -> Self {
+        match item {
+            PaydunyaSyncStatus::Completed => Self::Charged,
+            PaydunyaSyncStatus::Pending => Self::Pending,
+            // Paydunya treats `cancelled` as a terminal non-success state
+            // (either user-cancelled or auto-cancelled by inactivity), so we
+            // surface it as a failure to upstream.
+            PaydunyaSyncStatus::Cancelled | PaydunyaSyncStatus::Failed => Self::Failure,
+        }
+    }
+}
+
+/// Invoice block embedded inside the `confirm` response. We only deserialise
+/// the fields we use; everything else (items / taxes / custom_data) is dropped.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaydunyaSyncInvoice {
+    pub token: String,
+    #[serde(default)]
+    pub total_amount: Option<serde_json::Value>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Optional `errors` block returned by Paydunya for failed or cancelled
+/// transactions. Card-rail failures populate both fields; SOFTPAY rails
+/// usually rely on the top-level `fail_reason` instead.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaydunyaSyncErrors {
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Response body returned by `GET checkout-invoice/confirm/{invoice_token}`.
+///
+/// Mirrors the shape documented at <https://developers.paydunya.com/doc/EN/http_json>.
+/// We keep fields we do not currently consume (e.g. `customer`, `receipt_url`)
+/// as `serde_json::Value` so future flows can read them without another
+/// round-trip and without forcing strict typing today.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaydunyaSyncResponse {
+    pub response_code: String,
+    pub response_text: String,
+    #[serde(default)]
+    pub hash: Option<Secret<String>>,
+    pub status: PaydunyaSyncStatus,
+    #[serde(default)]
+    pub fail_reason: Option<String>,
+    #[serde(default)]
+    pub invoice: Option<PaydunyaSyncInvoice>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub receipt_url: Option<String>,
+    #[serde(default)]
+    pub customer: Option<serde_json::Value>,
+    #[serde(default)]
+    pub errors: Option<PaydunyaSyncErrors>,
+}
+
+impl PaydunyaSyncResponse {
+    /// Best-effort human-readable failure reason, preferring the rail-specific
+    /// `errors.description`/`errors.message` block (populated for card rails)
+    /// and falling back to the top-level `fail_reason` used by SOFTPAY rails.
+    fn failure_reason(&self) -> Option<String> {
+        self.errors
+            .as_ref()
+            .and_then(|e| e.description.clone().or_else(|| e.message.clone()))
+            .or_else(|| {
+                self.fail_reason
+                    .clone()
+                    .filter(|reason| !reason.trim().is_empty())
+            })
+    }
+}
+
+impl TryFrom<ResponseRouterData<PSync, PaydunyaSyncResponse, PaymentsSyncData, PaymentsResponseData>>
+    for RouterData<PSync, PaymentsSyncData, PaymentsResponseData>
+{
+    type Error = error_stack::Report<errors::ConnectorError>;
+    fn try_from(
+        item: ResponseRouterData<
+            PSync,
+            PaydunyaSyncResponse,
+            PaymentsSyncData,
+            PaymentsResponseData,
+        >,
+    ) -> Result<Self, Self::Error> {
+        let attempt_status = common_enums::AttemptStatus::from(item.response.status);
+
+        // Paydunya keys every PSync on the invoice token, so we prefer the
+        // token echoed back inside the `invoice` block and fall back to the
+        // id we originally sent on the request — that way the upstream
+        // RouterData keeps a stable connector_transaction_id even when the
+        // payload omits the invoice.
+        let resource_id = item
+            .response
+            .invoice
+            .as_ref()
+            .map(|inv| inv.token.clone())
+            .or_else(|| match &item.data.request.connector_transaction_id {
+                ResponseId::ConnectorTransactionId(id) => Some(id.clone()),
+                _ => None,
+            })
+            .map(ResponseId::ConnectorTransactionId)
+            .unwrap_or(ResponseId::NoResponseId);
+
+        let response = if matches!(attempt_status, common_enums::AttemptStatus::Failure) {
+            let reason = item.response.failure_reason();
+            Err(ErrorResponse {
+                status_code: item.http_code,
+                // Paydunya only returns a transport-level `response_code` (e.g.
+                // "00" for "Transaction Found"); the rail's actual decline code
+                // is not exposed, so we surface our generic placeholder.
+                code: NO_ERROR_CODE.to_string(),
+                message: reason
+                    .clone()
+                    .unwrap_or_else(|| NO_ERROR_MESSAGE.to_string()),
+                reason,
+                attempt_status: Some(attempt_status),
+                connector_transaction_id: match &resource_id {
+                    ResponseId::ConnectorTransactionId(id) => Some(id.clone()),
+                    _ => None,
+                },
+                connector_response_reference_id: None,
+                network_advice_code: None,
+                network_decline_code: None,
+                network_error_message: None,
+                connector_metadata: None,
+            })
+        } else {
+            Ok(PaymentsResponseData::TransactionResponse {
+                resource_id,
+                redirection_data: Box::new(None),
+                mandate_reference: Box::new(None),
+                connector_metadata: None,
+                network_txn_id: None,
+                connector_response_reference_id: None,
+                incremental_authorization_allowed: None,
+                authentication_data: None,
+                charges: None,
+            })
+        };
+
+        Ok(Self {
+            status: attempt_status,
+            response,
             ..item.data
         })
     }
