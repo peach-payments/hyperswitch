@@ -311,10 +311,15 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
 
     fn get_url(
         &self,
-        _req: &PaymentsAuthorizeRouterData,
-        _connectors: &Connectors,
+        req: &PaymentsAuthorizeRouterData,
+        connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        Err(errors::ConnectorError::NotImplemented("get_url method".to_string()).into())
+        let operator = paydunya::PaydunyaOperator::try_from(req)?;
+        Ok(format!(
+            "{}{}",
+            ConnectorCommon::base_url(self, connectors),
+            operator.endpoint(),
+        ))
     }
 
     fn get_request_body(
