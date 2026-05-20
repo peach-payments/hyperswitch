@@ -4,13 +4,14 @@ use std::sync::LazyLock;
 
 use common_enums::enums;
 use common_utils::{
+    crypto,
     errors::CustomResult,
     errors::ReportSwitchExt,
-    ext_traits::BytesExt,
+    ext_traits::{BytesExt, ValueExt},
     request::{Method, Request, RequestBuilder, RequestContent},
     types::{AmountConvertor, MinorUnit, MinorUnitForConnector},
 };
-use error_stack::{report, ResultExt};
+use error_stack::ResultExt;
 use hyperswitch_domain_models::{
     payment_method_data::PaymentMethodData,
     router_data::{AccessToken, ConnectorAuthType, ErrorResponse, RouterData},
@@ -44,7 +45,7 @@ use hyperswitch_interfaces::{
     types::{self, Response},
     webhooks,
 };
-use hyperswitch_masking::{ExposeInterface, Mask};
+use hyperswitch_masking::{ExposeInterface, Mask, PeekInterface};
 use transformers as paydunya;
 
 use crate::{
@@ -550,29 +551,122 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Payduny
 
 impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Paydunya {}
 
+/// Parse the urlencoded IPN body posted by Paydunya into our typed payload.
+/// Paydunya uses PHP-style nested keys (`data[invoice][token]=...`), so we
+/// rely on `serde_qs` to do the bracket-aware decoding.
+fn parse_paydunya_ipn(
+    request: &webhooks::IncomingWebhookRequestDetails<'_>,
+) -> CustomResult<paydunya::PaydunyaIpnBody, errors::ConnectorError> {
+    let envelope: paydunya::PaydunyaIpnEnvelope = serde_qs::from_bytes(request.body)
+        .change_context(errors::ConnectorError::WebhookBodyDecodingFailed)?;
+    Ok(envelope.data)
+}
+
 #[async_trait::async_trait]
 impl webhooks::IncomingWebhook for Paydunya {
-    fn get_webhook_object_reference_id(
+    fn get_webhook_source_verification_algorithm(
         &self,
         _request: &webhooks::IncomingWebhookRequestDetails<'_>,
+    ) -> CustomResult<Box<dyn crypto::VerifySignature + Send>, errors::ConnectorError> {
+        // Paydunya signs the IPN body with `SHA-512(MasterKey)` (no HMAC).
+        Ok(Box::new(crypto::Sha512))
+    }
+
+    fn get_webhook_source_verification_signature(
+        &self,
+        request: &webhooks::IncomingWebhookRequestDetails<'_>,
+        _connector_webhook_secrets: &api_models::webhooks::ConnectorWebhookSecrets,
+    ) -> CustomResult<Vec<u8>, errors::ConnectorError> {
+        let ipn = parse_paydunya_ipn(request)?;
+        Ok(ipn.hash.expose().into_bytes())
+    }
+
+    /// Override the default `verify_webhook_source` so we can pull the
+    /// master key out of the merchant's connector auth (Paydunya doesn't use
+    /// a separate webhook secret). The verification is:
+    ///
+    ///   hex(sha512(master_key)) == data[hash]
+    async fn verify_webhook_source(
+        &self,
+        request: &webhooks::IncomingWebhookRequestDetails<'_>,
+        _merchant_id: &common_utils::id_type::MerchantId,
+        _connector_webhook_details: Option<common_utils::pii::SecretSerdeValue>,
+        connector_account_details: crypto::Encryptable<
+            hyperswitch_masking::Secret<serde_json::Value>,
+        >,
+        _connector_label: &str,
+    ) -> CustomResult<bool, errors::ConnectorError> {
+        let auth_value: ConnectorAuthType = connector_account_details
+            .parse_value("ConnectorAuthType")
+            .change_context(errors::ConnectorError::WebhookSourceVerificationFailed)?;
+        let auth = paydunya::PaydunyaAuthType::try_from(&auth_value)
+            .change_context(errors::ConnectorError::WebhookSourceVerificationFailed)?;
+
+        let signature = self
+            .get_webhook_source_verification_signature(
+                request,
+                &api_models::webhooks::ConnectorWebhookSecrets {
+                    secret: Vec::new(),
+                    additional_secret: None,
+                },
+            )
+            .change_context(errors::ConnectorError::WebhookSourceVerificationFailed)?;
+
+        let master_key = auth.master_key.peek().as_bytes();
+
+        let algorithm = self
+            .get_webhook_source_verification_algorithm(request)
+            .change_context(errors::ConnectorError::WebhookSourceVerificationFailed)?;
+
+        algorithm
+            .verify_signature(&[], &signature, master_key)
+            .change_context(errors::ConnectorError::WebhookSourceVerificationFailed)
+    }
+
+    fn get_webhook_object_reference_id(
+        &self,
+        request: &webhooks::IncomingWebhookRequestDetails<'_>,
     ) -> CustomResult<api_models::webhooks::ObjectReferenceId, errors::ConnectorError> {
-        Err(report!(errors::ConnectorError::WebhooksNotImplemented))
+        let ipn = parse_paydunya_ipn(request)
+            .change_context(errors::ConnectorError::WebhookReferenceIdNotFound)?;
+        Ok(api_models::webhooks::ObjectReferenceId::PaymentId(
+            api_models::payments::PaymentIdType::ConnectorTransactionId(
+                ipn.invoice_token().to_string(),
+            ),
+        ))
     }
 
     fn get_webhook_event_type(
         &self,
-        _request: &webhooks::IncomingWebhookRequestDetails<'_>,
+        request: &webhooks::IncomingWebhookRequestDetails<'_>,
         _context: Option<&webhooks::WebhookContext>,
     ) -> CustomResult<api_models::webhooks::IncomingWebhookEvent, errors::ConnectorError> {
-        Err(report!(errors::ConnectorError::WebhooksNotImplemented))
+        let ipn = parse_paydunya_ipn(request)
+            .change_context(errors::ConnectorError::WebhookEventTypeNotFound)?;
+        Ok(match ipn.status {
+            paydunya::PaydunyaSyncStatus::Completed => {
+                api_models::webhooks::IncomingWebhookEvent::PaymentIntentSuccess
+            }
+            paydunya::PaydunyaSyncStatus::Pending => {
+                api_models::webhooks::IncomingWebhookEvent::PaymentIntentProcessing
+            }
+            // Paydunya treats `cancelled` as a terminal non-success state
+            // (auto-cancellation after 24h of inactivity is the same opcode
+            // as a user-cancelled invoice), so we surface both as failures.
+            paydunya::PaydunyaSyncStatus::Cancelled
+            | paydunya::PaydunyaSyncStatus::Failed => {
+                api_models::webhooks::IncomingWebhookEvent::PaymentIntentFailure
+            }
+        })
     }
 
     fn get_webhook_resource_object(
         &self,
-        _request: &webhooks::IncomingWebhookRequestDetails<'_>,
+        request: &webhooks::IncomingWebhookRequestDetails<'_>,
     ) -> CustomResult<Box<dyn hyperswitch_masking::ErasedMaskSerialize>, errors::ConnectorError>
     {
-        Err(report!(errors::ConnectorError::WebhooksNotImplemented))
+        let ipn = parse_paydunya_ipn(request)?;
+        Ok(Box::new(ipn))
     }
 }
 
@@ -586,7 +680,7 @@ static PAYDUNYA_CONNECTOR_INFO: ConnectorInfo = ConnectorInfo {
     integration_status: enums::ConnectorIntegrationStatus::Live,
 };
 
-static PAYDUNYA_SUPPORTED_WEBHOOK_FLOWS: [enums::EventClass; 0] = [];
+static PAYDUNYA_SUPPORTED_WEBHOOK_FLOWS: [enums::EventClass; 1] = [enums::EventClass::Payments];
 
 impl ConnectorSpecifications for Paydunya {
     fn get_connector_about(&self) -> Option<&'static ConnectorInfo> {

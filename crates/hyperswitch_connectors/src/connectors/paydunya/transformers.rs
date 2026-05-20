@@ -70,6 +70,14 @@ pub struct Actions {
 impl TryFrom<&PaymentsPreProcessingRouterData> for PaydunyaPreprocessingRequest {
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(item: &PaymentsPreProcessingRouterData) -> Result<Self, Self::Error> {
+        // Paydunya posts the IPN to `actions.callback_url` after every status
+        // change on the invoice. We forward the merchant's webhook url here so
+        // the IPN flow lands in our normal `/webhooks/...` endpoint. Both
+        // callback and return urls default to empty strings — Paydunya accepts
+        // an absent value, but the keys themselves are mandatory in the payload.
+        let callback_url = item.request.webhook_url.clone().unwrap_or_default();
+        let return_url = item.request.router_return_url.clone().unwrap_or_default();
+
         Ok(Self {
             invoice: Invoice {
                 total_amount: item.request.get_minor_amount(),
@@ -78,8 +86,8 @@ impl TryFrom<&PaymentsPreProcessingRouterData> for PaydunyaPreprocessingRequest 
                 name: String::from("name"),
             },
             actions: Actions {
-                callback_url: String::from("callback_url"),
-                return_url: String::from("return_url"),
+                callback_url,
+                return_url,
             },
         })
     }
@@ -816,4 +824,79 @@ pub struct PaydunyaErrorResponse {
     pub network_advice_code: Option<String>,
     pub network_decline_code: Option<String>,
     pub network_error_message: Option<String>,
+}
+
+// =====================================================================
+// IPN (Instant Payment Notification)
+// =====================================================================
+//
+// Paydunya posts IPN payloads to the `callback_url` declared on the invoice.
+// The body is `application/x-www-form-urlencoded`, with PHP-style nested keys
+// scoped under a top-level `data` key:
+//
+//   data[response_code]=00
+//   data[response_text]=Transaction+Found
+//   data[hash]=<sha512(master_key)>
+//   data[status]=completed
+//   data[invoice][token]=test_jkEdPY8SuG
+//   data[invoice][total_amount]=42300
+//   ...
+//
+// The `hash` field is `SHA-512(MasterKey)` (hex-encoded) — Paydunya's docs
+// describe this as the only piece of authenticity data on the IPN.
+//
+// We deserialize via `serde_qs`, which handles the bracket notation natively.
+// Fields we don't currently consume (customer, items, taxes, ...) are kept as
+// `serde_json::Value` so future flows can grow into them without forcing a
+// strict schema today.
+
+/// Top-level envelope of a Paydunya IPN body. The `data` key is the only
+/// thing we care about — everything else is dropped during deserialization.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaydunyaIpnEnvelope {
+    pub data: PaydunyaIpnBody,
+}
+
+/// Invoice block inside the IPN payload. We deliberately type `total_amount`
+/// as a string because Paydunya serializes integers as strings inside the
+/// PHP-style form payload (e.g. `data[invoice][total_amount]=42300`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaydunyaIpnInvoice {
+    pub token: String,
+    #[serde(default)]
+    pub total_amount: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Body of `data[...]` carried by the Paydunya IPN. The payload mirrors the
+/// `checkout-invoice/confirm/{token}` JSON response (cf. [`PaydunyaSyncResponse`]),
+/// but we keep the IPN-shaped struct separate so the form-decoder doesn't
+/// have to share semantics with the JSON-decoded sync flow.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaydunyaIpnBody {
+    pub response_code: String,
+    #[serde(default)]
+    pub response_text: Option<String>,
+    /// Hex-encoded SHA-512 of the merchant's master key. Used to verify that
+    /// the IPN actually originated from Paydunya's servers.
+    pub hash: Secret<String>,
+    pub status: PaydunyaSyncStatus,
+    pub invoice: PaydunyaIpnInvoice,
+    #[serde(default)]
+    pub fail_reason: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub receipt_url: Option<String>,
+    #[serde(default)]
+    pub customer: Option<serde_json::Value>,
+}
+
+impl PaydunyaIpnBody {
+    /// Connector-side reference id used to look up the original payment —
+    /// Paydunya identifies every transaction by the invoice token.
+    pub fn invoice_token(&self) -> &str {
+        &self.invoice.token
+    }
 }
