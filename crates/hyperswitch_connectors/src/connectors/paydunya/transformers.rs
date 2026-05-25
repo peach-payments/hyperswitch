@@ -900,3 +900,508 @@ impl PaydunyaIpnBody {
         &self.invoice.token
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use common_enums::{AttemptStatus, RefundStatus as CommonRefundStatus};
+    use hyperswitch_masking::{PeekInterface, Secret};
+
+    use super::*;
+
+    // ---------------------------------------------------------------
+    // PaydunyaOperator
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn operator_endpoint_matches_softpay_paths() {
+        // Endpoints are part of the connector contract — a mistyped path
+        // here means Paydunya rejects the call with a 404, so pin every
+        // variant explicitly.
+        assert_eq!(PaydunyaOperator::MtnBenin.endpoint(), "softpay/mtn-benin");
+        assert_eq!(PaydunyaOperator::MtnCi.endpoint(), "softpay/mtn-ci");
+        assert_eq!(
+            PaydunyaOperator::MtnCameroun.endpoint(),
+            "softpay/mtn-cameroun"
+        );
+        assert_eq!(PaydunyaOperator::MoovBenin.endpoint(), "softpay/moov-benin");
+        assert_eq!(PaydunyaOperator::MoovCi.endpoint(), "softpay/moov-ci");
+        assert_eq!(
+            PaydunyaOperator::OrangeMoneyCi.endpoint(),
+            "softpay/orange-money-ci"
+        );
+        assert_eq!(
+            PaydunyaOperator::OrangeMoneySenegal.endpoint(),
+            "softpay/new-orange-money-senegal"
+        );
+        assert_eq!(
+            PaydunyaOperator::WaveSenegal.endpoint(),
+            "softpay/wave-senegal"
+        );
+        assert_eq!(PaydunyaOperator::WaveCi.endpoint(), "softpay/wave-ci");
+        assert_eq!(
+            PaydunyaOperator::FreeMoneySenegal.endpoint(),
+            "softpay/free-money-senegal"
+        );
+        assert_eq!(
+            PaydunyaOperator::ExpressoSenegal.endpoint(),
+            "softpay/expresso-senegal"
+        );
+    }
+
+    #[test]
+    fn wallet_provider_is_set_only_for_mtn_family() {
+        // Only the MTN SOFTPAY endpoints require the `*_wallet_provider`
+        // discriminator — every other operator must omit it (returns None).
+        assert_eq!(PaydunyaOperator::MtnBenin.wallet_provider(), Some("MTNBENIN"));
+        assert_eq!(PaydunyaOperator::MtnCi.wallet_provider(), Some("MTNCI"));
+        assert_eq!(
+            PaydunyaOperator::MtnCameroun.wallet_provider(),
+            Some("MTNCAMEROUN")
+        );
+
+        for non_mtn in [
+            PaydunyaOperator::MoovBenin,
+            PaydunyaOperator::MoovCi,
+            PaydunyaOperator::OrangeMoneyCi,
+            PaydunyaOperator::OrangeMoneySenegal,
+            PaydunyaOperator::WaveSenegal,
+            PaydunyaOperator::WaveCi,
+            PaydunyaOperator::FreeMoneySenegal,
+            PaydunyaOperator::ExpressoSenegal,
+        ] {
+            assert_eq!(non_mtn.wallet_provider(), None);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Status conversions
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn payment_status_maps_to_attempt_status() {
+        assert_eq!(
+            AttemptStatus::from(PaydunyaPaymentStatus::Succeeded),
+            AttemptStatus::Charged
+        );
+        assert_eq!(
+            AttemptStatus::from(PaydunyaPaymentStatus::Failed),
+            AttemptStatus::Failure
+        );
+        assert_eq!(
+            AttemptStatus::from(PaydunyaPaymentStatus::Processing),
+            AttemptStatus::Authorizing
+        );
+    }
+
+    #[test]
+    fn sync_status_collapses_cancelled_into_failure() {
+        // Paydunya auto-cancels invoices after 24h, but upstream wants a
+        // terminal failure — the From impl must treat Cancelled and Failed
+        // identically.
+        assert_eq!(
+            AttemptStatus::from(PaydunyaSyncStatus::Completed),
+            AttemptStatus::Charged
+        );
+        assert_eq!(
+            AttemptStatus::from(PaydunyaSyncStatus::Pending),
+            AttemptStatus::Pending
+        );
+        assert_eq!(
+            AttemptStatus::from(PaydunyaSyncStatus::Cancelled),
+            AttemptStatus::Failure
+        );
+        assert_eq!(
+            AttemptStatus::from(PaydunyaSyncStatus::Failed),
+            AttemptStatus::Failure
+        );
+    }
+
+    #[test]
+    fn refund_status_maps_to_common_refund_status() {
+        assert_eq!(
+            CommonRefundStatus::from(RefundStatus::Succeeded),
+            CommonRefundStatus::Success
+        );
+        assert_eq!(
+            CommonRefundStatus::from(RefundStatus::Failed),
+            CommonRefundStatus::Failure
+        );
+        assert_eq!(
+            CommonRefundStatus::from(RefundStatus::Processing),
+            CommonRefundStatus::Pending
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // PaydunyaAuthType
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn auth_type_extracts_all_three_keys_from_signature_key() {
+        let auth = ConnectorAuthType::SignatureKey {
+            api_key: Secret::new("master-key".to_string()),
+            key1: Secret::new("private-key".to_string()),
+            api_secret: Secret::new("token".to_string()),
+        };
+
+        let parsed = PaydunyaAuthType::try_from(&auth).unwrap();
+        assert_eq!(parsed.master_key.peek(), "master-key");
+        assert_eq!(parsed.private_key.peek(), "private-key");
+        assert_eq!(parsed.token.peek(), "token");
+    }
+
+    #[test]
+    fn auth_type_rejects_non_signature_variants() {
+        // Any auth shape other than `SignatureKey` should bubble up as a
+        // `FailedToObtainAuthType` so the framework can return a clean 4xx.
+        let auth = ConnectorAuthType::HeaderKey {
+            api_key: Secret::new("nope".to_string()),
+        };
+        let err = PaydunyaAuthType::try_from(&auth).unwrap_err();
+        assert!(matches!(
+            err.current_context(),
+            errors::ConnectorError::FailedToObtainAuthType
+        ));
+    }
+
+    // ---------------------------------------------------------------
+    // PaydunyaSyncResponse::failure_reason
+    // ---------------------------------------------------------------
+
+    fn sync_response_with(
+        fail_reason: Option<&str>,
+        errors_block: Option<PaydunyaSyncErrors>,
+    ) -> PaydunyaSyncResponse {
+        PaydunyaSyncResponse {
+            response_code: "00".to_string(),
+            response_text: "Transaction Found".to_string(),
+            hash: None,
+            status: PaydunyaSyncStatus::Failed,
+            fail_reason: fail_reason.map(str::to_string),
+            invoice: None,
+            mode: None,
+            receipt_url: None,
+            customer: None,
+            errors: errors_block,
+        }
+    }
+
+    #[test]
+    fn failure_reason_prefers_errors_description() {
+        let response = sync_response_with(
+            Some("top-level"),
+            Some(PaydunyaSyncErrors {
+                message: Some("err-message".to_string()),
+                description: Some("err-description".to_string()),
+            }),
+        );
+        assert_eq!(response.failure_reason().as_deref(), Some("err-description"));
+    }
+
+    #[test]
+    fn failure_reason_falls_back_to_errors_message() {
+        let response = sync_response_with(
+            Some("top-level"),
+            Some(PaydunyaSyncErrors {
+                message: Some("err-message".to_string()),
+                description: None,
+            }),
+        );
+        assert_eq!(response.failure_reason().as_deref(), Some("err-message"));
+    }
+
+    #[test]
+    fn failure_reason_falls_back_to_fail_reason_when_errors_empty() {
+        let response = sync_response_with(
+            Some("softpay-decline"),
+            Some(PaydunyaSyncErrors {
+                message: None,
+                description: None,
+            }),
+        );
+        assert_eq!(
+            response.failure_reason().as_deref(),
+            Some("softpay-decline")
+        );
+    }
+
+    #[test]
+    fn failure_reason_uses_fail_reason_when_errors_missing() {
+        let response = sync_response_with(Some("softpay-decline"), None);
+        assert_eq!(
+            response.failure_reason().as_deref(),
+            Some("softpay-decline")
+        );
+    }
+
+    #[test]
+    fn failure_reason_ignores_blank_fail_reason() {
+        // Paydunya sometimes returns an empty string instead of dropping the
+        // field — treating that as a "real" reason would put whitespace into
+        // the merchant-facing error message, so filter it out.
+        let response = sync_response_with(Some("   "), None);
+        assert!(response.failure_reason().is_none());
+    }
+
+    #[test]
+    fn failure_reason_returns_none_when_no_signal() {
+        let response = sync_response_with(None, None);
+        assert!(response.failure_reason().is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // PaydunyaSyncResponse JSON deserialization
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn sync_response_deserializes_full_payload() {
+        // Shape mirrors the official `checkout-invoice/confirm/{token}` doc.
+        let body = r#"{
+            "response_code": "00",
+            "response_text": "Transaction Found",
+            "hash": "abcdef",
+            "status": "completed",
+            "invoice": {
+                "token": "test_jkEdPY8SuG",
+                "total_amount": 42300,
+                "description": "test invoice"
+            },
+            "mode": "test",
+            "receipt_url": "https://paydunya.com/receipt/test_jkEdPY8SuG",
+            "customer": {"name": "John", "email": "john@example.com"}
+        }"#;
+
+        let response: PaydunyaSyncResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(response.response_code, "00");
+        assert_eq!(response.status, PaydunyaSyncStatus::Completed);
+        assert_eq!(response.hash.as_ref().unwrap().peek(), "abcdef");
+        let invoice = response.invoice.as_ref().unwrap();
+        assert_eq!(invoice.token, "test_jkEdPY8SuG");
+        assert_eq!(invoice.description.as_deref(), Some("test invoice"));
+    }
+
+    #[test]
+    fn sync_response_accepts_missing_optional_fields() {
+        // The minimal payload Paydunya sends back when an invoice token is
+        // unknown — no invoice block, no hash, no errors. Deserialization
+        // must still succeed so we can surface a generic "not found" error.
+        let body = r#"{
+            "response_code": "404",
+            "response_text": "Invoice introuvable",
+            "status": "failed"
+        }"#;
+
+        let response: PaydunyaSyncResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(response.status, PaydunyaSyncStatus::Failed);
+        assert!(response.invoice.is_none());
+        assert!(response.hash.is_none());
+        assert!(response.errors.is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // PaydunyaIpnEnvelope (urlencoded webhook body)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn ipn_envelope_decodes_bracket_form_body() {
+        // Paydunya posts IPNs as `application/x-www-form-urlencoded` with
+        // PHP-style nested keys. `serde_qs` is what the connector uses at
+        // runtime — replicate it here to make sure renames stay in sync.
+        let body = "data[response_code]=00\
+                    &data[response_text]=Transaction+Found\
+                    &data[hash]=deadbeef\
+                    &data[status]=completed\
+                    &data[invoice][token]=test_jkEdPY8SuG\
+                    &data[invoice][total_amount]=42300\
+                    &data[invoice][description]=test+invoice\
+                    &data[mode]=test\
+                    &data[receipt_url]=https://paydunya.com/receipt/test_jkEdPY8SuG";
+
+        let envelope: PaydunyaIpnEnvelope = serde_qs::from_bytes(body.as_bytes()).unwrap();
+        let ipn = envelope.data;
+
+        assert_eq!(ipn.response_code, "00");
+        assert_eq!(ipn.response_text.as_deref(), Some("Transaction Found"));
+        assert_eq!(ipn.status, PaydunyaSyncStatus::Completed);
+        assert_eq!(ipn.hash.peek(), "deadbeef");
+        assert_eq!(ipn.invoice.token, "test_jkEdPY8SuG");
+        // Paydunya serialises integers as strings inside the form body, so
+        // `total_amount` is kept as Option<String>.
+        assert_eq!(ipn.invoice.total_amount.as_deref(), Some("42300"));
+        assert_eq!(ipn.invoice_token(), "test_jkEdPY8SuG");
+    }
+
+    #[test]
+    fn ipn_envelope_decodes_cancelled_status() {
+        // Auto-cancellation by inactivity uses the same opcode as a manual
+        // cancel, so we still expect `cancelled` to flow through cleanly.
+        let body = "data[response_code]=00\
+                    &data[hash]=deadbeef\
+                    &data[status]=cancelled\
+                    &data[invoice][token]=cancelled_token\
+                    &data[fail_reason]=customer_cancelled";
+
+        let envelope: PaydunyaIpnEnvelope = serde_qs::from_bytes(body.as_bytes()).unwrap();
+        let ipn = envelope.data;
+
+        assert_eq!(ipn.status, PaydunyaSyncStatus::Cancelled);
+        assert_eq!(ipn.invoice_token(), "cancelled_token");
+        assert_eq!(ipn.fail_reason.as_deref(), Some("customer_cancelled"));
+    }
+
+    // ---------------------------------------------------------------
+    // PaydunyaPaymentsRequest serialization
+    // ---------------------------------------------------------------
+
+    fn email(addr: &str) -> Email {
+        Email::from_str(addr).unwrap()
+    }
+
+    #[test]
+    fn mtn_benin_request_serializes_with_mtn_prefixed_fields() {
+        let req = PaydunyaPaymentsRequest::MtnBenin(PaydunyaMtnBeninRequest {
+            mtn_benin_customer_fullname: Secret::new("John Doe".to_string()),
+            mtn_benin_email: email("john@example.com"),
+            mtn_benin_phone_number: Secret::new("22990000000".to_string()),
+            mtn_benin_wallet_provider: "MTNBENIN",
+            payment_token: "tok_123".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        // `untagged` enum means the variant body is inlined at the top level.
+        assert_eq!(value["mtn_benin_customer_fullname"], "John Doe");
+        assert_eq!(value["mtn_benin_email"], "john@example.com");
+        assert_eq!(value["mtn_benin_phone_number"], "22990000000");
+        assert_eq!(value["mtn_benin_wallet_provider"], "MTNBENIN");
+        assert_eq!(value["payment_token"], "tok_123");
+    }
+
+    #[test]
+    fn wave_senegal_request_renames_full_name_to_camel_case() {
+        // Paydunya's Wave SOFTPAY endpoint expects `wave_senegal_fullName`
+        // (camelCase). A rename regression here would silently drop the
+        // payer's name on the connector side.
+        let req = PaydunyaPaymentsRequest::WaveSenegal(PaydunyaWaveSenegalRequest {
+            wave_senegal_full_name: Secret::new("Awa Ndiaye".to_string()),
+            wave_senegal_email: email("awa@example.com"),
+            wave_senegal_phone: Secret::new("221770000000".to_string()),
+            wave_senegal_payment_token: "tok_wave".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert!(value.get("wave_senegal_full_name").is_none());
+        assert_eq!(value["wave_senegal_fullName"], "Awa Ndiaye");
+        assert_eq!(value["wave_senegal_email"], "awa@example.com");
+        assert_eq!(value["wave_senegal_phone"], "221770000000");
+        assert_eq!(value["wave_senegal_payment_token"], "tok_wave");
+    }
+
+    #[test]
+    fn expresso_senegal_request_renames_full_name_to_camel_case() {
+        let req = PaydunyaPaymentsRequest::ExpressoSenegal(PaydunyaExpressoSenegalRequest {
+            expresso_sn_full_name: Secret::new("Awa Ndiaye".to_string()),
+            expresso_sn_email: email("awa@example.com"),
+            expresso_sn_phone: Secret::new("221770000000".to_string()),
+            payment_token: "tok_expresso".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert!(value.get("expresso_sn_full_name").is_none());
+        assert_eq!(value["expresso_sn_fullName"], "Awa Ndiaye");
+        assert_eq!(value["payment_token"], "tok_expresso");
+    }
+
+    #[test]
+    fn orange_money_senegal_request_uses_generic_field_names() {
+        // Unlike MTN/Wave, the Orange Money Senegal endpoint switched to
+        // generic field names (`customer_name`, `customer_email`,
+        // `phone_number`, `invoice_token`) — pin this so the connector
+        // never silently regresses to operator-prefixed names.
+        let req =
+            PaydunyaPaymentsRequest::OrangeMoneySenegal(PaydunyaOrangeMoneySenegalRequest {
+                customer_name: Secret::new("Awa Ndiaye".to_string()),
+                customer_email: email("awa@example.com"),
+                phone_number: Secret::new("221770000000".to_string()),
+                invoice_token: "tok_om".to_string(),
+            });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["customer_name"], "Awa Ndiaye");
+        assert_eq!(value["customer_email"], "awa@example.com");
+        assert_eq!(value["phone_number"], "221770000000");
+        assert_eq!(value["invoice_token"], "tok_om");
+        assert!(value.get("payment_token").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // Preprocessing
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn preprocessing_request_serializes_with_expected_layout() {
+        // The Paydunya `checkout-invoice/create` endpoint expects a strict
+        // nested shape (`invoice.total_amount`, `store.name`,
+        // `actions.callback_url`, `actions.return_url`). The struct is
+        // simple enough to test by hand-constructing it.
+        let request = PaydunyaPreprocessingRequest {
+            invoice: Invoice {
+                total_amount: MinorUnit::new(1500),
+            },
+            store: Store {
+                name: "name".to_string(),
+            },
+            actions: Actions {
+                callback_url: "https://example.com/webhook".to_string(),
+                return_url: "https://example.com/return".to_string(),
+            },
+        };
+
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["invoice"]["total_amount"], 1500);
+        assert_eq!(value["store"]["name"], "name");
+        assert_eq!(
+            value["actions"]["callback_url"],
+            "https://example.com/webhook"
+        );
+        assert_eq!(value["actions"]["return_url"], "https://example.com/return");
+    }
+
+    #[test]
+    fn preprocessing_response_deserializes_success_envelope() {
+        let body = r#"{
+            "response_code": "00",
+            "response_text": "Invoice Created",
+            "description": "Test invoice",
+            "token": "test_jkEdPY8SuG"
+        }"#;
+
+        let response: PaydunyaPaymentsPreProcessingResponse =
+            serde_json::from_str(body).unwrap();
+        assert_eq!(response.response_code, "00");
+        assert_eq!(response.token, "test_jkEdPY8SuG");
+    }
+
+    // ---------------------------------------------------------------
+    // PaydunyaPaymentsResponse JSON deserialization
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn payments_response_deserializes_status_and_id() {
+        let body = r#"{"status": "succeeded", "id": "txn_123"}"#;
+        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.status, PaydunyaPaymentStatus::Succeeded);
+        assert_eq!(parsed.id, "txn_123");
+    }
+
+    #[test]
+    fn payments_response_defaults_status_to_processing() {
+        // Older Paydunya replies sometimes omit `status` entirely; rely on
+        // serde's #[default] to keep parsing successful instead of failing
+        // the attempt.
+        let body = r#"{"id": "txn_456", "status": "processing"}"#;
+        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(parsed.status, PaydunyaPaymentStatus::Processing);
+    }
+}
