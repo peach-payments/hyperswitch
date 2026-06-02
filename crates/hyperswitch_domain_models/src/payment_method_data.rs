@@ -872,6 +872,7 @@ pub enum WalletData {
     GooglePayThirdPartySdk(Box<GooglePayThirdPartySdkData>),
     MbWayRedirect(Box<MbWayRedirection>),
     MobilePayRedirect(Box<MobilePayRedirection>),
+    OrangeMoneyRedirect(Box<OrangeMoneyRedirection>),
     PaypalRedirect(PaypalRedirection),
     PaypalSdk(PayPalWalletData),
     Paze(PazeWalletData),
@@ -1039,6 +1040,15 @@ pub struct MobilePayRedirection {}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct MbWayRedirection {}
+
+/// Payer data for the Orange Money SOFTPAY wallet. Carries an optional OTP
+/// the payer generates out-of-band on their handset (USSD / operator app).
+/// The OTP is only consumed by country variants that require it
+/// (Côte d'Ivoire, Burkina Faso); the others ignore it.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct OrangeMoneyRedirection {
+    pub otp: Option<Secret<String>>,
+}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct GooglePayPaymentMethodInfo {
@@ -2293,6 +2303,11 @@ impl From<api_models::payments::WalletData> for WalletData {
             api_models::payments::WalletData::MobilePayRedirect(_) => {
                 Self::MobilePayRedirect(Box::new(MobilePayRedirection {}))
             }
+            api_models::payments::WalletData::OrangeMoneyRedirect(orange_money_data) => {
+                Self::OrangeMoneyRedirect(Box::new(OrangeMoneyRedirection {
+                    otp: orange_money_data.otp,
+                }))
+            }
             api_models::payments::WalletData::PaypalRedirect(paypal_redirect_data) => {
                 Self::PaypalRedirect(PaypalRedirection {
                     email: paypal_redirect_data.email,
@@ -3275,6 +3290,7 @@ impl GetPaymentMethodType for WalletData {
             Self::BluecodeRedirect {} => api_enums::PaymentMethodType::Bluecode,
             Self::MbWayRedirect(_) => api_enums::PaymentMethodType::MbWay,
             Self::MobilePayRedirect(_) => api_enums::PaymentMethodType::MobilePay,
+            Self::OrangeMoneyRedirect(_) => api_enums::PaymentMethodType::OrangeMoney,
             Self::PaypalRedirect(_) | Self::PaypalSdk(_) => api_enums::PaymentMethodType::Paypal,
             Self::Paze(_) => api_enums::PaymentMethodType::Paze,
             Self::SamsungPay(_) => api_enums::PaymentMethodType::SamsungPay,

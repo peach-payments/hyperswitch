@@ -3763,6 +3763,7 @@ impl GetPaymentMethodType for WalletData {
             }
             Self::MbWayRedirect(_) => api_enums::PaymentMethodType::MbWay,
             Self::MobilePayRedirect(_) => api_enums::PaymentMethodType::MobilePay,
+            Self::OrangeMoneyRedirect(_) => api_enums::PaymentMethodType::OrangeMoney,
             Self::PaypalRedirect(_) | Self::PaypalSdk(_) => api_enums::PaymentMethodType::Paypal,
             Self::Paze(_) => api_enums::PaymentMethodType::Paze,
             Self::SamsungPay(_) => api_enums::PaymentMethodType::SamsungPay,
@@ -5193,6 +5194,13 @@ pub enum WalletData {
     #[schema(title = "MomoRedirect")]
     #[smithy(value_type = "MomoRedirection")]
     MomoRedirect(MomoRedirection),
+    /// The wallet data for Orange Money redirect. Carries an optional one-time
+    /// passcode for the SOFTPAY operators that ask the payer to generate one
+    /// out-of-band (e.g. Orange Money Côte d'Ivoire `#144*82#`, Orange Money
+    /// Burkina Faso app menu).
+    #[schema(title = "OrangeMoneyRedirect")]
+    #[smithy(value_type = "OrangeMoneyRedirection")]
+    OrangeMoneyRedirect(Box<OrangeMoneyRedirection>),
     /// This is for paypal redirection
     #[schema(title = "PaypalRedirect")]
     #[smithy(value_type = "PaypalRedirection")]
@@ -5276,6 +5284,7 @@ impl GetAddressFromPaymentMethodData for WalletData {
             | Self::AliPayRedirect(_)
             | Self::AliPayHkRedirect(_)
             | Self::MomoRedirect(_)
+            | Self::OrangeMoneyRedirect(_)
             | Self::KakaoPayRedirect(_)
             | Self::GoPayRedirect(_)
             | Self::GcashRedirect(_)
@@ -5650,6 +5659,20 @@ pub struct GcashRedirection {}
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct MobilePayRedirection {}
+
+#[derive(
+    Default, Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct OrangeMoneyRedirection {
+    /// One-time passcode the payer generates on their Orange Money handset
+    /// (via USSD or the operator's app) before confirming the SOFTPAY call.
+    /// Required by some country variants (Côte d'Ivoire, Burkina Faso) and
+    /// ignored by the others.
+    #[schema(value_type = Option<String>)]
+    #[smithy(value_type = "Option<String>")]
+    pub otp: Option<Secret<String>>,
+}
 
 #[derive(
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,

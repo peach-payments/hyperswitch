@@ -671,6 +671,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
@@ -809,6 +810,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
@@ -953,6 +955,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
@@ -1091,6 +1094,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),

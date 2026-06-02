@@ -64,6 +64,7 @@ fn get_dir_value_payment_method(
         api_enums::PaymentMethodType::MbWay => Ok(dirval!(WalletType = MbWay)),
         api_enums::PaymentMethodType::MobilePay => Ok(dirval!(WalletType = MobilePay)),
         api_enums::PaymentMethodType::MoovMoney => Ok(dirval!(WalletType = MoovMoney)),
+        api_enums::PaymentMethodType::OrangeMoney => Ok(dirval!(WalletType = OrangeMoney)),
         api_enums::PaymentMethodType::Wave => Ok(dirval!(WalletType = Wave)),
         api_enums::PaymentMethodType::Cashapp => Ok(dirval!(WalletType = Cashapp)),
         api_enums::PaymentMethodType::Multibanco => Ok(dirval!(BankTransferType = Multibanco)),

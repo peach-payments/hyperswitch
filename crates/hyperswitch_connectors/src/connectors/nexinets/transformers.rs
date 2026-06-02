@@ -746,6 +746,7 @@ fn get_wallet_details(
         | WalletData::GooglePayThirdPartySdk(_)
         | WalletData::MbWayRedirect(_)
         | WalletData::MobilePayRedirect(_)
+        | WalletData::OrangeMoneyRedirect(_)
         | WalletData::PaypalSdk(_)
         | WalletData::Paze(_)
         | WalletData::SamsungPay(_)

@@ -198,6 +198,7 @@ fn get_wallet_type(wallet_data: &WalletData) -> Result<String, errors::Connector
         | WalletData::GooglePayThirdPartySdk(_)
         | WalletData::MbWayRedirect(_)
         | WalletData::MobilePayRedirect(_)
+        | WalletData::OrangeMoneyRedirect(_)
         | WalletData::PaypalRedirect(_)
         | WalletData::PaypalSdk(_)
         | WalletData::Paze(_)

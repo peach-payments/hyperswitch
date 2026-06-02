@@ -89,6 +89,7 @@ pub enum WalletType {
     MbWay,
     MobilePay,
     MoovMoney,
+    OrangeMoney,
     Wave,
     WeChatPay,
     SamsungPay,

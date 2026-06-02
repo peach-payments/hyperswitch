@@ -6656,6 +6656,8 @@ payment_method_type = "momo"
 [[paydunya.wallet]]
 payment_method_type = "moov_money"
 [[paydunya.wallet]]
+payment_method_type = "orange_money"
+[[paydunya.wallet]]
 payment_method_type = "wave"
 [paydunya.connector_auth.SignatureKey]
 api_key = "Master Key"
