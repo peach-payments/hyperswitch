@@ -378,6 +378,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                 | WalletDataPaymentMethod::MbWayRedirect(_)
                 | WalletDataPaymentMethod::MobilePayRedirect(_)
                 | WalletDataPaymentMethod::DjamoRedirect(_)
+                | WalletDataPaymentMethod::TMoneyRedirect(_)
                 | WalletDataPaymentMethod::OrangeMoneyRedirect(_)
                 | WalletDataPaymentMethod::PaypalRedirect(_)
                 | WalletDataPaymentMethod::PaypalSdk(_)

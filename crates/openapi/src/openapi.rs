@@ -533,6 +533,7 @@ Never share your secret api keys. Keep them guarded and secure.
         api_models::payments::MbWayRedirection,
         api_models::payments::MobilePayRedirection,
         api_models::payments::DjamoRedirection,
+        api_models::payments::TMoneyRedirection,
         api_models::payments::OrangeMoneyRedirection,
         api_models::payments::WeChatPayRedirection,
         api_models::payments::WeChatPayQr,

@@ -508,6 +508,7 @@ impl
             | WalletData::MbWayRedirect(_)
             | WalletData::MobilePayRedirect(_)
             | WalletData::DjamoRedirect(_)
+            | WalletData::TMoneyRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
             | WalletData::PaypalSdk(_)
             | WalletData::Paze(_)

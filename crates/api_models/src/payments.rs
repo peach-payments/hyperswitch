@@ -3751,6 +3751,7 @@ impl GetPaymentMethodType for WalletData {
             Self::Skrill(_) => api_enums::PaymentMethodType::Skrill,
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
             Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
+            Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,
@@ -5197,6 +5198,12 @@ pub enum WalletData {
     #[schema(title = "DjamoRedirect")]
     #[smithy(value_type = "DjamoRedirection")]
     DjamoRedirect(DjamoRedirection),
+    /// The wallet data for T-Money redirect (Paydunya SOFTPAY, Togo). Carries
+    /// no payer-supplied fields; payer identity is taken from the billing
+    /// details and the operator is fixed to T-Money Togo.
+    #[schema(title = "TMoneyRedirect")]
+    #[smithy(value_type = "TMoneyRedirection")]
+    TMoneyRedirect(TMoneyRedirection),
     /// The wallet data for Momo redirect
     #[schema(title = "MomoRedirect")]
     #[smithy(value_type = "MomoRedirection")]
@@ -5291,6 +5298,7 @@ impl GetAddressFromPaymentMethodData for WalletData {
             | Self::AliPayRedirect(_)
             | Self::AliPayHkRedirect(_)
             | Self::DjamoRedirect(_)
+            | Self::TMoneyRedirect(_)
             | Self::MomoRedirect(_)
             | Self::OrangeMoneyRedirect(_)
             | Self::KakaoPayRedirect(_)
@@ -5643,6 +5651,12 @@ pub struct BluecodeQrRedirect {}
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct DjamoRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct TMoneyRedirection {}
 
 #[derive(
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,

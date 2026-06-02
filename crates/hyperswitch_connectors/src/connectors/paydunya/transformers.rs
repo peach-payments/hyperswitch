@@ -164,6 +164,7 @@ pub enum PaydunyaOperator {
     ExpressoSenegal,
     DjamoCi,
     DjamoSn,
+    TmoneyTogo,
 }
 
 impl PaydunyaOperator {
@@ -192,6 +193,7 @@ impl PaydunyaOperator {
             // Côte d'Ivoire and Senegal share a single Djamo SOFTPAY endpoint;
             // the regional account is selected via the `code_country` field.
             Self::DjamoCi | Self::DjamoSn => "softpay/djamo",
+            Self::TmoneyTogo => "softpay/t-money-togo",
         }
     }
 
@@ -294,6 +296,11 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
                 Ok(Self::DjamoSn)
             }
 
+            // T-Money family — Togo is the only region Paydunya exposes for
+            // T-Money, so any T-Money attempt resolves to the single
+            // `softpay/t-money-togo` endpoint regardless of billing country.
+            (Some(enums::PaymentMethodType::TMoney), _) => Ok(Self::TmoneyTogo),
+
             _ => Err(errors::ConnectorError::NotImplemented(format!(
                 "Paydunya operator resolution for payment_method_type={pm_type:?} country={country:?}"
             ))
@@ -326,6 +333,7 @@ pub enum PaydunyaPaymentsRequest {
     FreeMoneySenegal(PaydunyaFreeMoneySenegalRequest),
     ExpressoSenegal(PaydunyaExpressoSenegalRequest),
     Djamo(PaydunyaDjamoRequest),
+    TmoneyTogo(PaydunyaTmoneyTogoRequest),
 }
 
 #[derive(Debug, Serialize)]
@@ -493,6 +501,14 @@ pub struct PaydunyaDjamoRequest {
     /// account on the shared `softpay/djamo` endpoint.
     pub code_country: &'static str,
     pub djamo_payment_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaydunyaTmoneyTogoRequest {
+    pub name_t_money: Secret<String>,
+    pub email_t_money: Email,
+    pub phone_t_money: Secret<String>,
+    pub payment_token: String,
 }
 
 /// Fields common to every SOFTPAY operator: payer identity, contact info and
@@ -735,6 +751,12 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                     djamo_payment_token: common.payment_token,
                 })
             }
+            PaydunyaOperator::TmoneyTogo => Self::TmoneyTogo(PaydunyaTmoneyTogoRequest {
+                name_t_money: common.full_name,
+                email_t_money: common.email,
+                phone_t_money: common.phone_number,
+                payment_token: common.payment_token,
+            }),
         };
 
         Ok(request)
@@ -1216,6 +1238,10 @@ mod tests {
         // Côte d'Ivoire and Senegal deliberately share one endpoint.
         assert_eq!(PaydunyaOperator::DjamoCi.endpoint(), "softpay/djamo");
         assert_eq!(PaydunyaOperator::DjamoSn.endpoint(), "softpay/djamo");
+        assert_eq!(
+            PaydunyaOperator::TmoneyTogo.endpoint(),
+            "softpay/t-money-togo"
+        );
     }
 
     #[test]
@@ -1224,6 +1250,7 @@ mod tests {
         assert_eq!(PaydunyaOperator::DjamoSn.djamo_code_country(), Some("sn"));
         assert_eq!(PaydunyaOperator::WaveCi.djamo_code_country(), None);
         assert_eq!(PaydunyaOperator::MtnBenin.djamo_code_country(), None);
+        assert_eq!(PaydunyaOperator::TmoneyTogo.djamo_code_country(), None);
     }
 
     #[test]
@@ -1256,6 +1283,7 @@ mod tests {
             PaydunyaOperator::ExpressoSenegal,
             PaydunyaOperator::DjamoCi,
             PaydunyaOperator::DjamoSn,
+            PaydunyaOperator::TmoneyTogo,
         ] {
             assert_eq!(non_mtn.wallet_provider(), None);
         }
@@ -1627,6 +1655,25 @@ mod tests {
         assert_eq!(value["code_country"], "ci");
         assert_eq!(value["djamo_payment_token"], "tok_djamo");
         assert!(value.get("payment_token").is_none());
+    }
+
+    #[test]
+    fn tmoney_togo_request_serializes_with_t_money_prefixed_fields() {
+        // Togo's T-Money SOFTPAY endpoint uses the short `*_t_money` field
+        // names plus the generic `payment_token`. Pin the layout so a rename
+        // regression can't silently drop fields against Paydunya.
+        let req = PaydunyaPaymentsRequest::TmoneyTogo(PaydunyaTmoneyTogoRequest {
+            name_t_money: Secret::new("Camille".to_string()),
+            email_t_money: email("camille@example.com"),
+            phone_t_money: Secret::new("70707070".to_string()),
+            payment_token: "tok_tmoney".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["name_t_money"], "Camille");
+        assert_eq!(value["email_t_money"], "camille@example.com");
+        assert_eq!(value["phone_t_money"], "70707070");
+        assert_eq!(value["payment_token"], "tok_tmoney");
     }
 
     #[test]

@@ -320,6 +320,7 @@ impl ForeignFrom<api_enums::PaymentMethodType> for api_enums::PaymentMethod {
             | api_enums::PaymentMethodType::Gcash
             | api_enums::PaymentMethodType::Momo
             | api_enums::PaymentMethodType::Djamo
+            | api_enums::PaymentMethodType::TMoney
             | api_enums::PaymentMethodType::OrangeMoney
             | api_enums::PaymentMethodType::Wave
             | api_enums::PaymentMethodType::Cashapp

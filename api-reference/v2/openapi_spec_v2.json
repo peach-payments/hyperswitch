@@ -22828,6 +22828,7 @@
           "danamon_va",
           "debit",
           "djamo",
+          "t_money",
           "duit_now",
           "efecty",
           "eft",
@@ -31013,6 +31014,9 @@
       "SwishQrData": {
         "type": "object"
       },
+      "TMoneyRedirection": {
+        "type": "object"
+      },
       "TaxCalculationOverride": {
         "type": "string",
         "enum": [
@@ -32555,6 +32559,18 @@
             "properties": {
               "djamo_redirect": {
                 "$ref": "#/components/schemas/DjamoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "TMoneyRedirect",
+            "required": [
+              "t_money_redirect"
+            ],
+            "properties": {
+              "t_money_redirect": {
+                "$ref": "#/components/schemas/TMoneyRedirection"
               }
             }
           },

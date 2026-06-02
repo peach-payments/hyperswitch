@@ -860,6 +860,7 @@ pub enum WalletData {
     Paysera(Box<PayseraData>),
     Skrill(Box<SkrillData>),
     DjamoRedirect(DjamoRedirection),
+    TMoneyRedirect(TMoneyRedirection),
     MomoRedirect(MomoRedirection),
     KakaoPayRedirect(KakaoPayRedirection),
     GoPayRedirect(GoPayRedirection),
@@ -1033,6 +1034,12 @@ pub struct MomoRedirection {}
 /// fields are needed here.
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct DjamoRedirection {}
+
+/// Payer data for the T-Money SOFTPAY wallet (Paydunya, Togo). The operator is
+/// fixed to T-Money Togo and the payer identity is taken from the billing
+/// details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct TMoneyRedirection {}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct KakaoPayRedirection {}
@@ -2273,6 +2280,9 @@ impl From<api_models::payments::WalletData> for WalletData {
             api_models::payments::WalletData::DjamoRedirect(_) => {
                 Self::DjamoRedirect(DjamoRedirection {})
             }
+            api_models::payments::WalletData::TMoneyRedirect(_) => {
+                Self::TMoneyRedirect(TMoneyRedirection {})
+            }
             api_models::payments::WalletData::MomoRedirect(_) => {
                 Self::MomoRedirect(MomoRedirection {})
             }
@@ -3287,6 +3297,7 @@ impl GetPaymentMethodType for WalletData {
             Self::Skrill(_) => api_enums::PaymentMethodType::Skrill,
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
             Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
+            Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,

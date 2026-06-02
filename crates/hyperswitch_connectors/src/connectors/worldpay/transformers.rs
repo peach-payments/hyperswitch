@@ -175,6 +175,7 @@ fn fetch_payment_instrument(
             | WalletData::MbWayRedirect(_)
             | WalletData::MobilePayRedirect(_)
             | WalletData::DjamoRedirect(_)
+            | WalletData::TMoneyRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
             | WalletData::PaypalRedirect(_)
             | WalletData::PaypalSdk(_)
