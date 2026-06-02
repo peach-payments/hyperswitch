@@ -151,6 +151,9 @@ pub enum PaydunyaOperator {
     MtnCameroun,
     MoovBenin,
     MoovCi,
+    MoovMali,
+    MoovTogo,
+    MoovBurkina,
     OrangeMoneyCi,
     OrangeMoneySenegal,
     OrangeMoneyMali,
@@ -170,6 +173,9 @@ impl PaydunyaOperator {
             Self::MtnCameroun => "softpay/mtn-cameroun",
             Self::MoovBenin => "softpay/moov-benin",
             Self::MoovCi => "softpay/moov-ci",
+            Self::MoovMali => "softpay/moov-mali",
+            Self::MoovTogo => "softpay/moov-togo",
+            Self::MoovBurkina => "softpay/moov-burkina",
             Self::OrangeMoneyCi => "softpay/orange-money-ci",
             // Paydunya kept the legacy "orange-money-senegal" route alive but
             // their docs explicitly steer integrators toward this "new-…"
@@ -228,6 +234,15 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
             (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::CI)) => {
                 Ok(Self::MoovCi)
             }
+            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::ML)) => {
+                Ok(Self::MoovMali)
+            }
+            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::TG)) => {
+                Ok(Self::MoovTogo)
+            }
+            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::BF)) => {
+                Ok(Self::MoovBurkina)
+            }
 
             // Wave family
             (Some(enums::PaymentMethodType::Wave), Some(enums::CountryAlpha2::SN)) => {
@@ -273,6 +288,9 @@ pub enum PaydunyaPaymentsRequest {
     MtnCameroun(PaydunyaMtnCamerounRequest),
     MoovBenin(PaydunyaMoovBeninRequest),
     MoovCi(PaydunyaMoovCiRequest),
+    MoovMali(PaydunyaMoovMaliRequest),
+    MoovTogo(PaydunyaMoovTogoRequest),
+    MoovBurkina(PaydunyaMoovBurkinaRequest),
     OrangeMoneyCi(PaydunyaOrangeMoneyCiRequest),
     OrangeMoneySenegal(PaydunyaOrangeMoneySenegalRequest),
     OrangeMoneyMali(PaydunyaOrangeMoneyMaliRequest),
@@ -324,6 +342,40 @@ pub struct PaydunyaMoovCiRequest {
     pub moov_ci_email: Email,
     pub moov_ci_phone_number: Secret<String>,
     pub payment_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaydunyaMoovMaliRequest {
+    pub moov_ml_customer_fullname: Secret<String>,
+    pub moov_ml_email: Email,
+    pub moov_ml_phone_number: Secret<String>,
+    /// Free-form payer address. Paydunya's reference payload sends the city
+    /// ("Bamako"); we prefer the billing city and fall back to address line1.
+    pub moov_ml_customer_address: Secret<String>,
+    pub payment_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaydunyaMoovTogoRequest {
+    pub moov_togo_customer_fullname: Secret<String>,
+    pub moov_togo_email: Email,
+    /// Free-form payer address, mirroring the Moov Mali endpoint. We prefer
+    /// the billing city and fall back to address line1.
+    pub moov_togo_customer_address: Secret<String>,
+    pub moov_togo_phone_number: Secret<String>,
+    pub payment_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaydunyaMoovBurkinaRequest {
+    // Burkina's Moov endpoint expects a camelCased full-name key and an
+    // operator-prefixed `*_payment_token` (unlike the generic `payment_token`
+    // used by the Mali/Togo endpoints).
+    #[serde(rename = "moov_burkina_faso_fullName")]
+    pub moov_burkina_faso_full_name: Secret<String>,
+    pub moov_burkina_faso_email: Email,
+    pub moov_burkina_faso_phone_number: Secret<String>,
+    pub moov_burkina_faso_payment_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,6 +478,25 @@ fn extract_orange_money_otp(payment_method_data: &PaymentMethodData) -> Option<S
     }
 }
 
+/// Resolve the free-form payer address required by some SOFTPAY endpoints
+/// (Orange Money Mali, Moov Mali, Moov Togo). Paydunya's reference payloads
+/// use the city, so we prefer the billing city and fall back to address line1.
+fn billing_customer_address(
+    item: &PaydunyaRouterData<&PaymentsAuthorizeRouterData>,
+) -> Result<Secret<String>, error_stack::Report<errors::ConnectorError>> {
+    let address = item
+        .router_data
+        .get_optional_billing()
+        .and_then(|b| b.address.as_ref())
+        .ok_or(errors::ConnectorError::MissingRequiredField {
+            field_name: "billing.address",
+        })?;
+    address
+        .get_city()
+        .map(|city| Secret::new(city.clone()))
+        .or_else(|_| address.get_line1().cloned())
+}
+
 impl CommonAuthorizeFields {
     fn try_from_router_data(
         item: &PaydunyaRouterData<&PaymentsAuthorizeRouterData>,
@@ -505,6 +576,26 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 moov_ci_phone_number: common.phone_number,
                 payment_token: common.payment_token,
             }),
+            PaydunyaOperator::MoovMali => Self::MoovMali(PaydunyaMoovMaliRequest {
+                moov_ml_customer_fullname: common.full_name,
+                moov_ml_email: common.email,
+                moov_ml_phone_number: common.phone_number,
+                moov_ml_customer_address: billing_customer_address(item)?,
+                payment_token: common.payment_token,
+            }),
+            PaydunyaOperator::MoovTogo => Self::MoovTogo(PaydunyaMoovTogoRequest {
+                moov_togo_customer_fullname: common.full_name,
+                moov_togo_email: common.email,
+                moov_togo_customer_address: billing_customer_address(item)?,
+                moov_togo_phone_number: common.phone_number,
+                payment_token: common.payment_token,
+            }),
+            PaydunyaOperator::MoovBurkina => Self::MoovBurkina(PaydunyaMoovBurkinaRequest {
+                moov_burkina_faso_full_name: common.full_name,
+                moov_burkina_faso_email: common.email,
+                moov_burkina_faso_phone_number: common.phone_number,
+                moov_burkina_faso_payment_token: common.payment_token,
+            }),
             PaydunyaOperator::OrangeMoneyCi => {
                 // Côte d'Ivoire requires the payer to generate an OTP via
                 // USSD `#144*82#` (option 2) before confirming. The merchant
@@ -555,23 +646,11 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 // prefer the billing city and fall back to address line1 when
                 // the city isn't provided. Both come from the same billing
                 // block we already resolved for the common fields above.
-                let address = item
-                    .router_data
-                    .get_optional_billing()
-                    .and_then(|b| b.address.as_ref())
-                    .ok_or(errors::ConnectorError::MissingRequiredField {
-                        field_name: "billing.address",
-                    })?;
-                let customer_address = address
-                    .get_city()
-                    .map(|city| Secret::new(city.clone()))
-                    .or_else(|_| address.get_line1().cloned())?;
-
                 Self::OrangeMoneyMali(PaydunyaOrangeMoneyMaliRequest {
                     orange_money_mali_customer_fullname: common.full_name,
                     orange_money_mali_email: common.email,
                     orange_money_mali_phone_number: common.phone_number,
-                    orange_money_mali_customer_address: customer_address,
+                    orange_money_mali_customer_address: billing_customer_address(item)?,
                     payment_token: common.payment_token,
                 })
             }
@@ -1046,6 +1125,12 @@ mod tests {
         );
         assert_eq!(PaydunyaOperator::MoovBenin.endpoint(), "softpay/moov-benin");
         assert_eq!(PaydunyaOperator::MoovCi.endpoint(), "softpay/moov-ci");
+        assert_eq!(PaydunyaOperator::MoovMali.endpoint(), "softpay/moov-mali");
+        assert_eq!(PaydunyaOperator::MoovTogo.endpoint(), "softpay/moov-togo");
+        assert_eq!(
+            PaydunyaOperator::MoovBurkina.endpoint(),
+            "softpay/moov-burkina"
+        );
         assert_eq!(
             PaydunyaOperator::OrangeMoneyCi.endpoint(),
             "softpay/orange-money-ci"
@@ -1094,6 +1179,9 @@ mod tests {
         for non_mtn in [
             PaydunyaOperator::MoovBenin,
             PaydunyaOperator::MoovCi,
+            PaydunyaOperator::MoovMali,
+            PaydunyaOperator::MoovTogo,
+            PaydunyaOperator::MoovBurkina,
             PaydunyaOperator::OrangeMoneyCi,
             PaydunyaOperator::OrangeMoneySenegal,
             PaydunyaOperator::OrangeMoneyMali,
@@ -1540,6 +1628,65 @@ mod tests {
         assert_eq!(value["orange_money_ci_phone_number"], "2250777568646");
         assert_eq!(value["orange_money_ci_otp"], "8562");
         assert_eq!(value["payment_token"], "tok_ci");
+    }
+
+    #[test]
+    fn moov_mali_request_serializes_with_ml_prefixed_fields_and_address() {
+        let req = PaydunyaPaymentsRequest::MoovMali(PaydunyaMoovMaliRequest {
+            moov_ml_customer_fullname: Secret::new("John Doe".to_string()),
+            moov_ml_email: email("john@example.com"),
+            moov_ml_phone_number: Secret::new("90239415".to_string()),
+            moov_ml_customer_address: Secret::new("Bamako".to_string()),
+            payment_token: "tok_moov_ml".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["moov_ml_customer_fullname"], "John Doe");
+        assert_eq!(value["moov_ml_email"], "john@example.com");
+        assert_eq!(value["moov_ml_phone_number"], "90239415");
+        assert_eq!(value["moov_ml_customer_address"], "Bamako");
+        assert_eq!(value["payment_token"], "tok_moov_ml");
+    }
+
+    #[test]
+    fn moov_togo_request_serializes_with_togo_prefixed_fields_and_address() {
+        let req = PaydunyaPaymentsRequest::MoovTogo(PaydunyaMoovTogoRequest {
+            moov_togo_customer_fullname: Secret::new("Kofi Mensah".to_string()),
+            moov_togo_email: email("kofi@example.com"),
+            moov_togo_customer_address: Secret::new("Lome".to_string()),
+            moov_togo_phone_number: Secret::new("12345678".to_string()),
+            payment_token: "tok_moov_togo".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["moov_togo_customer_fullname"], "Kofi Mensah");
+        assert_eq!(value["moov_togo_email"], "kofi@example.com");
+        assert_eq!(value["moov_togo_customer_address"], "Lome");
+        assert_eq!(value["moov_togo_phone_number"], "12345678");
+        assert_eq!(value["payment_token"], "tok_moov_togo");
+    }
+
+    #[test]
+    fn moov_burkina_request_uses_camel_case_name_and_prefixed_token() {
+        // Burkina's Moov endpoint is the odd one out: the full-name key is
+        // camelCased (`moov_burkina_faso_fullName`) and the invoice token
+        // rides on an operator-prefixed `moov_burkina_faso_payment_token`
+        // rather than the generic `payment_token`. Pin both so a rename
+        // regression can't silently drop fields against Paydunya.
+        let req = PaydunyaPaymentsRequest::MoovBurkina(PaydunyaMoovBurkinaRequest {
+            moov_burkina_faso_full_name: Secret::new("Fallou".to_string()),
+            moov_burkina_faso_email: email("fallou@example.com"),
+            moov_burkina_faso_phone_number: Secret::new("51765664".to_string()),
+            moov_burkina_faso_payment_token: "tok_moov_bf".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert!(value.get("moov_burkina_faso_full_name").is_none());
+        assert_eq!(value["moov_burkina_faso_fullName"], "Fallou");
+        assert_eq!(value["moov_burkina_faso_email"], "fallou@example.com");
+        assert_eq!(value["moov_burkina_faso_phone_number"], "51765664");
+        assert_eq!(value["moov_burkina_faso_payment_token"], "tok_moov_bf");
+        assert!(value.get("payment_token").is_none());
     }
 
     // ---------------------------------------------------------------
