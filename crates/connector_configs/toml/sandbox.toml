@@ -7569,6 +7569,18 @@ payment_experience = "redirect_to_url"
 api_key = "Password"
 key1 = "Username"
 
+[paydunya]
+[[paydunya.wallet]]
+payment_method_type = "momo"
+[[paydunya.wallet]]
+payment_method_type = "moov_money"
+[[paydunya.wallet]]
+payment_method_type = "wave"
+[paydunya.connector_auth.SignatureKey]
+api_key = "Master Key"
+api_secret = "Private Key"
+key1 = "Token"
+
 [paysafe]
 [[paysafe.credit]]
 payment_method_type = "Mastercard"
@@ -8535,7 +8547,3 @@ key1 = "Merchant Id"
 payment_method_type = "eft_debit_order"
 [sanlam.connector_webhook_details]
 merchant_secret="Source verification key"
-
-[paydunya]
-[paydunya.connector_auth.HeaderKey]
-api_key = "API Key"

@@ -2,7 +2,10 @@ use common_enums::enums;
 use common_utils::{pii::Email, types::MinorUnit};
 use hyperswitch_domain_models::{
     router_data::{ConnectorAuthType, ErrorResponse, RouterData},
-    router_flow_types::{refunds::{Execute, RSync}, PSync},
+    router_flow_types::{
+        refunds::{Execute, RSync},
+        PSync,
+    },
     router_request_types::{PaymentsSyncData, ResponseId},
     router_response_types::{PaymentsResponseData, PreprocessingResponseId, RefundsResponseData},
     types::{PaymentsAuthorizeRouterData, PaymentsPreProcessingRouterData, RefundsRouterData},
@@ -18,7 +21,10 @@ use crate::{
     types::{
         PaymentsPreprocessingResponseRouterData, RefundsResponseRouterData, ResponseRouterData,
     },
-    utils::{AddressDetailsData, PaymentsAuthorizeRequestData, PaymentsPreProcessingRequestData, RouterData as _},
+    utils::{
+        AddressDetailsData, PaymentsAuthorizeRequestData, PaymentsPreProcessingRequestData,
+        RouterData as _,
+    },
 };
 
 pub mod paydunya_constants {
@@ -185,10 +191,10 @@ impl PaydunyaOperator {
 impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(item: &PaymentsAuthorizeRouterData) -> Result<Self, Self::Error> {
-        // Hyperswitch does not (yet) carry first-class enum variants for Wave
-        // or MTN Benin / MTN CI / etc., so we derive the Paydunya operator
-        // from `(payment_method_type, billing.country)`. As new variants get
-        // added to `PaymentMethodType`, prefer matching on those directly.
+        // Each Paydunya operator is selected from
+        // `(payment_method_type, billing.country)` — the payment-method-type
+        // picks the carrier family (MTN MoMo / Moov Money / Wave) and the
+        // country picks the regional endpoint within that family.
         let pm_type = item.request.payment_method_type;
         let country = item.get_optional_billing_country();
 
@@ -208,20 +214,18 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
             (Some(enums::PaymentMethodType::Momo), _) => Ok(Self::MtnBenin),
 
             // Moov family
-            (Some(enums::PaymentMethodType::MobilePay), Some(enums::CountryAlpha2::BJ)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::BJ)) => {
                 Ok(Self::MoovBenin)
             }
-            (Some(enums::PaymentMethodType::MobilePay), Some(enums::CountryAlpha2::CI)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::CI)) => {
                 Ok(Self::MoovCi)
             }
 
-            // Wave family — no dedicated PaymentMethodType yet, route by
-            // country when the upstream type is MbWay (closest mobile-wallet
-            // proxy in the current enum).
-            (Some(enums::PaymentMethodType::MbWay), Some(enums::CountryAlpha2::SN)) => {
+            // Wave family
+            (Some(enums::PaymentMethodType::Wave), Some(enums::CountryAlpha2::SN)) => {
                 Ok(Self::WaveSenegal)
             }
-            (Some(enums::PaymentMethodType::MbWay), Some(enums::CountryAlpha2::CI)) => {
+            (Some(enums::PaymentMethodType::Wave), Some(enums::CountryAlpha2::CI)) => {
                 Ok(Self::WaveCi)
             }
 
@@ -408,9 +412,7 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 mtn_benin_customer_fullname: common.full_name,
                 mtn_benin_email: common.email,
                 mtn_benin_phone_number: common.phone_number,
-                mtn_benin_wallet_provider: operator
-                    .wallet_provider()
-                    .unwrap_or("MTNBENIN"),
+                mtn_benin_wallet_provider: operator.wallet_provider().unwrap_or("MTNBENIN"),
                 payment_token: common.payment_token,
             }),
             PaydunyaOperator::MtnCi => Self::MtnCi(PaydunyaMtnCiRequest {
@@ -424,9 +426,7 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 mtn_cameroun_customer_fullname: common.full_name,
                 mtn_cameroun_email: common.email,
                 mtn_cameroun_phone_number: common.phone_number,
-                mtn_cameroun_wallet_provider: operator
-                    .wallet_provider()
-                    .unwrap_or("MTNCAMEROUN"),
+                mtn_cameroun_wallet_provider: operator.wallet_provider().unwrap_or("MTNCAMEROUN"),
                 payment_token: common.payment_token,
             }),
             PaydunyaOperator::MoovBenin => Self::MoovBenin(PaydunyaMoovBeninRequest {
@@ -506,12 +506,12 @@ impl TryFrom<&ConnectorAuthType> for PaydunyaAuthType {
         match auth_type {
             ConnectorAuthType::SignatureKey {
                 api_key,
-                key1,
                 api_secret,
+                key1,
             } => Ok(Self {
                 master_key: api_key.to_owned(),
-                private_key: key1.to_owned(),
-                token: api_secret.to_owned(),
+                private_key: api_secret.to_owned(),
+                token: key1.to_owned(),
             }),
             _ => Err(errors::ConnectorError::FailedToObtainAuthType.into()),
         }
@@ -662,7 +662,8 @@ impl PaydunyaSyncResponse {
     }
 }
 
-impl TryFrom<ResponseRouterData<PSync, PaydunyaSyncResponse, PaymentsSyncData, PaymentsResponseData>>
+impl
+    TryFrom<ResponseRouterData<PSync, PaydunyaSyncResponse, PaymentsSyncData, PaymentsResponseData>>
     for RouterData<PSync, PaymentsSyncData, PaymentsResponseData>
 {
     type Error = error_stack::Report<errors::ConnectorError>;
@@ -954,7 +955,10 @@ mod tests {
     fn wallet_provider_is_set_only_for_mtn_family() {
         // Only the MTN SOFTPAY endpoints require the `*_wallet_provider`
         // discriminator — every other operator must omit it (returns None).
-        assert_eq!(PaydunyaOperator::MtnBenin.wallet_provider(), Some("MTNBENIN"));
+        assert_eq!(
+            PaydunyaOperator::MtnBenin.wallet_provider(),
+            Some("MTNBENIN")
+        );
         assert_eq!(PaydunyaOperator::MtnCi.wallet_provider(), Some("MTNCI"));
         assert_eq!(
             PaydunyaOperator::MtnCameroun.wallet_provider(),
@@ -1097,7 +1101,10 @@ mod tests {
                 description: Some("err-description".to_string()),
             }),
         );
-        assert_eq!(response.failure_reason().as_deref(), Some("err-description"));
+        assert_eq!(
+            response.failure_reason().as_deref(),
+            Some("err-description")
+        );
     }
 
     #[test]
@@ -1319,13 +1326,12 @@ mod tests {
         // generic field names (`customer_name`, `customer_email`,
         // `phone_number`, `invoice_token`) — pin this so the connector
         // never silently regresses to operator-prefixed names.
-        let req =
-            PaydunyaPaymentsRequest::OrangeMoneySenegal(PaydunyaOrangeMoneySenegalRequest {
-                customer_name: Secret::new("Awa Ndiaye".to_string()),
-                customer_email: email("awa@example.com"),
-                phone_number: Secret::new("221770000000".to_string()),
-                invoice_token: "tok_om".to_string(),
-            });
+        let req = PaydunyaPaymentsRequest::OrangeMoneySenegal(PaydunyaOrangeMoneySenegalRequest {
+            customer_name: Secret::new("Awa Ndiaye".to_string()),
+            customer_email: email("awa@example.com"),
+            phone_number: Secret::new("221770000000".to_string()),
+            invoice_token: "tok_om".to_string(),
+        });
 
         let value = serde_json::to_value(&req).unwrap();
         assert_eq!(value["customer_name"], "Awa Ndiaye");
@@ -1377,8 +1383,7 @@ mod tests {
             "token": "test_jkEdPY8SuG"
         }"#;
 
-        let response: PaydunyaPaymentsPreProcessingResponse =
-            serde_json::from_str(body).unwrap();
+        let response: PaydunyaPaymentsPreProcessingResponse = serde_json::from_str(body).unwrap();
         assert_eq!(response.response_code, "00");
         assert_eq!(response.token, "test_jkEdPY8SuG");
     }

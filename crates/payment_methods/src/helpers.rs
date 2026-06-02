@@ -122,6 +122,7 @@ pub fn validate_payment_method_type_against_payment_method(
                 | api_enums::PaymentMethodType::Dana
                 | api_enums::PaymentMethodType::MbWay
                 | api_enums::PaymentMethodType::MobilePay
+                | api_enums::PaymentMethodType::MoovMoney
                 | api_enums::PaymentMethodType::SamsungPay
                 | api_enums::PaymentMethodType::Twint
                 | api_enums::PaymentMethodType::Vipps
@@ -131,6 +132,7 @@ pub fn validate_payment_method_type_against_payment_method(
                 | api_enums::PaymentMethodType::GoPay
                 | api_enums::PaymentMethodType::Gcash
                 | api_enums::PaymentMethodType::Momo
+                | api_enums::PaymentMethodType::Wave
                 | api_enums::PaymentMethodType::KakaoPay
                 | api_enums::PaymentMethodType::Cashapp
                 | api_enums::PaymentMethodType::Mifinity

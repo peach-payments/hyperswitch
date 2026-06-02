@@ -88,6 +88,8 @@ pub enum WalletType {
     AliPayHk,
     MbWay,
     MobilePay,
+    MoovMoney,
+    Wave,
     WeChatPay,
     SamsungPay,
     GoPay,

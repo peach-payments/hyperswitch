@@ -1849,6 +1849,8 @@ impl From<PaymentMethodType> for PaymentMethod {
             PaymentMethodType::MobilePay => Self::Wallet,
             PaymentMethodType::Momo => Self::Wallet,
             PaymentMethodType::MomoAtm => Self::CardRedirect,
+            PaymentMethodType::MoovMoney => Self::Wallet,
+            PaymentMethodType::Wave => Self::Wallet,
             PaymentMethodType::Multibanco => Self::BankTransfer,
             PaymentMethodType::MandiriVa => Self::BankTransfer,
             PaymentMethodType::Interac => Self::BankRedirect,
