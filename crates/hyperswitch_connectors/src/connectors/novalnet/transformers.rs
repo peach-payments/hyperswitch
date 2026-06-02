@@ -395,6 +395,7 @@ impl TryFrom<&NovalnetRouterData<&PaymentsAuthorizeRouterData>> for NovalnetPaym
                     | WalletDataPaymentMethod::GooglePayThirdPartySdk(_)
                     | WalletDataPaymentMethod::MbWayRedirect(_)
                     | WalletDataPaymentMethod::MobilePayRedirect(_)
+                    | WalletDataPaymentMethod::DjamoRedirect(_)
                     | WalletDataPaymentMethod::OrangeMoneyRedirect(_)
                     | WalletDataPaymentMethod::RevolutPay(_) => {
                         Err(errors::ConnectorError::NotImplemented(
@@ -1790,6 +1791,7 @@ impl TryFrom<&SetupMandateRouterData> for NovalnetPaymentsRequest {
                 | WalletDataPaymentMethod::GooglePayThirdPartySdk(_)
                 | WalletDataPaymentMethod::MbWayRedirect(_)
                 | WalletDataPaymentMethod::MobilePayRedirect(_)
+                | WalletDataPaymentMethod::DjamoRedirect(_)
                 | WalletDataPaymentMethod::OrangeMoneyRedirect(_)
                 | WalletDataPaymentMethod::RevolutPay(_) => {
                     Err(errors::ConnectorError::NotImplemented(

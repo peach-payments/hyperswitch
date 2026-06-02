@@ -671,6 +671,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
                         | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
@@ -810,6 +811,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
                         | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
@@ -955,6 +957,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
                         | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
@@ -1094,6 +1097,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::OpenBanking
                         | common_enums::PaymentMethodType::NetworkToken
                         | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
                         | common_enums::PaymentMethodType::OrangeMoney
                         | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {

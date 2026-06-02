@@ -377,6 +377,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                 | WalletDataPaymentMethod::GooglePayThirdPartySdk(_)
                 | WalletDataPaymentMethod::MbWayRedirect(_)
                 | WalletDataPaymentMethod::MobilePayRedirect(_)
+                | WalletDataPaymentMethod::DjamoRedirect(_)
                 | WalletDataPaymentMethod::OrangeMoneyRedirect(_)
                 | WalletDataPaymentMethod::PaypalRedirect(_)
                 | WalletDataPaymentMethod::PaypalSdk(_)

@@ -2557,6 +2557,7 @@ pub enum PaymentMethodDataType {
     GooglePayThirdPartySdk,
     MbWayRedirect,
     MobilePayRedirect,
+    DjamoRedirect,
     OrangeMoneyRedirect,
     PaypalRedirect,
     PaypalSdk,
@@ -2703,6 +2704,7 @@ impl From<domain::payments::PaymentMethodData> for PaymentMethodDataType {
                 }
                 domain::payments::WalletData::MbWayRedirect(_) => Self::MbWayRedirect,
                 domain::payments::WalletData::MobilePayRedirect(_) => Self::MobilePayRedirect,
+                domain::payments::WalletData::DjamoRedirect(_) => Self::DjamoRedirect,
                 domain::payments::WalletData::OrangeMoneyRedirect(_) => Self::OrangeMoneyRedirect,
                 domain::payments::WalletData::PaypalRedirect(_) => Self::PaypalRedirect,
                 domain::payments::WalletData::PaypalSdk(_) => Self::PaypalSdk,

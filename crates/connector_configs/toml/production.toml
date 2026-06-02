@@ -6652,6 +6652,8 @@ key1 = "Username"
 
 [paydunya]
 [[paydunya.wallet]]
+payment_method_type = "djamo"
+[[paydunya.wallet]]
 payment_method_type = "momo"
 [[paydunya.wallet]]
 payment_method_type = "moov_money"

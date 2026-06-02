@@ -980,6 +980,7 @@ impl TryFrom<enums::PaymentMethodType> for StripePaymentMethodType {
             | enums::PaymentMethodType::OpenBanking
             | enums::PaymentMethodType::NetworkToken
             | enums::PaymentMethodType::MoovMoney
+            | enums::PaymentMethodType::Djamo
             | enums::PaymentMethodType::OrangeMoney
             | enums::PaymentMethodType::Wave => Err(ConnectorError::NotImplemented(
                 get_unimplemented_payment_method_error_message("stripe"),
@@ -1303,6 +1304,7 @@ fn get_stripe_payment_method_type_from_wallet_data(
         | WalletData::GooglePayRedirect(_)
         | WalletData::GooglePayThirdPartySdk(_)
         | WalletData::MbWayRedirect(_)
+        | WalletData::DjamoRedirect(_)
         | WalletData::OrangeMoneyRedirect(_)
         | WalletData::PaypalSdk(_)
         | WalletData::Paze(_)
@@ -1832,6 +1834,7 @@ impl TryFrom<(&WalletData, Option<PaymentMethodToken>)> for StripePaymentMethodD
             | WalletData::GooglePayRedirect(_)
             | WalletData::GooglePayThirdPartySdk(_)
             | WalletData::MbWayRedirect(_)
+            | WalletData::DjamoRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
             | WalletData::PaypalSdk(_)
             | WalletData::Paze(_)

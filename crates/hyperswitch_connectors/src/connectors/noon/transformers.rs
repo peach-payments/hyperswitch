@@ -382,6 +382,7 @@ impl TryFrom<&NoonRouterData<&PaymentsAuthorizeRouterData>> for NoonPaymentsRequ
                         | WalletData::GooglePayThirdPartySdk(_)
                         | WalletData::MbWayRedirect(_)
                         | WalletData::MobilePayRedirect(_)
+                        | WalletData::DjamoRedirect(_)
                         | WalletData::OrangeMoneyRedirect(_)
                         | WalletData::PaypalSdk(_)
                         | WalletData::Paze(_)

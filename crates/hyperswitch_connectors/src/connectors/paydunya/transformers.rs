@@ -162,6 +162,8 @@ pub enum PaydunyaOperator {
     WaveCi,
     FreeMoneySenegal,
     ExpressoSenegal,
+    DjamoCi,
+    DjamoSn,
 }
 
 impl PaydunyaOperator {
@@ -187,6 +189,9 @@ impl PaydunyaOperator {
             Self::WaveCi => "softpay/wave-ci",
             Self::FreeMoneySenegal => "softpay/free-money-senegal",
             Self::ExpressoSenegal => "softpay/expresso-senegal",
+            // Côte d'Ivoire and Senegal share a single Djamo SOFTPAY endpoint;
+            // the regional account is selected via the `code_country` field.
+            Self::DjamoCi | Self::DjamoSn => "softpay/djamo",
         }
     }
 
@@ -197,6 +202,17 @@ impl PaydunyaOperator {
             Self::MtnBenin => Some("MTNBENIN"),
             Self::MtnCi => Some("MTNCI"),
             Self::MtnCameroun => Some("MTNCAMEROUN"),
+            _ => None,
+        }
+    }
+
+    /// ISO-3166 alpha-2 (lowercased) discriminator the shared Djamo SOFTPAY
+    /// endpoint uses to pick the regional account ("ci" / "sn"). `None` for
+    /// every non-Djamo operator.
+    pub fn djamo_code_country(self) -> Option<&'static str> {
+        match self {
+            Self::DjamoCi => Some("ci"),
+            Self::DjamoSn => Some("sn"),
             _ => None,
         }
     }
@@ -268,6 +284,16 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
                 Ok(Self::OrangeMoneyBurkina)
             }
 
+            // Djamo family — Côte d'Ivoire and Senegal share one SOFTPAY
+            // endpoint (`softpay/djamo`); the regional account is picked via
+            // the `code_country` field resolved off the billing country.
+            (Some(enums::PaymentMethodType::Djamo), Some(enums::CountryAlpha2::CI)) => {
+                Ok(Self::DjamoCi)
+            }
+            (Some(enums::PaymentMethodType::Djamo), Some(enums::CountryAlpha2::SN)) => {
+                Ok(Self::DjamoSn)
+            }
+
             _ => Err(errors::ConnectorError::NotImplemented(format!(
                 "Paydunya operator resolution for payment_method_type={pm_type:?} country={country:?}"
             ))
@@ -299,6 +325,7 @@ pub enum PaydunyaPaymentsRequest {
     WaveCi(PaydunyaWaveCiRequest),
     FreeMoneySenegal(PaydunyaFreeMoneySenegalRequest),
     ExpressoSenegal(PaydunyaExpressoSenegalRequest),
+    Djamo(PaydunyaDjamoRequest),
 }
 
 #[derive(Debug, Serialize)]
@@ -452,6 +479,20 @@ pub struct PaydunyaExpressoSenegalRequest {
     pub expresso_sn_email: Email,
     pub expresso_sn_phone: Secret<String>,
     pub payment_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaydunyaDjamoRequest {
+    // Djamo's SOFTPAY endpoint expects a camelCased full-name key and the
+    // operator-prefixed `djamo_payment_token` (not the generic `payment_token`).
+    #[serde(rename = "djamo_fullName")]
+    pub djamo_full_name: Secret<String>,
+    pub djamo_email: Email,
+    pub djamo_phone: Secret<String>,
+    /// Lowercased ISO-3166 alpha-2 country ("ci" / "sn") selecting the regional
+    /// account on the shared `softpay/djamo` endpoint.
+    pub code_country: &'static str,
+    pub djamo_payment_token: String,
 }
 
 /// Fields common to every SOFTPAY operator: payer identity, contact info and
@@ -680,6 +721,18 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                     expresso_sn_email: common.email,
                     expresso_sn_phone: common.phone_number,
                     payment_token: common.payment_token,
+                })
+            }
+            PaydunyaOperator::DjamoCi | PaydunyaOperator::DjamoSn => {
+                // Both regions hit `softpay/djamo`; the regional account is
+                // selected via `code_country` ("ci"/"sn") derived from the
+                // resolved operator.
+                Self::Djamo(PaydunyaDjamoRequest {
+                    djamo_full_name: common.full_name,
+                    djamo_email: common.email,
+                    djamo_phone: common.phone_number,
+                    code_country: operator.djamo_code_country().unwrap_or("ci"),
+                    djamo_payment_token: common.payment_token,
                 })
             }
         };
@@ -1160,6 +1213,17 @@ mod tests {
             PaydunyaOperator::ExpressoSenegal.endpoint(),
             "softpay/expresso-senegal"
         );
+        // Côte d'Ivoire and Senegal deliberately share one endpoint.
+        assert_eq!(PaydunyaOperator::DjamoCi.endpoint(), "softpay/djamo");
+        assert_eq!(PaydunyaOperator::DjamoSn.endpoint(), "softpay/djamo");
+    }
+
+    #[test]
+    fn djamo_code_country_is_set_only_for_djamo_family() {
+        assert_eq!(PaydunyaOperator::DjamoCi.djamo_code_country(), Some("ci"));
+        assert_eq!(PaydunyaOperator::DjamoSn.djamo_code_country(), Some("sn"));
+        assert_eq!(PaydunyaOperator::WaveCi.djamo_code_country(), None);
+        assert_eq!(PaydunyaOperator::MtnBenin.djamo_code_country(), None);
     }
 
     #[test]
@@ -1190,6 +1254,8 @@ mod tests {
             PaydunyaOperator::WaveCi,
             PaydunyaOperator::FreeMoneySenegal,
             PaydunyaOperator::ExpressoSenegal,
+            PaydunyaOperator::DjamoCi,
+            PaydunyaOperator::DjamoSn,
         ] {
             assert_eq!(non_mtn.wallet_provider(), None);
         }
@@ -1538,6 +1604,29 @@ mod tests {
         assert!(value.get("expresso_sn_full_name").is_none());
         assert_eq!(value["expresso_sn_fullName"], "Awa Ndiaye");
         assert_eq!(value["payment_token"], "tok_expresso");
+    }
+
+    #[test]
+    fn djamo_request_renames_full_name_and_carries_code_country() {
+        // Djamo's SOFTPAY endpoint expects `djamo_fullName` (camelCase), an
+        // operator-prefixed `djamo_payment_token`, and a `code_country`
+        // discriminator that routes the shared endpoint to the right region.
+        let req = PaydunyaPaymentsRequest::Djamo(PaydunyaDjamoRequest {
+            djamo_full_name: Secret::new("Camille Coulibaly".to_string()),
+            djamo_email: email("camille@example.com"),
+            djamo_phone: Secret::new("0777568646".to_string()),
+            code_country: "ci",
+            djamo_payment_token: "tok_djamo".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert!(value.get("djamo_full_name").is_none());
+        assert_eq!(value["djamo_fullName"], "Camille Coulibaly");
+        assert_eq!(value["djamo_email"], "camille@example.com");
+        assert_eq!(value["djamo_phone"], "0777568646");
+        assert_eq!(value["code_country"], "ci");
+        assert_eq!(value["djamo_payment_token"], "tok_djamo");
+        assert!(value.get("payment_token").is_none());
     }
 
     #[test]

@@ -859,6 +859,7 @@ pub enum WalletData {
     BluecodeRedirect {},
     Paysera(Box<PayseraData>),
     Skrill(Box<SkrillData>),
+    DjamoRedirect(DjamoRedirection),
     MomoRedirect(MomoRedirection),
     KakaoPayRedirect(KakaoPayRedirection),
     GoPayRedirect(GoPayRedirection),
@@ -1025,6 +1026,13 @@ pub struct SkrillData {}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct MomoRedirection {}
+
+/// Payer data for the Djamo SOFTPAY wallet (Paydunya, Côte d'Ivoire and
+/// Senegal). The endpoint is shared across both countries and the regional
+/// `code_country` is derived from the billing country, so no payer-supplied
+/// fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct DjamoRedirection {}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct KakaoPayRedirection {}
@@ -2262,6 +2270,9 @@ impl From<api_models::payments::WalletData> for WalletData {
             }
             api_models::payments::WalletData::Skrill(_) => Self::Skrill(Box::new(SkrillData {})),
             api_models::payments::WalletData::Paysera(_) => Self::Paysera(Box::new(PayseraData {})),
+            api_models::payments::WalletData::DjamoRedirect(_) => {
+                Self::DjamoRedirect(DjamoRedirection {})
+            }
             api_models::payments::WalletData::MomoRedirect(_) => {
                 Self::MomoRedirect(MomoRedirection {})
             }
@@ -3275,6 +3286,7 @@ impl GetPaymentMethodType for WalletData {
             Self::AmazonPayRedirect(_) => api_enums::PaymentMethodType::AmazonPay,
             Self::Skrill(_) => api_enums::PaymentMethodType::Skrill,
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
+            Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,

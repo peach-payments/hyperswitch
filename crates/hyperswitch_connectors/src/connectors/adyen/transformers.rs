@@ -2685,6 +2685,7 @@ impl TryFrom<(&WalletData, &PaymentsAuthorizeRouterData)> for AdyenPaymentMethod
             | WalletData::WeChatPayQr(_)
             | WalletData::CashappQr(_)
             | WalletData::Mifinity(_)
+            | WalletData::DjamoRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
             | WalletData::RevolutPay(_) => Err(errors::ConnectorError::NotImplemented(
                 utils::get_unimplemented_payment_method_error_message("Adyen"),

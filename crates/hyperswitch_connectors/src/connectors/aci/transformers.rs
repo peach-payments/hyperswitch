@@ -220,6 +220,7 @@ impl TryFrom<(&WalletData, &PaymentsAuthorizeRouterData)> for PaymentDetails {
             | WalletData::BluecodeRedirect {}
             | WalletData::GooglePayThirdPartySdk(_)
             | WalletData::MobilePayRedirect(_)
+            | WalletData::DjamoRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
             | WalletData::PaypalRedirect(_)
             | WalletData::PaypalSdk(_)

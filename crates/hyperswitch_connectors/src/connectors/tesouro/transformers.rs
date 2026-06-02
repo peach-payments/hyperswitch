@@ -862,6 +862,7 @@ impl TryFrom<&TesouroRouterData<&PaymentsAuthorizeRouterData>> for TesouroAuthor
                 | WalletData::GooglePayThirdPartySdk(_)
                 | WalletData::MbWayRedirect(_)
                 | WalletData::MobilePayRedirect(_)
+                | WalletData::DjamoRedirect(_)
                 | WalletData::OrangeMoneyRedirect(_)
                 | WalletData::PaypalSdk(_)
                 | WalletData::PaypalRedirect(_)

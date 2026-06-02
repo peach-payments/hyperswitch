@@ -132,6 +132,7 @@ pub fn validate_payment_method_type_against_payment_method(
                 | api_enums::PaymentMethodType::GoPay
                 | api_enums::PaymentMethodType::Gcash
                 | api_enums::PaymentMethodType::Momo
+                | api_enums::PaymentMethodType::Djamo
                 | api_enums::PaymentMethodType::OrangeMoney
                 | api_enums::PaymentMethodType::Wave
                 | api_enums::PaymentMethodType::KakaoPay

@@ -90,6 +90,7 @@ pub enum WalletType {
     MobilePay,
     MoovMoney,
     OrangeMoney,
+    Djamo,
     Wave,
     WeChatPay,
     SamsungPay,

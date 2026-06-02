@@ -3750,6 +3750,7 @@ impl GetPaymentMethodType for WalletData {
             }
             Self::Skrill(_) => api_enums::PaymentMethodType::Skrill,
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
+            Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,
@@ -5190,6 +5191,12 @@ pub enum WalletData {
     #[schema(title = "MobilePayRedirect")]
     #[smithy(value_type = "MobilePayRedirection")]
     MobilePayRedirect(Box<MobilePayRedirection>),
+    /// The wallet data for Djamo redirect (Paydunya SOFTPAY, Côte d'Ivoire and
+    /// Senegal). Carries no payer-supplied fields; the regional endpoint is
+    /// selected from the billing country.
+    #[schema(title = "DjamoRedirect")]
+    #[smithy(value_type = "DjamoRedirection")]
+    DjamoRedirect(DjamoRedirection),
     /// The wallet data for Momo redirect
     #[schema(title = "MomoRedirect")]
     #[smithy(value_type = "MomoRedirection")]
@@ -5283,6 +5290,7 @@ impl GetAddressFromPaymentMethodData for WalletData {
             | Self::AliPayQr(_)
             | Self::AliPayRedirect(_)
             | Self::AliPayHkRedirect(_)
+            | Self::DjamoRedirect(_)
             | Self::MomoRedirect(_)
             | Self::OrangeMoneyRedirect(_)
             | Self::KakaoPayRedirect(_)
@@ -5629,6 +5637,12 @@ pub struct AliPayHkRedirection {}
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct BluecodeQrRedirect {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct DjamoRedirection {}
 
 #[derive(
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,

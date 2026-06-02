@@ -465,6 +465,7 @@ impl TryFrom<&WalletData> for PaymentMethodType {
             | WalletData::PaypalRedirect(_)
             | WalletData::MbWayRedirect(_)
             | WalletData::MobilePayRedirect(_)
+            | WalletData::DjamoRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
             | WalletData::PaypalSdk(_)
             | WalletData::Paze(_)
