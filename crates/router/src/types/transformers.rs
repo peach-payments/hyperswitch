@@ -323,6 +323,7 @@ impl ForeignFrom<api_enums::PaymentMethodType> for api_enums::PaymentMethod {
             | api_enums::PaymentMethodType::TMoney
             | api_enums::PaymentMethodType::Wizall
             | api_enums::PaymentMethodType::Expresso
+            | api_enums::PaymentMethodType::FreeMoney
             | api_enums::PaymentMethodType::OrangeMoney
             | api_enums::PaymentMethodType::Wave
             | api_enums::PaymentMethodType::Cashapp

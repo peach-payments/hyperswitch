@@ -91,6 +91,7 @@ impl IntoDirValue for (global_enums::PaymentMethodType, global_enums::PaymentMet
             global_enums::PaymentMethodType::TMoney => Ok(dirval!(WalletType = TMoney)),
             global_enums::PaymentMethodType::Wizall => Ok(dirval!(WalletType = Wizall)),
             global_enums::PaymentMethodType::Expresso => Ok(dirval!(WalletType = Expresso)),
+            global_enums::PaymentMethodType::FreeMoney => Ok(dirval!(WalletType = FreeMoney)),
             global_enums::PaymentMethodType::Wave => Ok(dirval!(WalletType = Wave)),
             global_enums::PaymentMethodType::Cashapp => Ok(dirval!(WalletType = Cashapp)),
             global_enums::PaymentMethodType::Multibanco => {

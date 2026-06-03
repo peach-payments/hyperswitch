@@ -32600,6 +32600,18 @@
           },
           {
             "type": "object",
+            "title": "FreeMoneyRedirect",
+            "required": [
+              "free_money_redirect"
+            ],
+            "properties": {
+              "free_money_redirect": {
+                "$ref": "#/components/schemas/FreeMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
             "title": "WaveRedirect",
             "required": [
               "wave_redirect"
@@ -32909,6 +32921,9 @@
         "type": "object"
       },
       "ExpressoRedirection": {
+        "type": "object"
+      },
+      "FreeMoneyRedirection": {
         "type": "object"
       },
       "WaveRedirection": {

@@ -984,6 +984,7 @@ impl TryFrom<enums::PaymentMethodType> for StripePaymentMethodType {
             | enums::PaymentMethodType::TMoney
             | enums::PaymentMethodType::Wizall
             | enums::PaymentMethodType::Expresso
+            | enums::PaymentMethodType::FreeMoney
             | enums::PaymentMethodType::OrangeMoney
             | enums::PaymentMethodType::Wave => Err(ConnectorError::NotImplemented(
                 get_unimplemented_payment_method_error_message("stripe"),
@@ -1311,6 +1312,7 @@ fn get_stripe_payment_method_type_from_wallet_data(
         | WalletData::TMoneyRedirect(_)
         | WalletData::WizallRedirect(_)
         | WalletData::ExpressoRedirect(_)
+        | WalletData::FreeMoneyRedirect(_)
         | WalletData::WaveRedirect(_)
         | WalletData::MoovMoneyRedirect(_)
         | WalletData::OrangeMoneyRedirect(_)
@@ -1846,6 +1848,7 @@ impl TryFrom<(&WalletData, Option<PaymentMethodToken>)> for StripePaymentMethodD
             | WalletData::TMoneyRedirect(_)
             | WalletData::WizallRedirect(_)
             | WalletData::ExpressoRedirect(_)
+            | WalletData::FreeMoneyRedirect(_)
             | WalletData::WaveRedirect(_)
             | WalletData::MoovMoneyRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)

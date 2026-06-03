@@ -3754,6 +3754,7 @@ impl GetPaymentMethodType for WalletData {
             Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
             Self::WizallRedirect(_) => api_enums::PaymentMethodType::Wizall,
             Self::ExpressoRedirect(_) => api_enums::PaymentMethodType::Expresso,
+            Self::FreeMoneyRedirect(_) => api_enums::PaymentMethodType::FreeMoney,
             Self::WaveRedirect(_) => api_enums::PaymentMethodType::Wave,
             Self::MoovMoneyRedirect(_) => api_enums::PaymentMethodType::MoovMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
@@ -5220,6 +5221,12 @@ pub enum WalletData {
     #[schema(title = "ExpressoRedirect")]
     #[smithy(value_type = "ExpressoRedirection")]
     ExpressoRedirect(ExpressoRedirection),
+    /// The wallet data for Free Money redirect (Paydunya SOFTPAY, Senegal).
+    /// Carries no payer-supplied fields; payer identity is taken from the
+    /// billing details and the operator is fixed to Free Money Senegal.
+    #[schema(title = "FreeMoneyRedirect")]
+    #[smithy(value_type = "FreeMoneyRedirection")]
+    FreeMoneyRedirect(FreeMoneyRedirection),
     /// The wallet data for Wave redirect (Paydunya SOFTPAY, Senegal and Côte
     /// d'Ivoire). Carries no payer-supplied fields; the regional endpoint is
     /// selected from the billing country.
@@ -5329,6 +5336,7 @@ impl GetAddressFromPaymentMethodData for WalletData {
             | Self::TMoneyRedirect(_)
             | Self::WizallRedirect(_)
             | Self::ExpressoRedirect(_)
+            | Self::FreeMoneyRedirect(_)
             | Self::WaveRedirect(_)
             | Self::MoovMoneyRedirect(_)
             | Self::MomoRedirect(_)
@@ -5701,6 +5709,12 @@ pub struct WizallRedirection {}
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct ExpressoRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct FreeMoneyRedirection {}
 
 #[derive(
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,

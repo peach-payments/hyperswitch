@@ -313,6 +313,12 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
             // `softpay/expresso-senegal` endpoint regardless of billing country.
             (Some(enums::PaymentMethodType::Expresso), _) => Ok(Self::ExpressoSenegal),
 
+            // Free Money family — Senegal is the only region Paydunya exposes
+            // for Free Money, so any Free Money attempt resolves to the single
+            // `softpay/free-money-senegal` endpoint regardless of billing
+            // country.
+            (Some(enums::PaymentMethodType::FreeMoney), _) => Ok(Self::FreeMoneySenegal),
+
             _ => Err(errors::ConnectorError::NotImplemented(format!(
                 "Paydunya operator resolution for payment_method_type={pm_type:?} country={country:?}"
             ))

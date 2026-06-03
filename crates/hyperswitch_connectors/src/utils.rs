@@ -6672,6 +6672,7 @@ pub enum PaymentMethodDataType {
     TMoneyRedirect,
     WizallRedirect,
     ExpressoRedirect,
+    FreeMoneyRedirect,
     WaveRedirect,
     MoovMoneyRedirect,
     OrangeMoneyRedirect,
@@ -6833,6 +6834,7 @@ impl From<PaymentMethodData> for PaymentMethodDataType {
                 payment_method_data::WalletData::TMoneyRedirect(_) => Self::TMoneyRedirect,
                 payment_method_data::WalletData::WizallRedirect(_) => Self::WizallRedirect,
                 payment_method_data::WalletData::ExpressoRedirect(_) => Self::ExpressoRedirect,
+                payment_method_data::WalletData::FreeMoneyRedirect(_) => Self::FreeMoneyRedirect,
                 payment_method_data::WalletData::WaveRedirect(_) => Self::WaveRedirect,
                 payment_method_data::WalletData::MoovMoneyRedirect(_) => Self::MoovMoneyRedirect,
                 payment_method_data::WalletData::OrangeMoneyRedirect(_) => {

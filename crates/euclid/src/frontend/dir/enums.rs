@@ -94,6 +94,7 @@ pub enum WalletType {
     TMoney,
     Wizall,
     Expresso,
+    FreeMoney,
     Wave,
     WeChatPay,
     SamsungPay,

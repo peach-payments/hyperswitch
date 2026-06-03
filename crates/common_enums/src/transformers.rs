@@ -1851,6 +1851,7 @@ impl From<PaymentMethodType> for PaymentMethod {
             PaymentMethodType::TMoney => Self::Wallet,
             PaymentMethodType::Wizall => Self::Wallet,
             PaymentMethodType::Expresso => Self::Wallet,
+            PaymentMethodType::FreeMoney => Self::Wallet,
             PaymentMethodType::Momo => Self::Wallet,
             PaymentMethodType::MomoAtm => Self::CardRedirect,
             PaymentMethodType::MoovMoney => Self::Wallet,

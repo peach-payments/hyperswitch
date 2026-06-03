@@ -536,6 +536,7 @@ Never share your secret api keys. Keep them guarded and secure.
         api_models::payments::TMoneyRedirection,
         api_models::payments::WizallRedirection,
         api_models::payments::ExpressoRedirection,
+        api_models::payments::FreeMoneyRedirection,
         api_models::payments::WaveRedirection,
         api_models::payments::MoovMoneyRedirection,
         api_models::payments::OrangeMoneyRedirection,

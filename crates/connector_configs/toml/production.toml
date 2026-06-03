@@ -6667,6 +6667,8 @@ payment_method_type = "t_money"
 payment_method_type = "wizall"
 [[paydunya.wallet]]
 payment_method_type = "expresso"
+[[paydunya.wallet]]
+payment_method_type = "free_money"
 [paydunya.connector_auth.SignatureKey]
 api_key = "Master Key"
 api_secret = "Private Key"

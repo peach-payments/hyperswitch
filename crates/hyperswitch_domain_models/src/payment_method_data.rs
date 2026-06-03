@@ -863,6 +863,7 @@ pub enum WalletData {
     TMoneyRedirect(TMoneyRedirection),
     WizallRedirect(WizallRedirection),
     ExpressoRedirect(ExpressoRedirection),
+    FreeMoneyRedirect(FreeMoneyRedirection),
     WaveRedirect(WaveRedirection),
     MoovMoneyRedirect(MoovMoneyRedirection),
     MomoRedirect(MomoRedirection),
@@ -1056,6 +1057,12 @@ pub struct WizallRedirection {}
 /// billing details, so no payer-supplied fields are needed here.
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ExpressoRedirection {}
+
+/// Payer data for the Free Money SOFTPAY wallet (Paydunya, Senegal). The
+/// operator is fixed to Free Money Senegal and the payer identity is taken from
+/// the billing details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct FreeMoneyRedirection {}
 
 /// Payer data for the Wave SOFTPAY wallet (Paydunya, Senegal and Côte
 /// d'Ivoire). The regional endpoint is resolved from the billing country and
@@ -2318,6 +2325,9 @@ impl From<api_models::payments::WalletData> for WalletData {
             api_models::payments::WalletData::ExpressoRedirect(_) => {
                 Self::ExpressoRedirect(ExpressoRedirection {})
             }
+            api_models::payments::WalletData::FreeMoneyRedirect(_) => {
+                Self::FreeMoneyRedirect(FreeMoneyRedirection {})
+            }
             api_models::payments::WalletData::WaveRedirect(_) => {
                 Self::WaveRedirect(WaveRedirection {})
             }
@@ -3341,6 +3351,7 @@ impl GetPaymentMethodType for WalletData {
             Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
             Self::WizallRedirect(_) => api_enums::PaymentMethodType::Wizall,
             Self::ExpressoRedirect(_) => api_enums::PaymentMethodType::Expresso,
+            Self::FreeMoneyRedirect(_) => api_enums::PaymentMethodType::FreeMoney,
             Self::WaveRedirect(_) => api_enums::PaymentMethodType::Wave,
             Self::MoovMoneyRedirect(_) => api_enums::PaymentMethodType::MoovMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,

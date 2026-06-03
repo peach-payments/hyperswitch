@@ -581,6 +581,7 @@ impl TryFrom<&FiuuRouterData<&PaymentsAuthorizeRouterData>> for FiuuPaymentReque
                     | WalletData::TMoneyRedirect(_)
                     | WalletData::WizallRedirect(_)
                     | WalletData::ExpressoRedirect(_)
+                    | WalletData::FreeMoneyRedirect(_)
                     | WalletData::WaveRedirect(_)
                     | WalletData::MoovMoneyRedirect(_)
                     | WalletData::OrangeMoneyRedirect(_)

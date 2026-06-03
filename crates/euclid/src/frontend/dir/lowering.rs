@@ -59,6 +59,7 @@ impl From<enums::WalletType> for global_enums::PaymentMethodType {
             enums::WalletType::TMoney => Self::TMoney,
             enums::WalletType::Wizall => Self::Wizall,
             enums::WalletType::Expresso => Self::Expresso,
+            enums::WalletType::FreeMoney => Self::FreeMoney,
             enums::WalletType::Wave => Self::Wave,
             enums::WalletType::WeChatPay => Self::WeChatPay,
             enums::WalletType::SamsungPay => Self::SamsungPay,

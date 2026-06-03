@@ -381,6 +381,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                 | WalletDataPaymentMethod::TMoneyRedirect(_)
                 | WalletDataPaymentMethod::WizallRedirect(_)
                 | WalletDataPaymentMethod::ExpressoRedirect(_)
+                | WalletDataPaymentMethod::FreeMoneyRedirect(_)
                 | WalletDataPaymentMethod::WaveRedirect(_)
                 | WalletDataPaymentMethod::MoovMoneyRedirect(_)
                 | WalletDataPaymentMethod::OrangeMoneyRedirect(_)
