@@ -380,6 +380,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                 | WalletDataPaymentMethod::DjamoRedirect(_)
                 | WalletDataPaymentMethod::TMoneyRedirect(_)
                 | WalletDataPaymentMethod::WizallRedirect(_)
+                | WalletDataPaymentMethod::ExpressoRedirect(_)
                 | WalletDataPaymentMethod::WaveRedirect(_)
                 | WalletDataPaymentMethod::MoovMoneyRedirect(_)
                 | WalletDataPaymentMethod::OrangeMoneyRedirect(_)

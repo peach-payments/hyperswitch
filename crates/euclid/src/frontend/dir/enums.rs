@@ -93,6 +93,7 @@ pub enum WalletType {
     Djamo,
     TMoney,
     Wizall,
+    Expresso,
     Wave,
     WeChatPay,
     SamsungPay,

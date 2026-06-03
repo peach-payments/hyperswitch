@@ -43109,6 +43109,18 @@
           },
           {
             "type": "object",
+            "title": "ExpressoRedirect",
+            "required": [
+              "expresso_redirect"
+            ],
+            "properties": {
+              "expresso_redirect": {
+                "$ref": "#/components/schemas/ExpressoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
             "title": "WaveRedirect",
             "required": [
               "wave_redirect"
@@ -43378,6 +43390,9 @@
         "type": "object"
       },
       "WizallRedirection": {
+        "type": "object"
+      },
+      "ExpressoRedirection": {
         "type": "object"
       },
       "WaveRedirection": {

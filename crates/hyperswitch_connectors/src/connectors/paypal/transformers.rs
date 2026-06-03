@@ -1140,6 +1140,7 @@ impl TryFrom<&PaypalRouterData<&PaymentsAuthorizeRouterData>> for PaypalPayments
                 | WalletData::DjamoRedirect(_)
                 | WalletData::TMoneyRedirect(_)
                 | WalletData::WizallRedirect(_)
+                | WalletData::ExpressoRedirect(_)
                 | WalletData::WaveRedirect(_)
                 | WalletData::MoovMoneyRedirect(_)
                 | WalletData::OrangeMoneyRedirect(_)
@@ -1342,6 +1343,7 @@ impl TryFrom<&PaypalRouterData<&PaymentsAuthorizeRouterData>> for PaypalPayments
                     | enums::PaymentMethodType::Djamo
                     | enums::PaymentMethodType::TMoney
                     | enums::PaymentMethodType::Wizall
+                    | enums::PaymentMethodType::Expresso
                     | enums::PaymentMethodType::OrangeMoney
                     | enums::PaymentMethodType::Wave => {
                         Err(errors::ConnectorError::NotImplemented(

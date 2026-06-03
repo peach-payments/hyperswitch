@@ -3753,6 +3753,7 @@ impl GetPaymentMethodType for WalletData {
             Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
             Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
             Self::WizallRedirect(_) => api_enums::PaymentMethodType::Wizall,
+            Self::ExpressoRedirect(_) => api_enums::PaymentMethodType::Expresso,
             Self::WaveRedirect(_) => api_enums::PaymentMethodType::Wave,
             Self::MoovMoneyRedirect(_) => api_enums::PaymentMethodType::MoovMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
@@ -5213,6 +5214,12 @@ pub enum WalletData {
     #[schema(title = "WizallRedirect")]
     #[smithy(value_type = "WizallRedirection")]
     WizallRedirect(WizallRedirection),
+    /// The wallet data for Expresso redirect (Paydunya SOFTPAY, Senegal).
+    /// Carries no payer-supplied fields; payer identity is taken from the
+    /// billing details and the operator is fixed to Expresso Senegal.
+    #[schema(title = "ExpressoRedirect")]
+    #[smithy(value_type = "ExpressoRedirection")]
+    ExpressoRedirect(ExpressoRedirection),
     /// The wallet data for Wave redirect (Paydunya SOFTPAY, Senegal and Côte
     /// d'Ivoire). Carries no payer-supplied fields; the regional endpoint is
     /// selected from the billing country.
@@ -5321,6 +5328,7 @@ impl GetAddressFromPaymentMethodData for WalletData {
             | Self::DjamoRedirect(_)
             | Self::TMoneyRedirect(_)
             | Self::WizallRedirect(_)
+            | Self::ExpressoRedirect(_)
             | Self::WaveRedirect(_)
             | Self::MoovMoneyRedirect(_)
             | Self::MomoRedirect(_)
@@ -5687,6 +5695,12 @@ pub struct TMoneyRedirection {}
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct WizallRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct ExpressoRedirection {}
 
 #[derive(
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,

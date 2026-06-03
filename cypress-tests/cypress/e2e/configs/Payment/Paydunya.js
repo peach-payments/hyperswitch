@@ -2,8 +2,8 @@ import { getCurrency, getCustomExchange } from "./Modifiers";
 
 // Paydunya only exposes mobile-money rails today (SOFTPAY). Each rail maps to
 // a dedicated Hyperswitch wallet payment method type — `momo` (MTN family),
-// `moov_money` (Moov family), `wave`, `orange_money`, `djamo`, `t_money` and
-// `wizall` — and the operator endpoint is resolved from
+// `moov_money` (Moov family), `wave`, `orange_money`, `djamo`, `t_money`,
+// `wizall` and `expresso` — and the operator endpoint is resolved from
 // `(payment_method_type, billing.country)` (see `PaydunyaOperator`). Card
 // rails, refunds, voids, captures and mandate flows are `NotImplemented`
 // upstream and intentionally fall back to the default "not implemented"
@@ -12,12 +12,13 @@ import { getCurrency, getCustomExchange } from "./Modifiers";
 // Every SOFTPAY rail carries a dedicated wallet-data variant: `momo`
 // (MomoRedirect), `moov_money` (MoovMoneyRedirect), `wave` (WaveRedirect),
 // `orange_money` (OrangeMoneyRedirect), `djamo` (DjamoRedirect), `t_money`
-// (TMoneyRedirect) and `wizall` (WizallRedirect).
+// (TMoneyRedirect), `wizall` (WizallRedirect) and `expresso`
+// (ExpressoRedirect).
 
 // SOFTPAY requires the payer's full name, phone number and email — without
 // them the connector returns `MissingRequiredField`. Country is what drives
-// the operator resolution (BJ -> MTN Benin, SN -> Orange Money/Wizall Senegal,
-// CI -> Djamo Côte d'Ivoire, TG -> T-Money Togo, etc.).
+// the operator resolution (BJ -> MTN Benin, SN -> Orange Money/Wizall/Expresso
+// Senegal, CI -> Djamo Côte d'Ivoire, TG -> T-Money Togo, etc.).
 const mtnBeninBilling = {
   address: {
     line1: "Rue 12.345",
@@ -157,6 +158,27 @@ const wizallSenegalBilling = {
   email: "fatou.sow@example.com",
 };
 
+// Expresso is Senegal-only: payment_method_type=expresso resolves to the
+// `softpay/expresso-senegal` endpoint. Billing country (SN) and the payer's
+// full name / phone / email are required, mirroring the Wave Senegal rail.
+const expressoSenegalBilling = {
+  address: {
+    line1: "Avenue Bourguiba",
+    line2: "Dakar",
+    city: "Dakar",
+    state: "Dakar",
+    zip: "10000",
+    country: "SN",
+    first_name: "Moussa",
+    last_name: "Diop",
+  },
+  phone: {
+    number: "760000000",
+    country_code: "+221",
+  },
+  email: "moussa.diop@example.com",
+};
+
 // Paydunya operates in XOF (UEMOA) and XAF (CEMAC). Hyperswitch accepts both
 // as zero-decimal currencies, so amounts are passed in the smallest unit
 // (1500 = 1,500 XOF / XAF). For Paydunya's own mobile-money rails we force
@@ -171,6 +193,7 @@ const PAYDUNYA_WALLET_TYPES = new Set([
   "Djamo",
   "TMoney",
   "Wizall",
+  "Expresso",
 ]);
 
 const paydunyaPaymentIntent = (paymentMethodType) => {
@@ -379,6 +402,23 @@ export const connectorDetails = {
         currency: "XOF",
         billing: wizallSenegalBilling,
         email: wizallSenegalBilling.email,
+      },
+      Response: softpayPendingResponse,
+    }),
+    // Expresso Senegal — payment_method_type=expresso + country=SN resolves to
+    // the `softpay/expresso-senegal` endpoint.
+    Expresso: getCustomExchange({
+      Request: {
+        payment_method: "wallet",
+        payment_method_type: "expresso",
+        payment_method_data: {
+          wallet: {
+            expresso_redirect: {},
+          },
+        },
+        currency: "XOF",
+        billing: expressoSenegalBilling,
+        email: expressoSenegalBilling.email,
       },
       Response: softpayPendingResponse,
     }),

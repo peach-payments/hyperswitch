@@ -7609,6 +7609,8 @@ payment_method_type = "wave"
 payment_method_type = "t_money"
 [[paydunya.wallet]]
 payment_method_type = "wizall"
+[[paydunya.wallet]]
+payment_method_type = "expresso"
 [paydunya.connector_auth.SignatureKey]
 api_key = "Master Key"
 api_secret = "Private Key"

@@ -225,6 +225,7 @@ impl IntoDirValue for (api_enums::PaymentMethodType, api_enums::PaymentMethod) {
             api_enums::PaymentMethodType::Djamo => Ok(dirval!(WalletType = Djamo)),
             api_enums::PaymentMethodType::TMoney => Ok(dirval!(WalletType = TMoney)),
             api_enums::PaymentMethodType::Wizall => Ok(dirval!(WalletType = Wizall)),
+            api_enums::PaymentMethodType::Expresso => Ok(dirval!(WalletType = Expresso)),
             api_enums::PaymentMethodType::Wave => Ok(dirval!(WalletType = Wave)),
             api_enums::PaymentMethodType::Cashapp => Ok(dirval!(WalletType = Cashapp)),
             api_enums::PaymentMethodType::Multibanco => Ok(dirval!(BankTransferType = Multibanco)),

@@ -510,6 +510,7 @@ impl
             | WalletData::DjamoRedirect(_)
             | WalletData::TMoneyRedirect(_)
             | WalletData::WizallRedirect(_)
+            | WalletData::ExpressoRedirect(_)
             | WalletData::WaveRedirect(_)
             | WalletData::MoovMoneyRedirect(_)
             | WalletData::OrangeMoneyRedirect(_)
