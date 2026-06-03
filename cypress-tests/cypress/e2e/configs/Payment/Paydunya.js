@@ -1,15 +1,23 @@
 import { getCurrency, getCustomExchange } from "./Modifiers";
 
-// Paydunya only exposes mobile-money rails today (SOFTPAY: MTN, Moov, Wave,
-// Orange Money, Free Money, Expresso). It maps to Hyperswitch wallet payment
-// method types: `momo` (MTN family), `mobile_pay` (Moov family) and `mb_way`
-// (Wave family). Card rails, refunds, voids, captures and mandate flows are
-// `NotImplemented` upstream and intentionally fall back to the default
-// "not implemented" responses defined in `Commons.js`.
+// Paydunya only exposes mobile-money rails today (SOFTPAY). Each rail maps to
+// a dedicated Hyperswitch wallet payment method type — `momo` (MTN family),
+// `moov_money` (Moov family), `wave`, `orange_money`, `djamo`, `t_money` and
+// `wizall` — and the operator endpoint is resolved from
+// `(payment_method_type, billing.country)` (see `PaydunyaOperator`). Card
+// rails, refunds, voids, captures and mandate flows are `NotImplemented`
+// upstream and intentionally fall back to the default "not implemented"
+// responses defined in `Commons.js`.
+//
+// Every SOFTPAY rail carries a dedicated wallet-data variant: `momo`
+// (MomoRedirect), `moov_money` (MoovMoneyRedirect), `wave` (WaveRedirect),
+// `orange_money` (OrangeMoneyRedirect), `djamo` (DjamoRedirect), `t_money`
+// (TMoneyRedirect) and `wizall` (WizallRedirect).
 
 // SOFTPAY requires the payer's full name, phone number and email — without
 // them the connector returns `MissingRequiredField`. Country is what drives
-// the operator resolution (BJ -> MTN/Moov Benin, SN -> Wave Senegal, etc.).
+// the operator resolution (BJ -> MTN Benin, SN -> Orange Money/Wizall Senegal,
+// CI -> Djamo Côte d'Ivoire, TG -> T-Money Togo, etc.).
 const mtnBeninBilling = {
   address: {
     line1: "Rue 12.345",
@@ -28,6 +36,8 @@ const mtnBeninBilling = {
   email: "kossi.ahouanou@example.com",
 };
 
+// Moov Benin — payment_method_type=moov_money + country=BJ resolves to the
+// `softpay/moov-benin` endpoint.
 const moovBeninBilling = {
   address: {
     line1: "Boulevard Saint-Michel",
@@ -46,6 +56,8 @@ const moovBeninBilling = {
   email: "adjoa.hounsou@example.com",
 };
 
+// Wave Senegal — payment_method_type=wave + country=SN resolves to the
+// `softpay/wave-senegal` endpoint.
 const waveSenegalBilling = {
   address: {
     line1: "Avenue Cheikh Anta Diop",
@@ -64,13 +76,102 @@ const waveSenegalBilling = {
   email: "awa.ndiaye@example.com",
 };
 
+// Orange Money Senegal — country=SN resolves to the
+// `softpay/new-orange-money-senegal` endpoint (no payer OTP required).
+const orangeMoneySenegalBilling = {
+  address: {
+    line1: "Avenue Cheikh Anta Diop",
+    line2: "Dakar",
+    city: "Dakar",
+    state: "Dakar",
+    zip: "10000",
+    country: "SN",
+    first_name: "Awa",
+    last_name: "Ndiaye",
+  },
+  phone: {
+    number: "770000000",
+    country_code: "+221",
+  },
+  email: "awa.ndiaye@example.com",
+};
+
+// Djamo Côte d'Ivoire — country=CI resolves to the shared `softpay/djamo`
+// endpoint with `code_country=ci`.
+const djamoCiBilling = {
+  address: {
+    line1: "Boulevard Latrille",
+    line2: "Abidjan",
+    city: "Abidjan",
+    state: "Abidjan",
+    zip: "00225",
+    country: "CI",
+    first_name: "Camille",
+    last_name: "Coulibaly",
+  },
+  phone: {
+    number: "0777568646",
+    country_code: "+225",
+  },
+  email: "camille.coulibaly@example.com",
+};
+
+// T-Money Togo — Togo is the only region Paydunya exposes for T-Money, so any
+// T-Money attempt resolves to the single `softpay/t-money-togo` endpoint.
+const tmoneyTogoBilling = {
+  address: {
+    line1: "Boulevard du Mono",
+    line2: "Lome",
+    city: "Lome",
+    state: "Maritime",
+    zip: "00228",
+    country: "TG",
+    first_name: "Kofi",
+    last_name: "Mensah",
+  },
+  phone: {
+    number: "70707070",
+    country_code: "+228",
+  },
+  email: "kofi.mensah@example.com",
+};
+
+// Wizall Money is Senegal-only: payment_method_type=wizall resolves to the
+// `softpay/wizall-senegal` endpoint. Billing country (SN) and the payer's
+// full name / phone / email are required, mirroring the Wave Senegal rail.
+const wizallSenegalBilling = {
+  address: {
+    line1: "Rue Carnot",
+    line2: "Dakar",
+    city: "Dakar",
+    state: "Dakar",
+    zip: "10000",
+    country: "SN",
+    first_name: "Fatou",
+    last_name: "Sow",
+  },
+  phone: {
+    number: "780000000",
+    country_code: "+221",
+  },
+  email: "fatou.sow@example.com",
+};
+
 // Paydunya operates in XOF (UEMOA) and XAF (CEMAC). Hyperswitch accepts both
 // as zero-decimal currencies, so amounts are passed in the smallest unit
 // (1500 = 1,500 XOF / XAF). For Paydunya's own mobile-money rails we force
 // XOF, but the wallet spec is shared with `Bluecode`, `AliPayHk` etc. where
 // the connector-agnostic currency map in `Modifiers.getCurrency` is correct;
 // defer to it when the spec asks for a non-Paydunya payment method type.
-const PAYDUNYA_WALLET_TYPES = new Set(["Momo", "MobilePay", "MbWay"]);
+const PAYDUNYA_WALLET_TYPES = new Set([
+  "Momo",
+  "MoovMoney",
+  "Wave",
+  "OrangeMoney",
+  "Djamo",
+  "TMoney",
+  "Wizall",
+]);
 
 const paydunyaPaymentIntent = (paymentMethodType) => {
   const currency = PAYDUNYA_WALLET_TYPES.has(paymentMethodType)
@@ -179,15 +280,15 @@ export const connectorDetails = {
       },
       Response: softpayPendingResponse,
     }),
-    // Moov Benin — payment_method_type=mobile_pay + country=BJ resolves to
-    // the `softpay/moov-benin` endpoint.
-    MobilePay: getCustomExchange({
+    // Moov Benin — payment_method_type=moov_money + country=BJ resolves to the
+    // `softpay/moov-benin` endpoint.
+    MoovMoney: getCustomExchange({
       Request: {
         payment_method: "wallet",
-        payment_method_type: "mobile_pay",
+        payment_method_type: "moov_money",
         payment_method_data: {
           wallet: {
-            mobile_pay_redirect: {},
+            moov_money_redirect: {},
           },
         },
         currency: "XOF",
@@ -196,20 +297,88 @@ export const connectorDetails = {
       },
       Response: softpayPendingResponse,
     }),
-    // Wave Senegal — payment_method_type=mb_way + country=SN resolves to
-    // the `softpay/wave-senegal` endpoint.
-    MbWay: getCustomExchange({
+    // Wave Senegal — payment_method_type=wave + country=SN resolves to the
+    // `softpay/wave-senegal` endpoint.
+    Wave: getCustomExchange({
       Request: {
         payment_method: "wallet",
-        payment_method_type: "mb_way",
+        payment_method_type: "wave",
         payment_method_data: {
           wallet: {
-            mb_way_redirect: {},
+            wave_redirect: {},
           },
         },
         currency: "XOF",
         billing: waveSenegalBilling,
         email: waveSenegalBilling.email,
+      },
+      Response: softpayPendingResponse,
+    }),
+    // Orange Money Senegal — payment_method_type=orange_money + country=SN
+    // resolves to the `softpay/new-orange-money-senegal` endpoint.
+    OrangeMoney: getCustomExchange({
+      Request: {
+        payment_method: "wallet",
+        payment_method_type: "orange_money",
+        payment_method_data: {
+          wallet: {
+            orange_money_redirect: {},
+          },
+        },
+        currency: "XOF",
+        billing: orangeMoneySenegalBilling,
+        email: orangeMoneySenegalBilling.email,
+      },
+      Response: softpayPendingResponse,
+    }),
+    // Djamo Côte d'Ivoire — payment_method_type=djamo + country=CI resolves to
+    // the shared `softpay/djamo` endpoint with `code_country=ci`.
+    Djamo: getCustomExchange({
+      Request: {
+        payment_method: "wallet",
+        payment_method_type: "djamo",
+        payment_method_data: {
+          wallet: {
+            djamo_redirect: {},
+          },
+        },
+        currency: "XOF",
+        billing: djamoCiBilling,
+        email: djamoCiBilling.email,
+      },
+      Response: softpayPendingResponse,
+    }),
+    // T-Money Togo — payment_method_type=t_money resolves to the single
+    // `softpay/t-money-togo` endpoint regardless of billing country.
+    TMoney: getCustomExchange({
+      Request: {
+        payment_method: "wallet",
+        payment_method_type: "t_money",
+        payment_method_data: {
+          wallet: {
+            t_money_redirect: {},
+          },
+        },
+        currency: "XOF",
+        billing: tmoneyTogoBilling,
+        email: tmoneyTogoBilling.email,
+      },
+      Response: softpayPendingResponse,
+    }),
+    // Wizall Senegal — payment_method_type=wizall + country=SN resolves to
+    // the `softpay/wizall-senegal` endpoint.
+    Wizall: getCustomExchange({
+      Request: {
+        payment_method: "wallet",
+        payment_method_type: "wizall",
+        payment_method_data: {
+          wallet: {
+            wizall_redirect: {},
+          },
+        },
+        currency: "XOF",
+        billing: wizallSenegalBilling,
+        email: wizallSenegalBilling.email,
       },
       Response: softpayPendingResponse,
     }),

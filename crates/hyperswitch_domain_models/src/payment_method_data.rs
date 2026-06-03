@@ -861,6 +861,9 @@ pub enum WalletData {
     Skrill(Box<SkrillData>),
     DjamoRedirect(DjamoRedirection),
     TMoneyRedirect(TMoneyRedirection),
+    WizallRedirect(WizallRedirection),
+    WaveRedirect(WaveRedirection),
+    MoovMoneyRedirect(MoovMoneyRedirection),
     MomoRedirect(MomoRedirection),
     KakaoPayRedirect(KakaoPayRedirection),
     GoPayRedirect(GoPayRedirection),
@@ -1040,6 +1043,25 @@ pub struct DjamoRedirection {}
 /// details, so no payer-supplied fields are needed here.
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct TMoneyRedirection {}
+
+/// Payer data for the Wizall SOFTPAY wallet (Paydunya, Senegal). The operator
+/// is fixed to Wizall Senegal and the payer identity is taken from the billing
+/// details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct WizallRedirection {}
+
+/// Payer data for the Wave SOFTPAY wallet (Paydunya, Senegal and Côte
+/// d'Ivoire). The regional endpoint is resolved from the billing country and
+/// the payer identity is taken from the billing details, so no payer-supplied
+/// fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct WaveRedirection {}
+
+/// Payer data for the Moov Money SOFTPAY wallet (Paydunya). The regional
+/// endpoint is resolved from the billing country and the payer identity is
+/// taken from the billing details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct MoovMoneyRedirection {}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct KakaoPayRedirection {}
@@ -2283,6 +2305,15 @@ impl From<api_models::payments::WalletData> for WalletData {
             api_models::payments::WalletData::TMoneyRedirect(_) => {
                 Self::TMoneyRedirect(TMoneyRedirection {})
             }
+            api_models::payments::WalletData::WizallRedirect(_) => {
+                Self::WizallRedirect(WizallRedirection {})
+            }
+            api_models::payments::WalletData::WaveRedirect(_) => {
+                Self::WaveRedirect(WaveRedirection {})
+            }
+            api_models::payments::WalletData::MoovMoneyRedirect(_) => {
+                Self::MoovMoneyRedirect(MoovMoneyRedirection {})
+            }
             api_models::payments::WalletData::MomoRedirect(_) => {
                 Self::MomoRedirect(MomoRedirection {})
             }
@@ -3298,6 +3329,9 @@ impl GetPaymentMethodType for WalletData {
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
             Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
             Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
+            Self::WizallRedirect(_) => api_enums::PaymentMethodType::Wizall,
+            Self::WaveRedirect(_) => api_enums::PaymentMethodType::Wave,
+            Self::MoovMoneyRedirect(_) => api_enums::PaymentMethodType::MoovMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,

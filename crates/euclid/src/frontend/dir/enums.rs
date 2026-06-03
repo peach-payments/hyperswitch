@@ -92,6 +92,7 @@ pub enum WalletType {
     OrangeMoney,
     Djamo,
     TMoney,
+    Wizall,
     Wave,
     WeChatPay,
     SamsungPay,

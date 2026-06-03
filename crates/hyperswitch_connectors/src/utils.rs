@@ -6670,6 +6670,9 @@ pub enum PaymentMethodDataType {
     MobilePayRedirect,
     DjamoRedirect,
     TMoneyRedirect,
+    WizallRedirect,
+    WaveRedirect,
+    MoovMoneyRedirect,
     OrangeMoneyRedirect,
     PaypalRedirect,
     PaypalSdk,
@@ -6827,6 +6830,9 @@ impl From<PaymentMethodData> for PaymentMethodDataType {
                 payment_method_data::WalletData::MobilePayRedirect(_) => Self::MobilePayRedirect,
                 payment_method_data::WalletData::DjamoRedirect(_) => Self::DjamoRedirect,
                 payment_method_data::WalletData::TMoneyRedirect(_) => Self::TMoneyRedirect,
+                payment_method_data::WalletData::WizallRedirect(_) => Self::WizallRedirect,
+                payment_method_data::WalletData::WaveRedirect(_) => Self::WaveRedirect,
+                payment_method_data::WalletData::MoovMoneyRedirect(_) => Self::MoovMoneyRedirect,
                 payment_method_data::WalletData::OrangeMoneyRedirect(_) => {
                     Self::OrangeMoneyRedirect
                 }

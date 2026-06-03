@@ -43097,6 +43097,42 @@
           },
           {
             "type": "object",
+            "title": "WizallRedirect",
+            "required": [
+              "wizall_redirect"
+            ],
+            "properties": {
+              "wizall_redirect": {
+                "$ref": "#/components/schemas/WizallRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "WaveRedirect",
+            "required": [
+              "wave_redirect"
+            ],
+            "properties": {
+              "wave_redirect": {
+                "$ref": "#/components/schemas/WaveRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "MoovMoneyRedirect",
+            "required": [
+              "moov_money_redirect"
+            ],
+            "properties": {
+              "moov_money_redirect": {
+                "$ref": "#/components/schemas/MoovMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
             "title": "MomoRedirect",
             "required": [
               "momo_redirect"
@@ -43339,6 +43375,15 @@
         "type": "object"
       },
       "WeChatPayRedirection": {
+        "type": "object"
+      },
+      "WizallRedirection": {
+        "type": "object"
+      },
+      "WaveRedirection": {
+        "type": "object"
+      },
+      "MoovMoneyRedirection": {
         "type": "object"
       },
       "WebhookConfigType": {

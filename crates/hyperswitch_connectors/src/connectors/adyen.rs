@@ -369,6 +369,7 @@ impl ConnectorValidation for Adyen {
                 | PaymentMethodType::MoovMoney
                 | PaymentMethodType::Djamo
                 | PaymentMethodType::TMoney
+                | PaymentMethodType::Wizall
                 | PaymentMethodType::OrangeMoney
                 | PaymentMethodType::Wave => {
                     capture_method_not_supported!(connector, capture_method, payment_method_type)

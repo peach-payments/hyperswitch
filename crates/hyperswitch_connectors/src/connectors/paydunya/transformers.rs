@@ -165,6 +165,7 @@ pub enum PaydunyaOperator {
     DjamoCi,
     DjamoSn,
     TmoneyTogo,
+    WizallSenegal,
 }
 
 impl PaydunyaOperator {
@@ -194,6 +195,7 @@ impl PaydunyaOperator {
             // the regional account is selected via the `code_country` field.
             Self::DjamoCi | Self::DjamoSn => "softpay/djamo",
             Self::TmoneyTogo => "softpay/t-money-togo",
+            Self::WizallSenegal => "softpay/wizall-senegal",
         }
     }
 
@@ -301,6 +303,11 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
             // `softpay/t-money-togo` endpoint regardless of billing country.
             (Some(enums::PaymentMethodType::TMoney), _) => Ok(Self::TmoneyTogo),
 
+            // Wizall family — Senegal is the only region Paydunya exposes for
+            // Wizall Money, so any Wizall attempt resolves to the single
+            // `softpay/wizall-senegal` endpoint regardless of billing country.
+            (Some(enums::PaymentMethodType::Wizall), _) => Ok(Self::WizallSenegal),
+
             _ => Err(errors::ConnectorError::NotImplemented(format!(
                 "Paydunya operator resolution for payment_method_type={pm_type:?} country={country:?}"
             ))
@@ -334,6 +341,7 @@ pub enum PaydunyaPaymentsRequest {
     ExpressoSenegal(PaydunyaExpressoSenegalRequest),
     Djamo(PaydunyaDjamoRequest),
     TmoneyTogo(PaydunyaTmoneyTogoRequest),
+    WizallSenegal(PaydunyaWizallSenegalRequest),
 }
 
 #[derive(Debug, Serialize)]
@@ -509,6 +517,18 @@ pub struct PaydunyaTmoneyTogoRequest {
     pub email_t_money: Email,
     pub phone_t_money: Secret<String>,
     pub payment_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaydunyaWizallSenegalRequest {
+    // Wizall Senegal's SOFTPAY endpoint expects a camelCased full-name key and
+    // an operator-prefixed `wizall_senegal_payment_token` (mirroring the Wave
+    // Senegal layout) rather than the generic `payment_token`.
+    #[serde(rename = "wizall_senegal_fullName")]
+    pub wizall_senegal_full_name: Secret<String>,
+    pub wizall_senegal_email: Email,
+    pub wizall_senegal_phone: Secret<String>,
+    pub wizall_senegal_payment_token: String,
 }
 
 /// Fields common to every SOFTPAY operator: payer identity, contact info and
@@ -757,6 +777,14 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 phone_t_money: common.phone_number,
                 payment_token: common.payment_token,
             }),
+            PaydunyaOperator::WizallSenegal => {
+                Self::WizallSenegal(PaydunyaWizallSenegalRequest {
+                    wizall_senegal_full_name: common.full_name,
+                    wizall_senegal_email: common.email,
+                    wizall_senegal_phone: common.phone_number,
+                    wizall_senegal_payment_token: common.payment_token,
+                })
+            }
         };
 
         Ok(request)
@@ -1242,6 +1270,10 @@ mod tests {
             PaydunyaOperator::TmoneyTogo.endpoint(),
             "softpay/t-money-togo"
         );
+        assert_eq!(
+            PaydunyaOperator::WizallSenegal.endpoint(),
+            "softpay/wizall-senegal"
+        );
     }
 
     #[test]
@@ -1284,6 +1316,7 @@ mod tests {
             PaydunyaOperator::DjamoCi,
             PaydunyaOperator::DjamoSn,
             PaydunyaOperator::TmoneyTogo,
+            PaydunyaOperator::WizallSenegal,
         ] {
             assert_eq!(non_mtn.wallet_provider(), None);
         }
@@ -1617,6 +1650,28 @@ mod tests {
         assert_eq!(value["wave_senegal_email"], "awa@example.com");
         assert_eq!(value["wave_senegal_phone"], "221770000000");
         assert_eq!(value["wave_senegal_payment_token"], "tok_wave");
+    }
+
+    #[test]
+    fn wizall_senegal_request_renames_full_name_to_camel_case() {
+        // Wizall Senegal's SOFTPAY endpoint expects `wizall_senegal_fullName`
+        // (camelCase) plus an operator-prefixed `wizall_senegal_payment_token`,
+        // mirroring the Wave Senegal layout. A rename regression here would
+        // silently drop the payer's name or token on the connector side.
+        let req = PaydunyaPaymentsRequest::WizallSenegal(PaydunyaWizallSenegalRequest {
+            wizall_senegal_full_name: Secret::new("Awa Ndiaye".to_string()),
+            wizall_senegal_email: email("awa@example.com"),
+            wizall_senegal_phone: Secret::new("221770000000".to_string()),
+            wizall_senegal_payment_token: "tok_wizall".to_string(),
+        });
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert!(value.get("wizall_senegal_full_name").is_none());
+        assert_eq!(value["wizall_senegal_fullName"], "Awa Ndiaye");
+        assert_eq!(value["wizall_senegal_email"], "awa@example.com");
+        assert_eq!(value["wizall_senegal_phone"], "221770000000");
+        assert_eq!(value["wizall_senegal_payment_token"], "tok_wizall");
+        assert!(value.get("payment_token").is_none());
     }
 
     #[test]
