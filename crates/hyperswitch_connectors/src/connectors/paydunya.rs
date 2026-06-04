@@ -27,7 +27,8 @@ use hyperswitch_domain_models::{
         PaymentsSyncData, RefundsData, SetupMandateRequestData,
     },
     router_response_types::{
-        ConnectorInfo, PaymentsResponseData, RefundsResponseData, SupportedPaymentMethods,
+        ConnectorInfo, PaymentMethodDetails, PaymentsResponseData, RefundsResponseData,
+        SupportedPaymentMethods, SupportedPaymentMethodsExt,
     },
     types::{
         PaymentsAuthorizeRouterData, PaymentsCaptureRouterData, PaymentsPreProcessingRouterData,
@@ -671,7 +672,38 @@ impl webhooks::IncomingWebhook for Paydunya {
 }
 
 static PAYDUNYA_SUPPORTED_PAYMENT_METHODS: LazyLock<SupportedPaymentMethods> =
-    LazyLock::new(SupportedPaymentMethods::new);
+    LazyLock::new(|| {
+        // Paydunya settles every mobile-money rail synchronously via the SOFTPAY
+        // authorize call, so only automatic capture is supported. Refunds and
+        // mandates are not implemented upstream.
+        let supported_capture_methods = vec![enums::CaptureMethod::Automatic];
+        let mut paydunya_supported_payment_methods = SupportedPaymentMethods::new();
+
+        for payment_method_type in [
+            enums::PaymentMethodType::Momo,
+            enums::PaymentMethodType::MoovMoney,
+            enums::PaymentMethodType::Wave,
+            enums::PaymentMethodType::OrangeMoney,
+            enums::PaymentMethodType::Djamo,
+            enums::PaymentMethodType::TMoney,
+            enums::PaymentMethodType::Wizall,
+            enums::PaymentMethodType::Expresso,
+            enums::PaymentMethodType::FreeMoney,
+        ] {
+            paydunya_supported_payment_methods.add(
+                enums::PaymentMethod::Wallet,
+                payment_method_type,
+                PaymentMethodDetails {
+                    mandates: enums::FeatureStatus::NotSupported,
+                    refunds: enums::FeatureStatus::NotSupported,
+                    supported_capture_methods: supported_capture_methods.clone(),
+                    specific_features: None,
+                },
+            );
+        }
+
+        paydunya_supported_payment_methods
+    });
 
 static PAYDUNYA_CONNECTOR_INFO: ConnectorInfo = ConnectorInfo {
     display_name: "Paydunya",
