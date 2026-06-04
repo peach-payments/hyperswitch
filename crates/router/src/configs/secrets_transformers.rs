@@ -78,16 +78,24 @@ impl SecretsHandler for settings::ForexApi {
         secret_management_client: &dyn SecretManagementInterface,
     ) -> CustomResult<SecretStateContainer<Self, RawSecret>, SecretsManagementError> {
         let forex_api = value.get_inner();
+        let (primary, fallback) = (forex_api.provider, forex_api.fallback_provider);
 
-        let (api_key, fallback_api_key) = tokio::try_join!(
-            secret_management_client.get_secret(forex_api.api_key.clone()),
-            secret_management_client.get_secret(forex_api.fallback_api_key.clone()),
+        // The provider is known from config, so only the active primary and fallback
+        // providers' keys are resolved from the secret manager (not every provider's).
+        let (primary_key, fallback_key) = tokio::try_join!(
+            secret_management_client.get_secret(forex_api.key_for(primary).clone()),
+            secret_management_client.get_secret(forex_api.key_for(fallback).clone()),
         )?;
 
-        Ok(value.transition_state(|forex_api| Self {
-            api_key,
-            fallback_api_key,
-            ..forex_api
+        Ok(value.transition_state(move |mut forex_api| {
+            for (name, key) in [(primary, primary_key), (fallback, fallback_key)] {
+                match name {
+                    settings::ProviderName::OpenExchangeRates => forex_api.api_key = key,
+                    settings::ProviderName::Fixer => forex_api.fixer_api_key = key,
+                    settings::ProviderName::CurrencyLayer => forex_api.fallback_api_key = key,
+                }
+            }
+            forex_api
         }))
     }
 }

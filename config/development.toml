@@ -84,8 +84,11 @@ locker_enabled = true
 ttl_for_storage_in_secs = 220752000
 
 [forex_api]
-api_key = ""
-fallback_api_key = ""
+provider = "open_exchange_rates"      # open_exchange_rates | fixer | currency_layer
+fallback_provider = "currency_layer"  # tried if the primary fetch fails
+api_key = ""                          # Open Exchange Rates app id (ROUTER__FOREX_API__API_KEY)
+fallback_api_key = ""                 # Currency Layer access key (ROUTER__FOREX_API__FALLBACK_API_KEY)
+fixer_api_key = ""                    # data.fixer.io access key (ROUTER__FOREX_API__FIXER_API_KEY)
 data_expiration_delay_in_seconds = 21600
 redis_lock_timeout_in_seconds = 100
 redis_ttl_in_seconds = 172800

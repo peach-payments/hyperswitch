@@ -33,7 +33,7 @@ pub use hyperswitch_interfaces::{
     },
     types::{ComparisonServiceConfig, Proxy},
 };
-use hyperswitch_masking::{Maskable, Secret};
+use hyperswitch_masking::{Maskable, PeekInterface, Secret};
 pub use payment_methods::configs::{
     settings::{
         BankRedirectConfig, BanksVector, ConnectorBankNames, ConnectorFields,
@@ -460,14 +460,80 @@ impl Default for PaymentLink {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+/// Selects which forex provider serves a role (`provider` / `fallback_provider`).
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderName {
+    /// openexchangerates.org (USD base).
+    #[default]
+    OpenExchangeRates,
+    /// data.fixer.io (EUR base).
+    Fixer,
+    /// apilayer.net/api/live (USD base).
+    CurrencyLayer,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct ForexApi {
+    /// Primary provider for the rate fetch.
+    pub provider: ProviderName,
+    /// Fallback provider, tried if the primary fetch fails.
+    pub fallback_provider: ProviderName,
+    /// Open Exchange Rates app id.
     pub api_key: Secret<String>,
+    /// Currency Layer (apilayer.net) access key.
     pub fallback_api_key: Secret<String>,
+    /// data.fixer.io access key.
+    pub fixer_api_key: Secret<String>,
     pub data_expiration_delay_in_seconds: u32,
     pub redis_lock_timeout_in_seconds: u32,
     pub redis_ttl_in_seconds: u32,
+}
+
+impl Default for ForexApi {
+    fn default() -> Self {
+        Self {
+            provider: ProviderName::OpenExchangeRates,
+            fallback_provider: ProviderName::CurrencyLayer,
+            api_key: Secret::default(),
+            fallback_api_key: Secret::default(),
+            fixer_api_key: Secret::default(),
+            data_expiration_delay_in_seconds: 21600,
+            redis_lock_timeout_in_seconds: 100,
+            redis_ttl_in_seconds: 172800,
+        }
+    }
+}
+
+impl ForexApi {
+    /// The credential field a given provider authenticates with.
+    pub fn key_for(&self, name: ProviderName) -> &Secret<String> {
+        match name {
+            ProviderName::OpenExchangeRates => &self.api_key,
+            ProviderName::Fixer => &self.fixer_api_key,
+            ProviderName::CurrencyLayer => &self.fallback_api_key,
+        }
+    }
+
+    /// Best-effort startup check: warn (do not fail) if a selected provider has no key,
+    /// so a misconfiguration surfaces at boot rather than only on the first forex call.
+    pub fn validate(&self) {
+        for (slot, name) in [
+            ("provider", self.provider),
+            ("fallback_provider", self.fallback_provider),
+        ] {
+            if self.key_for(name).peek().is_empty() {
+                // The logger is not yet initialized when the configuration is validated.
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!(
+                        "warning: forex_api.{slot} = {name:?} selected but its api_key is empty"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -1217,6 +1283,7 @@ impl Settings<SecuredSecret> {
         #[cfg(feature = "kv_store")]
         self.drainer.validate()?;
         self.api_keys.get_inner().validate()?;
+        self.forex_api.get_inner().validate();
 
         self.file_storage
             .validate()

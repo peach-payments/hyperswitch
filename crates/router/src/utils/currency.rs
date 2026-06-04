@@ -9,7 +9,7 @@ use api_models::enums;
 use common_utils::{date_time, errors::CustomResult, events::ApiEventMetric, ext_traits::AsyncExt};
 use currency_conversion::types::{CurrencyFactors, ExchangeRates};
 use error_stack::ResultExt;
-use hyperswitch_masking::PeekInterface;
+use hyperswitch_masking::{PeekInterface, Secret};
 use redis_interface::DelReply;
 use router_env::{instrument, tracing};
 use rust_decimal::Decimal;
@@ -19,16 +19,17 @@ use tracing_futures::Instrument;
 
 use crate::{
     logger,
-    routes::app::settings::{Conversion, DefaultExchangeRates},
+    routes::app::settings::{self, Conversion, DefaultExchangeRates, ProviderName},
     services, SessionState,
 };
 const REDIX_FOREX_CACHE_KEY: &str = "{forex_cache}_lock";
 const REDIX_FOREX_CACHE_DATA: &str = "{forex_cache}_data";
 const FOREX_API_TIMEOUT: u64 = 5;
-const FOREX_BASE_URL: &str = "https://openexchangerates.org/api/latest.json?app_id=";
-const FOREX_BASE_CURRENCY: &str = "&base=USD";
-const FALLBACK_FOREX_BASE_URL: &str = "http://apilayer.net/api/live?access_key=";
-const FALLBACK_FOREX_API_CURRENCY_PREFIX: &str = "USD";
+const OER_BASE_URL: &str = "https://openexchangerates.org/api/latest.json?app_id=";
+const OER_BASE_PARAM: &str = "&base=USD";
+const CURRENCY_LAYER_BASE_URL: &str = "http://apilayer.net/api/live?access_key=";
+const CURRENCY_LAYER_QUOTE_PREFIX: &str = "USD";
+const FIXER_BASE_URL: &str = "https://data.fixer.io/api/latest?access_key=";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FxExchangeRatesCacheEntry {
@@ -83,14 +84,86 @@ pub enum ForexError {
     WriteLockNotAcquired,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ForexResponse {
-    pub rates: HashMap<String, FloatDecimal>,
+#[derive(Debug, serde::Deserialize)]
+struct OerResponse {
+    rates: HashMap<String, FloatDecimal>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct FallbackForexResponse {
-    pub quotes: HashMap<String, FloatDecimal>,
+impl OerResponse {
+    fn into_exchange_rates(self) -> ExchangeRates {
+        build_exchange_rates(enums::Currency::USD, |enum_curr| {
+            self.rates.get(&enum_curr.to_string()).map(|rate| **rate)
+        })
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CurrencyLayerResponse {
+    quotes: HashMap<String, FloatDecimal>,
+}
+
+impl CurrencyLayerResponse {
+    fn into_exchange_rates(self) -> ExchangeRates {
+        // currencylayer quote keys are prefixed with the source currency, e.g. `USDZAR`.
+        build_exchange_rates(enums::Currency::USD, |enum_curr| {
+            self.quotes
+                .get(&format!("{CURRENCY_LAYER_QUOTE_PREFIX}{enum_curr}"))
+                .map(|rate| **rate)
+        })
+    }
+}
+
+// data.fixer.io returns `{ "success": true, "base": .., "rates": { .. } }` on success or
+// `{ "success": false, "error": { .. } }` on failure. The `success` flag is parsed
+// explicitly so an unexpected body yields a precise error rather than an opaque one.
+#[derive(Debug, serde::Deserialize)]
+struct FixerResponse {
+    success: bool,
+    base: Option<String>,
+    rates: Option<HashMap<String, FloatDecimal>>,
+    error: Option<FixerErrorBody>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct FixerErrorBody {
+    code: i64,
+    #[serde(rename = "type")]
+    error_type: String,
+    info: Option<String>,
+}
+
+impl FixerResponse {
+    fn into_exchange_rates(self) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+        if !self.success {
+            let error = self.error.unwrap_or_default();
+            logger::error!(
+                "forex_error: Fixer api returned an error (code {}, {}): {:?}",
+                error.code,
+                error.error_type,
+                error.info,
+            );
+            return Err(ForexError::ApiError.into());
+        }
+        // A success body with no rates is anomalous; fail over rather than cache an
+        // exchange-rates table that can only resolve the base currency.
+        let rates = match self.rates {
+            Some(rates) if !rates.is_empty() => rates,
+            _ => {
+                logger::error!("forex_error: Fixer success response contained no rates");
+                return Err(ForexError::ApiError.into());
+            }
+        };
+        let base = self
+            .base
+            .ok_or(ForexError::ApiError)
+            .attach_printable("Fixer success response missing base currency")?;
+        let base_currency = enums::Currency::from_str(base.as_str())
+            .change_context(ForexError::ConversionError)
+            .attach_printable("Unable to convert base currency received from fixer api")?;
+        Ok(build_exchange_rates(base_currency, |enum_curr| {
+            rates.get(&enum_curr.to_string()).map(|rate| **rate)
+        }))
+    }
 }
 
 #[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize)]
@@ -206,8 +279,8 @@ async fn call_forex_api_and_save_data_to_cache_and_redis(
     stale_redis_data: Option<FxExchangeRatesCacheEntry>,
 ) -> CustomResult<FxExchangeRatesCacheEntry, ForexError> {
     // spawn a new thread and do the api fetch and write operations on redis.
-    let forex_api_key = state.conf.forex_api.get_inner().api_key.peek();
-    if forex_api_key.is_empty() {
+    let forex_api = state.conf.forex_api.get_inner();
+    if forex_api.key_for(forex_api.provider).peek().is_empty() {
         Err(ForexError::ConfigurationError("api_keys not provided".into()).into())
     } else {
         let state = state.clone();
@@ -234,20 +307,17 @@ async fn acquire_redis_lock_and_call_forex_api(
         Err(ForexError::CouldNotAcquireLock.into())
     } else {
         logger::debug!("forex_log: redis lock acquired");
-        let api_rates = fetch_forex_rates_from_primary_api(state).await;
-        match api_rates {
-            Ok(rates) => save_forex_data_to_cache_and_redis(state, rates).await,
+        let forex_api = state.conf.forex_api.get_inner();
+        let primary = ForexProvider::from_config(forex_api.provider, forex_api);
+        let fallback = ForexProvider::from_config(forex_api.fallback_provider, forex_api);
+        match fetch_with_fallback(&primary, &fallback, state).await {
+            Ok(rates) => {
+                save_forex_data_to_cache_and_redis(state, FxExchangeRatesCacheEntry::new(rates))
+                    .await
+            }
             Err(error) => {
-                logger::error!(forex_error=?error,"primary_forex_error");
-                // API not able to fetch data call secondary service
-                let secondary_api_rates = fetch_forex_rates_from_fallback_api(state).await;
-                match secondary_api_rates {
-                    Ok(rates) => save_forex_data_to_cache_and_redis(state, rates).await,
-                    Err(error) => {
-                        release_redis_lock(state).await?;
-                        Err(error)
-                    }
-                }
+                release_redis_lock(state).await?;
+                Err(error)
             }
         }
     }
@@ -285,153 +355,167 @@ async fn call_forex_api_if_redis_data_expired(
     }
 }
 
-async fn fetch_forex_rates_from_primary_api(
-    state: &SessionState,
-) -> Result<FxExchangeRatesCacheEntry, error_stack::Report<ForexError>> {
-    let forex_api_key = state.conf.forex_api.get_inner().api_key.peek();
-
-    logger::debug!("forex_log: Primary api call for forex fetch");
-    let forex_url: String = format!("{FOREX_BASE_URL}{forex_api_key}{FOREX_BASE_CURRENCY}");
-    let forex_request = services::RequestBuilder::new()
-        .method(services::Method::Get)
-        .url(&forex_url)
-        .build();
-
-    logger::info!(primary_forex_request=?forex_request,"forex_log: Primary api call for forex fetch");
-    let response = state
-        .api_client
-        .send_request(
-            &state.clone(),
-            forex_request,
-            Some(FOREX_API_TIMEOUT),
-            false,
-        )
-        .await
-        .change_context(ForexError::ApiUnresponsive)
-        .attach_printable("Primary forex fetch api unresponsive")?;
-    let forex_response = response
-        .json::<ForexResponse>()
-        .await
-        .change_context(ForexError::ParsingError)
-        .attach_printable(
-            "Unable to parse response received from primary api into ForexResponse",
-        )?;
-
-    logger::info!(primary_forex_response=?forex_response,"forex_log");
-
+/// Builds `ExchangeRates` from a base currency and a `base -> currency` rate lookup.
+/// `rate_of(c)` returns the units of `c` per one unit of `base`. The base currency is
+/// always inserted as identity `(1, 1)` so base conversions are defined even when a feed
+/// omits the base from its table. Non-invertible (zero) rates are skipped.
+fn build_exchange_rates(
+    base_currency: enums::Currency,
+    rate_of: impl Fn(enums::Currency) -> Option<Decimal>,
+) -> ExchangeRates {
     let mut conversions: HashMap<enums::Currency, CurrencyFactors> = HashMap::new();
     for enum_curr in enums::Currency::iter() {
-        match forex_response.rates.get(&enum_curr.to_string()) {
-            Some(rate) => {
-                let from_factor = match Decimal::new(1, 0).checked_div(**rate) {
-                    Some(rate) => rate,
-                    None => {
-                        logger::error!(
-                            "forex_error: Rates for {} not received from API",
-                            &enum_curr
-                        );
-                        continue;
-                    }
-                };
-                let currency_factors = CurrencyFactors::new(**rate, from_factor);
-                conversions.insert(enum_curr, currency_factors);
+        let rate = match rate_of(enum_curr) {
+            Some(rate) => rate,
+            None if enum_curr == base_currency => Decimal::new(1, 0),
+            None => continue,
+        };
+        match Decimal::new(1, 0).checked_div(rate) {
+            Some(from_factor) => {
+                conversions.insert(enum_curr, CurrencyFactors::new(rate, from_factor));
             }
             None => {
-                logger::error!(
-                    "forex_error: Rates for {} not received from API",
-                    &enum_curr
-                );
+                logger::warn!(
+                    "forex_log: zero/non-invertible rate for {}, skipped",
+                    enum_curr
+                )
             }
-        };
+        }
     }
-
-    Ok(FxExchangeRatesCacheEntry::new(ExchangeRates::new(
-        enums::Currency::USD,
-        conversions,
-    )))
+    ExchangeRates::new(base_currency, conversions)
 }
 
-pub async fn fetch_forex_rates_from_fallback_api(
+/// Shared HTTP GET + JSON parse for forex providers. Logs only the provider name —
+/// never the URL, which carries the api key as a query parameter.
+async fn forex_get_json<R>(
     state: &SessionState,
-) -> CustomResult<FxExchangeRatesCacheEntry, ForexError> {
-    let fallback_forex_api_key = state.conf.forex_api.get_inner().fallback_api_key.peek();
-
-    let fallback_forex_url: String = format!("{FALLBACK_FOREX_BASE_URL}{fallback_forex_api_key}");
-    let fallback_forex_request = services::RequestBuilder::new()
+    provider: &str,
+    url: &str,
+) -> Result<R, error_stack::Report<ForexError>>
+where
+    R: serde::de::DeserializeOwned,
+{
+    logger::debug!(forex_provider = provider, "forex_log: fetching forex rates");
+    let request = services::RequestBuilder::new()
         .method(services::Method::Get)
-        .url(&fallback_forex_url)
+        .url(url)
         .build();
-
-    logger::info!(fallback_forex_request=?fallback_forex_request,"forex_log: Fallback api call for forex fetch");
     let response = state
         .api_client
-        .send_request(
-            &state.clone(),
-            fallback_forex_request,
-            Some(FOREX_API_TIMEOUT),
-            false,
-        )
+        .send_request(&state.clone(), request, Some(FOREX_API_TIMEOUT), false)
         .await
         .change_context(ForexError::ApiUnresponsive)
-        .attach_printable("Fallback forex fetch api unresponsive")?;
-
-    let fallback_forex_response = response
-        .json::<FallbackForexResponse>()
+        .attach_printable("forex fetch api unresponsive")?;
+    response
+        .json::<R>()
         .await
         .change_context(ForexError::ParsingError)
-        .attach_printable(
-            "Unable to parse response received from fallback api into ForexResponse",
-        )?;
+        .attach_printable("Unable to parse response received from forex api")
+}
 
-    logger::info!(fallback_forex_response=?fallback_forex_response,"forex_log");
+/// Abstract interface for a forex rate provider.
+/// openexchangerates.org — USD base.
+struct OpenExchangeRates {
+    api_key: Secret<String>,
+}
 
-    let mut conversions: HashMap<enums::Currency, CurrencyFactors> = HashMap::new();
-    for enum_curr in enums::Currency::iter() {
-        match fallback_forex_response.quotes.get(
-            format!(
-                "{}{}",
-                FALLBACK_FOREX_API_CURRENCY_PREFIX,
-                &enum_curr.to_string()
-            )
-            .as_str(),
-        ) {
-            Some(rate) => {
-                let from_factor = match Decimal::new(1, 0).checked_div(**rate) {
-                    Some(rate) => rate,
-                    None => {
-                        logger::error!(
-                            "forex_error: Rates for {} not received from API",
-                            &enum_curr
-                        );
-                        continue;
-                    }
-                };
-                let currency_factors = CurrencyFactors::new(**rate, from_factor);
-                conversions.insert(enum_curr, currency_factors);
+/// data.fixer.io — EUR base on the paid plan; the base is read from the response.
+struct Fixer {
+    api_key: Secret<String>,
+}
+
+/// apilayer.net/api/live — USD base; quote keys are prefixed with `USD`.
+struct CurrencyLayer {
+    api_key: Secret<String>,
+}
+
+impl OpenExchangeRates {
+    async fn fetch(
+        &self,
+        state: &SessionState,
+    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+        let url = format!("{OER_BASE_URL}{}{OER_BASE_PARAM}", self.api_key.peek());
+        let response: OerResponse = forex_get_json(state, "open_exchange_rates", &url).await?;
+        Ok(response.into_exchange_rates())
+    }
+}
+
+impl Fixer {
+    async fn fetch(
+        &self,
+        state: &SessionState,
+    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+        let url = format!("{FIXER_BASE_URL}{}", self.api_key.peek());
+        let response: FixerResponse = forex_get_json(state, "fixer", &url).await?;
+        response.into_exchange_rates()
+    }
+}
+
+impl CurrencyLayer {
+    async fn fetch(
+        &self,
+        state: &SessionState,
+    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+        let url = format!("{CURRENCY_LAYER_BASE_URL}{}", self.api_key.peek());
+        let response: CurrencyLayerResponse = forex_get_json(state, "currency_layer", &url).await?;
+        Ok(response.into_exchange_rates())
+    }
+}
+
+/// Closed set of forex providers, dispatched by variant (no trait object needed).
+enum ForexProvider {
+    OpenExchangeRates(OpenExchangeRates),
+    Fixer(Fixer),
+    CurrencyLayer(CurrencyLayer),
+}
+
+impl ForexProvider {
+    /// Construct the active provider from (already-decrypted) configuration.
+    fn from_config(name: ProviderName, conf: &settings::ForexApi) -> Self {
+        let api_key = conf.key_for(name).clone();
+        match name {
+            ProviderName::OpenExchangeRates => {
+                Self::OpenExchangeRates(OpenExchangeRates { api_key })
             }
-            None => {
-                if enum_curr == enums::Currency::USD {
-                    let currency_factors =
-                        CurrencyFactors::new(Decimal::new(1, 0), Decimal::new(1, 0));
-                    conversions.insert(enum_curr, currency_factors);
-                } else {
-                    logger::error!(
-                        "forex_error: Rates for {} not received from API",
-                        &enum_curr
-                    );
-                }
-            }
-        };
+            ProviderName::Fixer => Self::Fixer(Fixer { api_key }),
+            ProviderName::CurrencyLayer => Self::CurrencyLayer(CurrencyLayer { api_key }),
+        }
     }
 
-    let rates =
-        FxExchangeRatesCacheEntry::new(ExchangeRates::new(enums::Currency::USD, conversions));
-    match acquire_redis_lock(state).await {
-        Ok(_) => {
-            save_forex_data_to_cache_and_redis(state, rates.clone()).await?;
-            Ok(rates)
+    /// Stable label for logs. Never contains the credential.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::OpenExchangeRates(_) => "open_exchange_rates",
+            Self::Fixer(_) => "fixer",
+            Self::CurrencyLayer(_) => "currency_layer",
         }
-        Err(e) => Err(e),
+    }
+
+    /// Fetch the full rate table and normalize it to base-agnostic `ExchangeRates`.
+    async fn fetch_rates(
+        &self,
+        state: &SessionState,
+    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+        match self {
+            Self::OpenExchangeRates(provider) => provider.fetch(state).await,
+            Self::Fixer(provider) => provider.fetch(state).await,
+            Self::CurrencyLayer(provider) => provider.fetch(state).await,
+        }
+    }
+}
+
+/// Fetch from `primary`, falling back to `fallback` on any error.
+async fn fetch_with_fallback(
+    primary: &ForexProvider,
+    fallback: &ForexProvider,
+    state: &SessionState,
+) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+    match primary.fetch_rates(state).await {
+        Ok(rates) => Ok(rates),
+        Err(error) => {
+            logger::error!(forex_error = ?error, primary = primary.name(), "primary_forex_error");
+            fallback.fetch_rates(state).await
+        }
     }
 }
 
@@ -544,4 +628,250 @@ pub async fn convert_currency(
         converted_amount: converted_amount.to_string(),
         currency: to_currency.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fd(mantissa: i64, scale: u32) -> FloatDecimal {
+        FloatDecimal(Decimal::new(mantissa, scale))
+    }
+
+    #[test]
+    fn provider_name_deserializes_each_variant() {
+        assert_eq!(
+            serde_json::from_str::<ProviderName>("\"open_exchange_rates\"").unwrap(),
+            ProviderName::OpenExchangeRates
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderName>("\"fixer\"").unwrap(),
+            ProviderName::Fixer
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderName>("\"currency_layer\"").unwrap(),
+            ProviderName::CurrencyLayer
+        );
+        assert!(serde_json::from_str::<ProviderName>("\"nope\"").is_err());
+    }
+
+    // Config deserialization gate: provider/fallback selectors + the flat key fields.
+    #[test]
+    fn forex_api_deserializes_config() {
+        let conf: settings::ForexApi = serde_json::from_value(serde_json::json!({
+            "provider": "fixer",
+            "fallback_provider": "currency_layer",
+            "api_key": "oer",
+            "fallback_api_key": "cl",
+            "fixer_api_key": "fx",
+            "data_expiration_delay_in_seconds": 21600,
+            "redis_lock_timeout_in_seconds": 100,
+            "redis_ttl_in_seconds": 172800,
+        }))
+        .unwrap();
+        assert_eq!(conf.provider, ProviderName::Fixer);
+        assert_eq!(conf.fallback_provider, ProviderName::CurrencyLayer);
+        // key_for maps each provider to its credential field.
+        assert_eq!(conf.key_for(ProviderName::Fixer).peek(), "fx");
+        assert_eq!(conf.key_for(ProviderName::OpenExchangeRates).peek(), "oer");
+        assert_eq!(conf.key_for(ProviderName::CurrencyLayer).peek(), "cl");
+    }
+
+    // Backward compatibility: a pre-Fixer `[forex_api]` (only api_key + fallback_api_key,
+    // no provider/fallback_provider/fixer_api_key) still deserializes and keeps the original
+    // behaviour — OER primary, Currency Layer fallback — via the struct's serde defaults.
+    #[test]
+    fn legacy_forex_config_is_backward_compatible() {
+        let conf: settings::ForexApi = serde_json::from_value(serde_json::json!({
+            "api_key": "oer",
+            "fallback_api_key": "cl",
+            "data_expiration_delay_in_seconds": 21600,
+            "redis_lock_timeout_in_seconds": 100,
+            "redis_ttl_in_seconds": 172800,
+        }))
+        .unwrap();
+        assert_eq!(conf.provider, ProviderName::OpenExchangeRates);
+        assert_eq!(conf.fallback_provider, ProviderName::CurrencyLayer);
+        assert_eq!(conf.key_for(ProviderName::OpenExchangeRates).peek(), "oer");
+        assert_eq!(conf.key_for(ProviderName::CurrencyLayer).peek(), "cl");
+        assert!(conf.fixer_api_key.peek().is_empty());
+    }
+
+    #[test]
+    fn default_fallback_is_currency_layer() {
+        let conf = settings::ForexApi::default();
+        assert_eq!(conf.provider, ProviderName::OpenExchangeRates);
+        assert_eq!(conf.fallback_provider, ProviderName::CurrencyLayer);
+    }
+
+    #[test]
+    fn from_config_constructs_named_provider() {
+        let conf = settings::ForexApi {
+            api_key: "oer".to_string().into(),
+            fallback_api_key: "cl".to_string().into(),
+            fixer_api_key: "fx".to_string().into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            ForexProvider::from_config(ProviderName::OpenExchangeRates, &conf).name(),
+            "open_exchange_rates"
+        );
+        assert_eq!(
+            ForexProvider::from_config(ProviderName::Fixer, &conf).name(),
+            "fixer"
+        );
+        assert_eq!(
+            ForexProvider::from_config(ProviderName::CurrencyLayer, &conf).name(),
+            "currency_layer"
+        );
+    }
+
+    #[test]
+    fn build_exchange_rates_sets_inverse_factors() {
+        let rates = build_exchange_rates(enums::Currency::USD, |curr| match curr {
+            enums::Currency::USD => Some(Decimal::new(1, 0)),
+            enums::Currency::ZAR => Some(Decimal::new(185, 1)), // 18.5
+            _ => None,
+        });
+        assert_eq!(rates.base_currency, enums::Currency::USD);
+        let zar = rates.conversion.get(&enums::Currency::ZAR).unwrap();
+        assert_eq!(zar.to_factor, Decimal::new(185, 1));
+        assert_eq!(
+            zar.from_factor,
+            Decimal::new(1, 0)
+                .checked_div(Decimal::new(185, 1))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn build_exchange_rates_inserts_base_identity_when_absent() {
+        // EUR (the base) is not present in the feed.
+        let rates = build_exchange_rates(enums::Currency::EUR, |curr| match curr {
+            enums::Currency::ZAR => Some(Decimal::new(20, 0)),
+            _ => None,
+        });
+        let eur = rates.conversion.get(&enums::Currency::EUR).unwrap();
+        assert_eq!(eur.to_factor, Decimal::new(1, 0));
+        assert_eq!(eur.from_factor, Decimal::new(1, 0));
+    }
+
+    #[test]
+    fn build_exchange_rates_skips_zero_rate() {
+        let rates = build_exchange_rates(enums::Currency::USD, |curr| match curr {
+            enums::Currency::USD => Some(Decimal::new(1, 0)),
+            enums::Currency::ZAR => Some(Decimal::new(0, 0)),
+            _ => None,
+        });
+        assert!(!rates.conversion.contains_key(&enums::Currency::ZAR));
+    }
+
+    #[test]
+    fn oer_response_uses_usd_base() {
+        let response = OerResponse {
+            rates: HashMap::from([
+                ("USD".to_string(), fd(1, 0)),
+                ("ZAR".to_string(), fd(185, 1)),
+            ]),
+        };
+        let rates = response.into_exchange_rates();
+        assert_eq!(rates.base_currency, enums::Currency::USD);
+        assert!(rates.conversion.contains_key(&enums::Currency::ZAR));
+    }
+
+    #[test]
+    fn currency_layer_strips_usd_prefix() {
+        let response = CurrencyLayerResponse {
+            quotes: HashMap::from([("USDZAR".to_string(), fd(185, 1))]),
+        };
+        let rates = response.into_exchange_rates();
+        assert_eq!(rates.base_currency, enums::Currency::USD);
+        assert!(rates.conversion.contains_key(&enums::Currency::ZAR));
+    }
+
+    #[test]
+    fn fixer_success_reads_base_from_response() {
+        let response = FixerResponse {
+            success: true,
+            base: Some("EUR".to_string()),
+            rates: Some(HashMap::from([
+                ("USD".to_string(), fd(11634, 4)),  // 1.1634
+                ("ZAR".to_string(), fd(189115, 4)), // 18.9115
+                ("EUR".to_string(), fd(1, 0)),
+            ])),
+            error: None,
+        };
+        let rates = response.into_exchange_rates().unwrap();
+        assert_eq!(rates.base_currency, enums::Currency::EUR);
+        assert!(rates.conversion.contains_key(&enums::Currency::USD));
+    }
+
+    #[test]
+    fn fixer_error_body_is_an_error() {
+        let response = FixerResponse {
+            success: false,
+            base: None,
+            rates: None,
+            error: Some(FixerErrorBody {
+                code: 105,
+                error_type: "base_currency_access_restricted".to_string(),
+                info: None,
+            }),
+        };
+        assert!(response.into_exchange_rates().is_err());
+    }
+
+    // R6: a success body with no rates must fail over, not cache a base-only table.
+    #[test]
+    fn fixer_success_without_rates_is_an_error() {
+        let response = FixerResponse {
+            success: true,
+            base: Some("EUR".to_string()),
+            rates: None,
+            error: None,
+        };
+        assert!(response.into_exchange_rates().is_err());
+    }
+
+    // The correctness crown jewel: EUR-based rates convert every pair (incl. X->USD).
+    #[test]
+    fn conversion_is_base_agnostic_through_eur() {
+        let response = FixerResponse {
+            success: true,
+            base: Some("EUR".to_string()),
+            rates: Some(HashMap::from([
+                ("USD".to_string(), fd(11634, 4)),  // 1 EUR = 1.1634 USD
+                ("ZAR".to_string(), fd(189115, 4)), // 1 EUR = 18.9115 ZAR
+                ("EUR".to_string(), fd(1, 0)),
+            ])),
+            error: None,
+        };
+        let rates = response.into_exchange_rates().unwrap();
+
+        // 100.00 USD -> ZAR  (~ 100 * 18.9115 / 1.1634 = 1625.5)
+        let usd_to_zar = currency_conversion::conversion::convert(
+            &rates,
+            enums::Currency::USD,
+            enums::Currency::ZAR,
+            10000,
+        )
+        .unwrap();
+        assert!(
+            usd_to_zar > Decimal::new(1600, 0) && usd_to_zar < Decimal::new(1650, 0),
+            "USD->ZAR was {usd_to_zar}"
+        );
+
+        // 100.00 ZAR -> USD  (~ 6.15) — exercises the X->USD path analytics relies on.
+        let zar_to_usd = currency_conversion::conversion::convert(
+            &rates,
+            enums::Currency::ZAR,
+            enums::Currency::USD,
+            10000,
+        )
+        .unwrap();
+        assert!(
+            zar_to_usd > Decimal::new(5, 0) && zar_to_usd < Decimal::new(7, 0),
+            "ZAR->USD was {zar_to_usd}"
+        );
+    }
 }
