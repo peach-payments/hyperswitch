@@ -473,6 +473,10 @@ pub enum ProviderName {
     CurrencyLayer,
 }
 
+/// Forex configuration. The three credential fields keep their historical (flat) names for
+/// backward compatibility, but each binds to a specific **provider**, not to a role: see
+/// [`ForexApi::key_for`]. So whichever provider is selected (primary *or* fallback) reads its
+/// own field — e.g. selecting `currency_layer` as the primary uses `fallback_api_key`.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct ForexApi {
@@ -480,11 +484,12 @@ pub struct ForexApi {
     pub provider: ProviderName,
     /// Fallback provider, tried if the primary fetch fails.
     pub fallback_provider: ProviderName,
-    /// Open Exchange Rates app id.
+    /// Open Exchange Rates app id (used whenever `open_exchange_rates` is selected).
     pub api_key: Secret<String>,
-    /// Currency Layer (apilayer.net) access key.
+    /// Currency Layer (apilayer.net) access key (used whenever `currency_layer` is selected,
+    /// as primary or fallback — the field name is historical, not a role).
     pub fallback_api_key: Secret<String>,
-    /// data.fixer.io access key.
+    /// data.fixer.io access key (used whenever `fixer` is selected).
     pub fixer_api_key: Secret<String>,
     pub data_expiration_delay_in_seconds: u32,
     pub redis_lock_timeout_in_seconds: u32,
@@ -507,7 +512,9 @@ impl Default for ForexApi {
 }
 
 impl ForexApi {
-    /// The credential field a given provider authenticates with.
+    /// The credential field a given provider authenticates with. This maps a *provider* to its
+    /// key — the field names (`api_key` / `fallback_api_key`) are historical roles, not the
+    /// binding. This is the single sanctioned reader of the per-provider key fields.
     pub fn key_for(&self, name: ProviderName) -> &Secret<String> {
         match name {
             ProviderName::OpenExchangeRates => &self.api_key,
@@ -516,9 +523,24 @@ impl ForexApi {
         }
     }
 
-    /// Best-effort startup check: warn (do not fail) if a selected provider has no key,
-    /// so a misconfiguration surfaces at boot rather than only on the first forex call.
+    /// Best-effort startup check: warn (do not fail) on a likely misconfiguration, so it
+    /// surfaces at boot rather than only on the first forex call.
+    ///
+    /// Note: this runs on the *un-decrypted* configuration (before the secret manager resolves
+    /// keys), so under KMS/Vault a key is a reference string and looks non-empty here — the
+    /// empty-key warning is therefore most useful for local/raw deployments. The runtime path
+    /// (`utils::currency`) covers the resolved case.
     pub fn validate(&self) {
+        if self.provider == self.fallback_provider {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!(
+                    "warning: forex_api.provider and fallback_provider are both {:?}; \
+                     failover will retry the same endpoint",
+                    self.provider
+                );
+            }
+        }
         for (slot, name) in [
             ("provider", self.provider),
             ("fallback_provider", self.fallback_provider),

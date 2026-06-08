@@ -280,7 +280,15 @@ async fn call_forex_api_and_save_data_to_cache_and_redis(
 ) -> CustomResult<FxExchangeRatesCacheEntry, ForexError> {
     // spawn a new thread and do the api fetch and write operations on redis.
     let forex_api = state.conf.forex_api.get_inner();
-    if forex_api.key_for(forex_api.provider).peek().is_empty() {
+    // Hard-error only when neither the primary nor the fallback has a key. With a configured
+    // fallback, an empty primary key must still fail over (handled by `fetch_with_fallback`),
+    // not short-circuit here.
+    if forex_api.key_for(forex_api.provider).peek().is_empty()
+        && forex_api
+            .key_for(forex_api.fallback_provider)
+            .peek()
+            .is_empty()
+    {
         Err(ForexError::ConfigurationError("api_keys not provided".into()).into())
     } else {
         let state = state.clone();
@@ -308,9 +316,10 @@ async fn acquire_redis_lock_and_call_forex_api(
     } else {
         logger::debug!("forex_log: redis lock acquired");
         let forex_api = state.conf.forex_api.get_inner();
-        let primary = ForexProvider::from_config(forex_api.provider, forex_api);
-        let fallback = ForexProvider::from_config(forex_api.fallback_provider, forex_api);
-        match fetch_with_fallback(&primary, &fallback, state).await {
+        let primary = ForexProvider::from_config(forex_api.provider, forex_api, state.clone());
+        let fallback =
+            ForexProvider::from_config(forex_api.fallback_provider, forex_api, state.clone());
+        match fetch_with_fallback(&primary, &fallback).await {
             Ok(rates) => {
                 save_forex_data_to_cache_and_redis(state, FxExchangeRatesCacheEntry::new(rates))
                     .await
@@ -382,6 +391,13 @@ fn build_exchange_rates(
             }
         }
     }
+    // Missing currencies are skipped silently (a feed need not quote every ISO code), so log
+    // the resulting coverage — a sudden drop in the count signals a truncated feed.
+    logger::debug!(
+        "forex_log: built {} conversion rates for base {}",
+        conversions.len(),
+        base_currency
+    );
     ExchangeRates::new(base_currency, conversions)
 }
 
@@ -413,56 +429,75 @@ where
         .attach_printable("Unable to parse response received from forex api")
 }
 
-/// Abstract interface for a forex rate provider.
+/// Abstract interface for a forex rate provider: fetches the full rate table and normalizes
+/// it to base-agnostic `ExchangeRates`. Implemented by each concrete provider and by the
+/// wrapping `ForexProvider` enum, so the failover seam (`fetch_with_fallback`) can be
+/// unit-tested with a mock — no `SessionState` required.
+#[async_trait::async_trait]
+trait ForexRateProvider {
+    /// Stable label for logs/metrics. MUST NOT contain the credential.
+    fn name(&self) -> &'static str;
+
+    /// Fetch the full rate table and normalize to base-agnostic `ExchangeRates`.
+    async fn fetch_rates(&self) -> Result<ExchangeRates, error_stack::Report<ForexError>>;
+}
+
 /// openexchangerates.org — USD base.
 struct OpenExchangeRates {
     api_key: Secret<String>,
+    state: SessionState,
 }
 
 /// data.fixer.io — EUR base on the paid plan; the base is read from the response.
 struct Fixer {
     api_key: Secret<String>,
+    state: SessionState,
 }
 
 /// apilayer.net/api/live — USD base; quote keys are prefixed with `USD`.
 struct CurrencyLayer {
     api_key: Secret<String>,
+    state: SessionState,
 }
 
-impl OpenExchangeRates {
-    async fn fetch(
-        &self,
-        state: &SessionState,
-    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+#[async_trait::async_trait]
+impl ForexRateProvider for OpenExchangeRates {
+    fn name(&self) -> &'static str {
+        "open_exchange_rates"
+    }
+    async fn fetch_rates(&self) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
         let url = format!("{OER_BASE_URL}{}{OER_BASE_PARAM}", self.api_key.peek());
-        let response: OerResponse = forex_get_json(state, "open_exchange_rates", &url).await?;
+        let response: OerResponse = forex_get_json(&self.state, self.name(), &url).await?;
         Ok(response.into_exchange_rates())
     }
 }
 
-impl Fixer {
-    async fn fetch(
-        &self,
-        state: &SessionState,
-    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+#[async_trait::async_trait]
+impl ForexRateProvider for Fixer {
+    fn name(&self) -> &'static str {
+        "fixer"
+    }
+    async fn fetch_rates(&self) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
         let url = format!("{FIXER_BASE_URL}{}", self.api_key.peek());
-        let response: FixerResponse = forex_get_json(state, "fixer", &url).await?;
+        let response: FixerResponse = forex_get_json(&self.state, self.name(), &url).await?;
         response.into_exchange_rates()
     }
 }
 
-impl CurrencyLayer {
-    async fn fetch(
-        &self,
-        state: &SessionState,
-    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+#[async_trait::async_trait]
+impl ForexRateProvider for CurrencyLayer {
+    fn name(&self) -> &'static str {
+        "currency_layer"
+    }
+    async fn fetch_rates(&self) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
         let url = format!("{CURRENCY_LAYER_BASE_URL}{}", self.api_key.peek());
-        let response: CurrencyLayerResponse = forex_get_json(state, "currency_layer", &url).await?;
+        let response: CurrencyLayerResponse =
+            forex_get_json(&self.state, self.name(), &url).await?;
         Ok(response.into_exchange_rates())
     }
 }
 
-/// Closed set of forex providers, dispatched by variant (no trait object needed).
+/// Closed set of forex providers, dispatched by variant (static dispatch; no trait object).
 enum ForexProvider {
     OpenExchangeRates(OpenExchangeRates),
     Fixer(Fixer),
@@ -470,51 +505,49 @@ enum ForexProvider {
 }
 
 impl ForexProvider {
-    /// Construct the active provider from (already-decrypted) configuration.
-    fn from_config(name: ProviderName, conf: &settings::ForexApi) -> Self {
+    /// Construct the active provider from (already-decrypted) configuration. `state` is cloned
+    /// into the provider so each fetch carries its own context and the failover seam stays
+    /// mockable without a `SessionState`.
+    fn from_config(name: ProviderName, conf: &settings::ForexApi, state: SessionState) -> Self {
         let api_key = conf.key_for(name).clone();
         match name {
             ProviderName::OpenExchangeRates => {
-                Self::OpenExchangeRates(OpenExchangeRates { api_key })
+                Self::OpenExchangeRates(OpenExchangeRates { api_key, state })
             }
-            ProviderName::Fixer => Self::Fixer(Fixer { api_key }),
-            ProviderName::CurrencyLayer => Self::CurrencyLayer(CurrencyLayer { api_key }),
+            ProviderName::Fixer => Self::Fixer(Fixer { api_key, state }),
+            ProviderName::CurrencyLayer => Self::CurrencyLayer(CurrencyLayer { api_key, state }),
         }
     }
+}
 
-    /// Stable label for logs. Never contains the credential.
+#[async_trait::async_trait]
+impl ForexRateProvider for ForexProvider {
     fn name(&self) -> &'static str {
         match self {
-            Self::OpenExchangeRates(_) => "open_exchange_rates",
-            Self::Fixer(_) => "fixer",
-            Self::CurrencyLayer(_) => "currency_layer",
+            Self::OpenExchangeRates(provider) => provider.name(),
+            Self::Fixer(provider) => provider.name(),
+            Self::CurrencyLayer(provider) => provider.name(),
         }
     }
-
-    /// Fetch the full rate table and normalize it to base-agnostic `ExchangeRates`.
-    async fn fetch_rates(
-        &self,
-        state: &SessionState,
-    ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+    async fn fetch_rates(&self) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
         match self {
-            Self::OpenExchangeRates(provider) => provider.fetch(state).await,
-            Self::Fixer(provider) => provider.fetch(state).await,
-            Self::CurrencyLayer(provider) => provider.fetch(state).await,
+            Self::OpenExchangeRates(provider) => provider.fetch_rates().await,
+            Self::Fixer(provider) => provider.fetch_rates().await,
+            Self::CurrencyLayer(provider) => provider.fetch_rates().await,
         }
     }
 }
 
 /// Fetch from `primary`, falling back to `fallback` on any error.
 async fn fetch_with_fallback(
-    primary: &ForexProvider,
-    fallback: &ForexProvider,
-    state: &SessionState,
+    primary: &impl ForexRateProvider,
+    fallback: &impl ForexRateProvider,
 ) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
-    match primary.fetch_rates(state).await {
+    match primary.fetch_rates().await {
         Ok(rates) => Ok(rates),
         Err(error) => {
             logger::error!(forex_error = ?error, primary = primary.name(), "primary_forex_error");
-            fallback.fetch_rates(state).await
+            fallback.fetch_rates().await
         }
     }
 }
@@ -705,28 +738,6 @@ mod tests {
     }
 
     #[test]
-    fn from_config_constructs_named_provider() {
-        let conf = settings::ForexApi {
-            api_key: "oer".to_string().into(),
-            fallback_api_key: "cl".to_string().into(),
-            fixer_api_key: "fx".to_string().into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            ForexProvider::from_config(ProviderName::OpenExchangeRates, &conf).name(),
-            "open_exchange_rates"
-        );
-        assert_eq!(
-            ForexProvider::from_config(ProviderName::Fixer, &conf).name(),
-            "fixer"
-        );
-        assert_eq!(
-            ForexProvider::from_config(ProviderName::CurrencyLayer, &conf).name(),
-            "currency_layer"
-        );
-    }
-
-    #[test]
     fn build_exchange_rates_sets_inverse_factors() {
         let rates = build_exchange_rates(enums::Currency::USD, |curr| match curr {
             enums::Currency::USD => Some(Decimal::new(1, 0)),
@@ -873,5 +884,74 @@ mod tests {
             zar_to_usd > Decimal::new(5, 0) && zar_to_usd < Decimal::new(7, 0),
             "ZAR->USD was {zar_to_usd}"
         );
+    }
+
+    // --- Failover orchestration: exercised via a mock (no SessionState needed). ---
+
+    struct MockProvider {
+        name: &'static str,
+        result: Result<ExchangeRates, ForexError>,
+    }
+
+    #[async_trait::async_trait]
+    impl ForexRateProvider for MockProvider {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        async fn fetch_rates(&self) -> Result<ExchangeRates, error_stack::Report<ForexError>> {
+            self.result.clone().map_err(Into::into)
+        }
+    }
+
+    fn rates_with_base(base: enums::Currency) -> ExchangeRates {
+        build_exchange_rates(base, |curr| {
+            if curr == base {
+                Some(Decimal::new(1, 0))
+            } else {
+                None
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn fallback_not_used_when_primary_succeeds() {
+        let primary = MockProvider {
+            name: "primary",
+            result: Ok(rates_with_base(enums::Currency::USD)),
+        };
+        let fallback = MockProvider {
+            name: "fallback",
+            result: Ok(rates_with_base(enums::Currency::EUR)),
+        };
+        // USD base proves the primary's result was returned, not the fallback's EUR.
+        let rates = fetch_with_fallback(&primary, &fallback).await.unwrap();
+        assert_eq!(rates.base_currency, enums::Currency::USD);
+    }
+
+    #[tokio::test]
+    async fn fallback_used_when_primary_fails() {
+        let primary = MockProvider {
+            name: "primary",
+            result: Err(ForexError::ApiError),
+        };
+        let fallback = MockProvider {
+            name: "fallback",
+            result: Ok(rates_with_base(enums::Currency::EUR)),
+        };
+        let rates = fetch_with_fallback(&primary, &fallback).await.unwrap();
+        assert_eq!(rates.base_currency, enums::Currency::EUR);
+    }
+
+    #[tokio::test]
+    async fn error_when_both_providers_fail() {
+        let primary = MockProvider {
+            name: "primary",
+            result: Err(ForexError::ApiError),
+        };
+        let fallback = MockProvider {
+            name: "fallback",
+            result: Err(ForexError::ApiUnresponsive),
+        };
+        assert!(fetch_with_fallback(&primary, &fallback).await.is_err());
     }
 }

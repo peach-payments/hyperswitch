@@ -81,7 +81,10 @@ impl SecretsHandler for settings::ForexApi {
         let (primary, fallback) = (forex_api.provider, forex_api.fallback_provider);
 
         // The provider is known from config, so only the active primary and fallback
-        // providers' keys are resolved from the secret manager (not every provider's).
+        // providers' keys are resolved from the secret manager (not every provider's). This
+        // avoids a failed `get_secret` on an unconfigured provider, but means an *inactive*
+        // provider's key field keeps its raw (unresolved) value — so it must only ever be read
+        // for the selected providers, via `ForexApi::key_for` / `ForexProvider::from_config`.
         let (primary_key, fallback_key) = tokio::try_join!(
             secret_management_client.get_secret(forex_api.key_for(primary).clone()),
             secret_management_client.get_secret(forex_api.key_for(fallback).clone()),
