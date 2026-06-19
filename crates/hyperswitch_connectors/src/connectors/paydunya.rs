@@ -6,7 +6,6 @@ use common_enums::enums;
 use common_utils::{
     crypto,
     errors::CustomResult,
-    errors::ReportSwitchExt,
     ext_traits::{BytesExt, ValueExt},
     request::{Method, Request, RequestBuilder, RequestContent},
     types::{AmountConvertor, MinorUnit, MinorUnitForConnector},
@@ -17,13 +16,14 @@ use hyperswitch_domain_models::{
     router_data::{AccessToken, ConnectorAuthType, ErrorResponse, RouterData},
     router_flow_types::{
         access_token_auth::AccessTokenAuth,
-        payments::{Authorize, Capture, PSync, PaymentMethodToken, Session, SetupMandate, Void},
+        payments::{
+            Authorize, Capture, CreateOrder, PSync, PaymentMethodToken, Session, SetupMandate, Void,
+        },
         refunds::{Execute, RSync},
-        PreProcessing,
     },
     router_request_types::{
-        AccessTokenRequestData, PaymentMethodTokenizationData, PaymentsAuthorizeData,
-        PaymentsCancelData, PaymentsCaptureData, PaymentsPreProcessingData, PaymentsSessionData,
+        AccessTokenRequestData, CreateOrderRequestData, PaymentMethodTokenizationData,
+        PaymentsAuthorizeData, PaymentsCancelData, PaymentsCaptureData, PaymentsSessionData,
         PaymentsSyncData, RefundsData, SetupMandateRequestData,
     },
     router_response_types::{
@@ -31,7 +31,7 @@ use hyperswitch_domain_models::{
         SupportedPaymentMethods, SupportedPaymentMethodsExt,
     },
     types::{
-        PaymentsAuthorizeRouterData, PaymentsCaptureRouterData, PaymentsPreProcessingRouterData,
+        CreateOrderRouterData, PaymentsAuthorizeRouterData, PaymentsCaptureRouterData,
         PaymentsSyncRouterData,
     },
 };
@@ -41,9 +41,10 @@ use hyperswitch_interfaces::{
         ConnectorValidation,
     },
     configs::Connectors,
+    consts::{NO_ERROR_CODE, NO_ERROR_MESSAGE},
     errors,
     events::connector_api_logs::ConnectorEvent,
-    types::{self, Response},
+    types::{self, CreateOrderType, Response},
     webhooks,
 };
 use hyperswitch_masking::{ExposeInterface, Mask, PeekInterface};
@@ -80,7 +81,7 @@ impl api::Refund for Paydunya {}
 impl api::RefundExecute for Paydunya {}
 impl api::RefundSync for Paydunya {}
 impl api::PaymentToken for Paydunya {}
-impl api::PaymentsPreProcessing for Paydunya {}
+impl api::PaymentsCreateOrder for Paydunya {}
 
 impl ConnectorIntegration<PaymentMethodToken, PaymentMethodTokenizationData, PaymentsResponseData>
     for Paydunya
@@ -152,19 +153,58 @@ impl ConnectorCommon for Paydunya {
         res: Response,
         event_builder: Option<&mut ConnectorEvent>,
     ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
-        let response: paydunya::PaydunyaErrorResponse = res
+        // Paydunya returns JSON errors carrying `response_code`/`response_text`,
+        // but some failures surface differently: HTML/empty bodies (404/5xx, gateway pages)
+        // or a JSON body that lacks Paydunya's usual fields
+        // (e.g. a 403 from the SOFTPAY endpoint, whose body has none of
+        // `response_code`/`response_text`/`description`).
+        // For all of these cases fall back to the raw body so the failure is debuggable instead of
+        // collapsing into a generic "No error message".
+        let raw_response = String::from_utf8_lossy(&res.response).to_string();
+        let parsed = res
             .response
-            .parse_struct("PaydunyaErrorResponse")
-            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
+            .parse_struct::<paydunya::PaydunyaErrorResponse>("PaydunyaErrorResponse")
+            .ok()
+            .filter(|response| {
+                response.response_code.is_some()
+                    || response.response_text.is_some()
+                    || response.description.is_some()
+            });
 
-        event_builder.map(|i| i.set_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
+        let (code, message, reason) = match parsed {
+            Some(response) => {
+                event_builder.map(|i| i.set_response_body(&response));
+                router_env::logger::info!(connector_response=?response);
+                (
+                    response
+                        .response_code
+                        .unwrap_or_else(|| NO_ERROR_CODE.to_string()),
+                    response
+                        .response_text
+                        .clone()
+                        .unwrap_or_else(|| NO_ERROR_MESSAGE.to_string()),
+                    response
+                        .description
+                        .or(response.response_text)
+                        .or_else(|| Some(raw_response.clone())),
+                )
+            }
+            None => {
+                router_env::logger::error!(connector_response=?raw_response);
+                let message = if raw_response.trim().is_empty() {
+                    NO_ERROR_MESSAGE.to_string()
+                } else {
+                    raw_response.clone()
+                };
+                (NO_ERROR_CODE.to_string(), message, Some(raw_response))
+            }
+        };
 
         Ok(ErrorResponse {
             status_code: res.status_code,
-            code: response.code,
-            message: response.message,
-            reason: response.reason,
+            code,
+            message,
+            reason,
             attempt_status: None,
             connector_transaction_id: None,
             connector_response_reference_id: None,
@@ -202,9 +242,7 @@ impl ConnectorValidation for Paydunya {
     }
 }
 
-impl ConnectorIntegration<Session, PaymentsSessionData, PaymentsResponseData> for Paydunya {
-    //TODO: implement sessions flow
-}
+impl ConnectorIntegration<Session, PaymentsSessionData, PaymentsResponseData> for Paydunya {}
 
 impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> for Paydunya {}
 
@@ -213,12 +251,12 @@ impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsRespons
 {
 }
 
-impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>
-    for Paydunya
-{
+impl ConnectorIntegration<CreateOrder, CreateOrderRequestData, PaymentsResponseData> for Paydunya {
+    // leg 1: create the Paydunya invoice (`checkout-invoice/create`) and surface
+    // the returned invoice token as `order_id`.
     fn get_headers(
         &self,
-        req: &PaymentsPreProcessingRouterData,
+        req: &CreateOrderRouterData,
         connectors: &Connectors,
     ) -> CustomResult<Vec<(String, hyperswitch_masking::Maskable<String>)>, errors::ConnectorError>
     {
@@ -231,7 +269,7 @@ impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResp
 
     fn get_url(
         &self,
-        _req: &PaymentsPreProcessingRouterData,
+        _req: &CreateOrderRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
         Ok(format!(
@@ -242,7 +280,7 @@ impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResp
 
     fn get_request_body(
         &self,
-        req: &PaymentsPreProcessingRouterData,
+        req: &CreateOrderRouterData,
         _connectors: &Connectors,
     ) -> CustomResult<RequestContent, errors::ConnectorError> {
         let connector_req = paydunya::PaydunyaPreprocessingRequest::try_from(req)?;
@@ -251,36 +289,30 @@ impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResp
 
     fn build_request(
         &self,
-        req: &PaymentsPreProcessingRouterData,
+        req: &CreateOrderRouterData,
         connectors: &Connectors,
     ) -> CustomResult<Option<Request>, errors::ConnectorError> {
         Ok(Some(
             RequestBuilder::new()
                 .method(Method::Post)
-                .url(&types::PaymentsPreProcessingType::get_url(
-                    self, req, connectors,
-                )?)
+                .url(&CreateOrderType::get_url(self, req, connectors)?)
                 .attach_default_headers()
-                .headers(types::PaymentsPreProcessingType::get_headers(
-                    self, req, connectors,
-                )?)
-                .set_body(types::PaymentsPreProcessingType::get_request_body(
-                    self, req, connectors,
-                )?)
+                .headers(CreateOrderType::get_headers(self, req, connectors)?)
+                .set_body(CreateOrderType::get_request_body(self, req, connectors)?)
                 .build(),
         ))
     }
 
     fn handle_response(
         &self,
-        data: &PaymentsPreProcessingRouterData,
+        data: &CreateOrderRouterData,
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
-    ) -> CustomResult<PaymentsPreProcessingRouterData, errors::ConnectorError> {
+    ) -> CustomResult<CreateOrderRouterData, errors::ConnectorError> {
         let response: paydunya::PaydunyaPaymentsPreProcessingResponse = res
             .response
-            .parse_struct("PaydunyaPaymentsPreProcessingResponse")
-            .switch()?;
+            .parse_struct("PaydunyaCreateOrderResponse")
+            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
         RouterData::try_from(ResponseRouterData {
@@ -301,7 +333,8 @@ impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResp
 }
 
 impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData> for Paydunya {
-    // leg 2: authorize debit payment
+    // leg 2: The Authorize leg uses existing `order_id` as the
+    // `payment_token` to the SOFTPAY endpoint
     fn get_headers(
         &self,
         req: &PaymentsAuthorizeRouterData,
@@ -520,21 +553,16 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
 
     fn handle_response(
         &self,
-        data: &PaymentsCaptureRouterData,
-        event_builder: Option<&mut ConnectorEvent>,
-        res: Response,
+        _data: &PaymentsCaptureRouterData,
+        _event_builder: Option<&mut ConnectorEvent>,
+        _res: Response,
     ) -> CustomResult<PaymentsCaptureRouterData, errors::ConnectorError> {
-        let response: paydunya::PaydunyaPaymentsResponse = res
-            .response
-            .parse_struct("Paydunya PaymentsCaptureResponse")
-            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
-        event_builder.map(|i| i.set_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
-        RouterData::try_from(ResponseRouterData {
-            response,
-            data: data.clone(),
-            http_code: res.status_code,
-        })
+        // Paydunya payments are auto-captured; a separate Capture flow is not
+        // supported (see get_url/get_request_body above).
+        Err(
+            errors::ConnectorError::NotImplemented("handle_response for Capture".to_string())
+                .into(),
+        )
     }
 
     fn get_error_response(
@@ -552,13 +580,22 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Payduny
 
 impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Paydunya {}
 
-/// Parse the urlencoded IPN body posted by Paydunya into our typed payload.
-/// Paydunya uses PHP-style nested keys (`data[invoice][token]=...`), so we
-/// rely on `serde_qs` to do the bracket-aware decoding.
 fn parse_paydunya_ipn(
     request: &webhooks::IncomingWebhookRequestDetails<'_>,
 ) -> CustomResult<paydunya::PaydunyaIpnBody, errors::ConnectorError> {
-    let envelope: paydunya::PaydunyaIpnEnvelope = serde_qs::from_bytes(request.body)
+    // Paydunya posts IPNs from a PHP/Guzzle client, which serialises the
+    // PHP-style nested keys with the brackets percent-encoded
+    // (e.g. `data%5Binvoice%5D%5Btoken%5D=...`). serde_qs default parser runs
+    // in *strict* mode and does NOT decode `%5B`/`%5D`, so it never recognises
+    // the nested `data` envelope and fails with "missing field `data`" — which
+    // surfaced as a `WE_03` "Failed to identify event type" webhook error.
+    //
+    // Use a non-strict config so encoded brackets are decoded before parsing,
+    // and allow extra depth to accommodate Paydunya's nested
+    // `invoice.items[...]` / `taxes[...]` / `custom_data[...]` blocks.
+    let config = serde_qs::Config::new(10, false);
+    let envelope: paydunya::PaydunyaIpnEnvelope = config
+        .deserialize_bytes(request.body)
         .change_context(errors::ConnectorError::WebhookBodyDecodingFailed)?;
     Ok(envelope.data)
 }
@@ -569,7 +606,6 @@ impl webhooks::IncomingWebhook for Paydunya {
         &self,
         _request: &webhooks::IncomingWebhookRequestDetails<'_>,
     ) -> CustomResult<Box<dyn crypto::VerifySignature + Send>, errors::ConnectorError> {
-        // Paydunya signs the IPN body with `SHA-512(MasterKey)` (no HMAC).
         Ok(Box::new(crypto::Sha512))
     }
 
@@ -654,8 +690,7 @@ impl webhooks::IncomingWebhook for Paydunya {
             // Paydunya treats `cancelled` as a terminal non-success state
             // (auto-cancellation after 24h of inactivity is the same opcode
             // as a user-cancelled invoice), so we surface both as failures.
-            paydunya::PaydunyaSyncStatus::Cancelled
-            | paydunya::PaydunyaSyncStatus::Failed => {
+            paydunya::PaydunyaSyncStatus::Cancelled | paydunya::PaydunyaSyncStatus::Failed => {
                 api_models::webhooks::IncomingWebhookEvent::PaymentIntentFailure
             }
         })
@@ -715,6 +750,24 @@ static PAYDUNYA_CONNECTOR_INFO: ConnectorInfo = ConnectorInfo {
 static PAYDUNYA_SUPPORTED_WEBHOOK_FLOWS: [enums::EventClass; 1] = [enums::EventClass::Payments];
 
 impl ConnectorSpecifications for Paydunya {
+    // Paydunya SOFTPAY is a two-leg flow:
+    // leg 1 (`checkout-invoice/create`) mints an invoice token
+    // leg 2 (Authorize) confirms the debit with that token.
+    // Use the order-create pre-task to run leg 1 before every wallet
+    // Authorize so the invoice token is available to the SOFTPAY call.
+    fn is_order_create_flow_required(&self, current_flow: api::CurrentFlowInfo) -> bool {
+        match current_flow {
+            api::CurrentFlowInfo::Authorize {
+                auth_type: _,
+                request_data,
+            } => matches!(
+                &request_data.payment_method_data,
+                PaymentMethodData::Wallet(_)
+            ),
+            _ => false,
+        }
+    }
+
     fn get_connector_about(&self) -> Option<&'static ConnectorInfo> {
         Some(&PAYDUNYA_CONNECTOR_INFO)
     }

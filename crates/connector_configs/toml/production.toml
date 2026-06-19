@@ -6651,6 +6651,12 @@ api_key = "Password"
 key1 = "Username"
 
 [paydunya]
+[paydunya.metadata.store_name]
+name = "store_name"
+label = "Store Name"
+placeholder = "Enter your business/store name"
+required = true
+type = "Text"
 [[paydunya.wallet]]
 payment_method_type = "djamo"
 [[paydunya.wallet]]

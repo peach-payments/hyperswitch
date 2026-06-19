@@ -201,6 +201,7 @@ pub struct ConfigMetadata {
     pub kid: Option<InputData>,
     pub account_holder_name: Option<InputData>,
     pub private_key: Option<InputData>,
+    pub store_name: Option<InputData>,
 }
 
 #[serde_with::skip_serializing_none]

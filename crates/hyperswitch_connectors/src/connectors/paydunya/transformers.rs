@@ -1,15 +1,16 @@
 use common_enums::enums;
 use common_utils::{pii::Email, types::MinorUnit};
+use error_stack::ResultExt;
 use hyperswitch_domain_models::{
     payment_method_data::{PaymentMethodData, WalletData},
     router_data::{ConnectorAuthType, ErrorResponse, RouterData},
     router_flow_types::{
         refunds::{Execute, RSync},
-        PSync,
+        Authorize, PSync,
     },
-    router_request_types::{PaymentsSyncData, ResponseId},
-    router_response_types::{PaymentsResponseData, PreprocessingResponseId, RefundsResponseData},
-    types::{PaymentsAuthorizeRouterData, PaymentsPreProcessingRouterData, RefundsRouterData},
+    router_request_types::{PaymentsAuthorizeData, PaymentsSyncData, ResponseId},
+    router_response_types::{PaymentsResponseData, RefundsResponseData},
+    types::{CreateOrderRouterData, PaymentsAuthorizeRouterData, RefundsRouterData},
 };
 use hyperswitch_interfaces::{
     consts::{NO_ERROR_CODE, NO_ERROR_MESSAGE},
@@ -19,11 +20,9 @@ use hyperswitch_masking::Secret;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    types::{
-        PaymentsPreprocessingResponseRouterData, RefundsResponseRouterData, ResponseRouterData,
-    },
+    types::{CreateOrderResponseRouterData, RefundsResponseRouterData, ResponseRouterData},
     utils::{
-        AddressDetailsData, PaymentsAuthorizeRequestData, PaymentsPreProcessingRequestData,
+        to_connector_meta_from_secret, AddressDetailsData, PaymentsAuthorizeRequestData,
         RouterData as _,
     },
 };
@@ -74,23 +73,41 @@ pub struct Actions {
     pub return_url: String,
 }
 
-impl TryFrom<&PaymentsPreProcessingRouterData> for PaydunyaPreprocessingRequest {
+/// Paydunya requires a store name on every invoice, which we surface
+/// from the merchant's business/profile name sent to Paydunya as `store.name`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaydunyaConnectorMetadataObject {
+    pub store_name: String,
+}
+
+impl TryFrom<Option<&common_utils::pii::SecretSerdeValue>> for PaydunyaConnectorMetadataObject {
     type Error = error_stack::Report<errors::ConnectorError>;
-    fn try_from(item: &PaymentsPreProcessingRouterData) -> Result<Self, Self::Error> {
-        // Paydunya posts the IPN to `actions.callback_url` after every status
-        // change on the invoice. We forward the merchant's webhook url here so
-        // the IPN flow lands in our normal `/webhooks/...` endpoint. Both
-        // callback and return urls default to empty strings — Paydunya accepts
-        // an absent value, but the keys themselves are mandatory in the payload.
+    fn try_from(
+        meta_data: Option<&common_utils::pii::SecretSerdeValue>,
+    ) -> Result<Self, Self::Error> {
+        to_connector_meta_from_secret::<Self>(meta_data.cloned()).change_context(
+            errors::ConnectorError::InvalidConnectorConfig {
+                config: "metadata.store_name",
+            },
+        )
+    }
+}
+
+impl TryFrom<&CreateOrderRouterData> for PaydunyaPreprocessingRequest {
+    type Error = error_stack::Report<errors::ConnectorError>;
+    fn try_from(item: &CreateOrderRouterData) -> Result<Self, Self::Error> {
         let callback_url = item.request.webhook_url.clone().unwrap_or_default();
         let return_url = item.request.router_return_url.clone().unwrap_or_default();
 
+        let metadata =
+            PaydunyaConnectorMetadataObject::try_from(item.connector_meta_data.as_ref())?;
+
         Ok(Self {
             invoice: Invoice {
-                total_amount: item.request.get_minor_amount(),
+                total_amount: item.request.minor_amount,
             },
             store: Store {
-                name: String::from("name"),
+                name: metadata.store_name,
             },
             actions: Actions {
                 callback_url,
@@ -104,35 +121,67 @@ impl TryFrom<&PaymentsPreProcessingRouterData> for PaydunyaPreprocessingRequest 
 pub struct PaydunyaPaymentsPreProcessingResponse {
     pub response_code: String,
     pub response_text: String,
-    pub description: String,
-    pub token: String,
+    // `description` and `token` are only present on a successful invoice
+    // creation (`response_code` == "00"). On failure Paydunya still returns
+    // HTTP 200 with just `response_code`/`response_text`, so these must be
+    // optional to avoid a deserialization failure that masks the real error.
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
-impl TryFrom<PaymentsPreprocessingResponseRouterData<PaydunyaPaymentsPreProcessingResponse>>
-    for PaymentsPreProcessingRouterData
+impl TryFrom<CreateOrderResponseRouterData<PaydunyaPaymentsPreProcessingResponse>>
+    for CreateOrderRouterData
 {
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(
-        item: PaymentsPreprocessingResponseRouterData<PaydunyaPaymentsPreProcessingResponse>,
+        item: CreateOrderResponseRouterData<PaydunyaPaymentsPreProcessingResponse>,
     ) -> Result<Self, Self::Error> {
-        let status = match item.response.response_code.as_str() {
-            "00" => enums::AttemptStatus::AuthenticationSuccessful,
-            _ => enums::AttemptStatus::AuthenticationFailed,
-        };
-        let token = item.response.token;
-        Ok(Self {
-            status,
-            description: Some(item.response.description),
-            // Persist the invoice token on the RouterData so that the subsequent
-            // Authorize flow can read it via `router_data.preprocessing_id` and
-            // pass it as `payment_token` to the SOFTPAY endpoint.
-            preprocessing_id: Some(token.clone()),
-            response: Ok(PaymentsResponseData::PreProcessingResponse {
-                pre_processing_id: PreprocessingResponseId::PreProcessingId(token),
-                connector_metadata: None,
-                session_token: None,
+        let response = if item.response.response_code == "00" {
+            match item.response.token.clone() {
+                Some(order_id) => Ok(PaymentsResponseData::PaymentsCreateOrderResponse {
+                    order_id,
+                    session_token: None,
+                }),
+                None => Err(ErrorResponse {
+                    status_code: item.http_code,
+                    code: item.response.response_code.clone(),
+                    message: item.response.response_text.clone(),
+                    reason: Some(
+                        "Paydunya invoice creation succeeded but no token was returned".to_string(),
+                    ),
+                    attempt_status: None,
+                    connector_transaction_id: None,
+                    connector_response_reference_id: None,
+                    network_advice_code: None,
+                    network_decline_code: None,
+                    network_error_message: None,
+                    connector_metadata: None,
+                }),
+            }
+        } else {
+            Err(ErrorResponse {
+                status_code: item.http_code,
+                code: item.response.response_code.clone(),
+                message: item.response.response_text.clone(),
+                reason: item
+                    .response
+                    .description
+                    .clone()
+                    .or_else(|| Some(item.response.response_text.clone())),
+                attempt_status: None,
+                connector_transaction_id: None,
                 connector_response_reference_id: None,
-            }),
+                network_advice_code: None,
+                network_decline_code: None,
+                network_error_message: None,
+                connector_metadata: None,
+            })
+        };
+
+        Ok(Self {
+            response,
             ..item.data
         })
     }
@@ -181,9 +230,6 @@ impl PaydunyaOperator {
             Self::MoovTogo => "softpay/moov-togo",
             Self::MoovBurkina => "softpay/moov-burkina",
             Self::OrangeMoneyCi => "softpay/orange-money-ci",
-            // Paydunya kept the legacy "orange-money-senegal" route alive but
-            // their docs explicitly steer integrators toward this "new-…"
-            // QR-code-based endpoint, which is what we use.
             Self::OrangeMoneySenegal => "softpay/new-orange-money-senegal",
             Self::OrangeMoneyMali => "softpay/orange-money-mali",
             Self::OrangeMoneyBurkina => "softpay/orange-money-burkina",
@@ -191,8 +237,6 @@ impl PaydunyaOperator {
             Self::WaveCi => "softpay/wave-ci",
             Self::FreeMoneySenegal => "softpay/free-money-senegal",
             Self::ExpressoSenegal => "softpay/expresso-senegal",
-            // Côte d'Ivoire and Senegal share a single Djamo SOFTPAY endpoint;
-            // the regional account is selected via the `code_country` field.
             Self::DjamoCi | Self::DjamoSn => "softpay/djamo",
             Self::TmoneyTogo => "softpay/t-money-togo",
             Self::WizallSenegal => "softpay/wizall-senegal",
@@ -227,96 +271,85 @@ impl TryFrom<&PaymentsAuthorizeRouterData> for PaydunyaOperator {
     fn try_from(item: &PaymentsAuthorizeRouterData) -> Result<Self, Self::Error> {
         // Each Paydunya operator is selected from
         // `(payment_method_type, billing.country)` — the payment-method-type
-        // picks the carrier family (MTN MoMo / Moov Money / Wave) and the
-        // country picks the regional endpoint within that family.
+        // picks the carrier family (MTN MoMo / Moov Money / Wave / ...) and the
+        // billing country picks the regional SOFTPAY endpoint within that
+        // family. The country is therefore mandatory for routing on every
+        // wallet, so we require it up front (errors with `MissingRequiredField`)
+        // rather than guessing a region when it's absent.
         let pm_type = item.request.payment_method_type;
-        let country = item.get_optional_billing_country();
+        let country = item.get_billing_country()?;
 
         match (pm_type, country) {
             // MTN family — typed as MoMo upstream
-            (Some(enums::PaymentMethodType::Momo), Some(enums::CountryAlpha2::BJ)) => {
-                Ok(Self::MtnBenin)
-            }
-            (Some(enums::PaymentMethodType::Momo), Some(enums::CountryAlpha2::CI)) => {
-                Ok(Self::MtnCi)
-            }
-            (Some(enums::PaymentMethodType::Momo), Some(enums::CountryAlpha2::CM)) => {
+            (Some(enums::PaymentMethodType::Momo), enums::CountryAlpha2::BJ) => Ok(Self::MtnBenin),
+            (Some(enums::PaymentMethodType::Momo), enums::CountryAlpha2::CI) => Ok(Self::MtnCi),
+            (Some(enums::PaymentMethodType::Momo), enums::CountryAlpha2::CM) => {
                 Ok(Self::MtnCameroun)
             }
-            // Default MoMo to MTN Benin if the country isn't supplied — matches
-            // the canonical SOFTPAY example used during integration.
-            (Some(enums::PaymentMethodType::Momo), _) => Ok(Self::MtnBenin),
 
             // Moov family
-            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::BJ)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), enums::CountryAlpha2::BJ) => {
                 Ok(Self::MoovBenin)
             }
-            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::CI)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), enums::CountryAlpha2::CI) => {
                 Ok(Self::MoovCi)
             }
-            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::ML)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), enums::CountryAlpha2::ML) => {
                 Ok(Self::MoovMali)
             }
-            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::TG)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), enums::CountryAlpha2::TG) => {
                 Ok(Self::MoovTogo)
             }
-            (Some(enums::PaymentMethodType::MoovMoney), Some(enums::CountryAlpha2::BF)) => {
+            (Some(enums::PaymentMethodType::MoovMoney), enums::CountryAlpha2::BF) => {
                 Ok(Self::MoovBurkina)
             }
 
             // Wave family
-            (Some(enums::PaymentMethodType::Wave), Some(enums::CountryAlpha2::SN)) => {
+            (Some(enums::PaymentMethodType::Wave), enums::CountryAlpha2::SN) => {
                 Ok(Self::WaveSenegal)
             }
-            (Some(enums::PaymentMethodType::Wave), Some(enums::CountryAlpha2::CI)) => {
-                Ok(Self::WaveCi)
-            }
+            (Some(enums::PaymentMethodType::Wave), enums::CountryAlpha2::CI) => Ok(Self::WaveCi),
 
             // Orange Money family — Paydunya exposes one SOFTPAY endpoint per
             // country. We pick the regional operator off the billing country,
             // which the SOFTPAY API treats as authoritative.
-            (Some(enums::PaymentMethodType::OrangeMoney), Some(enums::CountryAlpha2::CI)) => {
+            (Some(enums::PaymentMethodType::OrangeMoney), enums::CountryAlpha2::CI) => {
                 Ok(Self::OrangeMoneyCi)
             }
-            (Some(enums::PaymentMethodType::OrangeMoney), Some(enums::CountryAlpha2::SN)) => {
+            (Some(enums::PaymentMethodType::OrangeMoney), enums::CountryAlpha2::SN) => {
                 Ok(Self::OrangeMoneySenegal)
             }
-            (Some(enums::PaymentMethodType::OrangeMoney), Some(enums::CountryAlpha2::ML)) => {
+            (Some(enums::PaymentMethodType::OrangeMoney), enums::CountryAlpha2::ML) => {
                 Ok(Self::OrangeMoneyMali)
             }
-            (Some(enums::PaymentMethodType::OrangeMoney), Some(enums::CountryAlpha2::BF)) => {
+            (Some(enums::PaymentMethodType::OrangeMoney), enums::CountryAlpha2::BF) => {
                 Ok(Self::OrangeMoneyBurkina)
             }
 
             // Djamo family — Côte d'Ivoire and Senegal share one SOFTPAY
             // endpoint (`softpay/djamo`); the regional account is picked via
             // the `code_country` field resolved off the billing country.
-            (Some(enums::PaymentMethodType::Djamo), Some(enums::CountryAlpha2::CI)) => {
-                Ok(Self::DjamoCi)
-            }
-            (Some(enums::PaymentMethodType::Djamo), Some(enums::CountryAlpha2::SN)) => {
-                Ok(Self::DjamoSn)
-            }
+            (Some(enums::PaymentMethodType::Djamo), enums::CountryAlpha2::CI) => Ok(Self::DjamoCi),
+            (Some(enums::PaymentMethodType::Djamo), enums::CountryAlpha2::SN) => Ok(Self::DjamoSn),
 
             // T-Money family — Togo is the only region Paydunya exposes for
-            // T-Money, so any T-Money attempt resolves to the single
-            // `softpay/t-money-togo` endpoint regardless of billing country.
+            // T-Money. The country is still mandatory (resolved above), but any
+            // value maps to the single `softpay/t-money-togo` endpoint.
             (Some(enums::PaymentMethodType::TMoney), _) => Ok(Self::TmoneyTogo),
 
             // Wizall family — Senegal is the only region Paydunya exposes for
-            // Wizall Money, so any Wizall attempt resolves to the single
-            // `softpay/wizall-senegal` endpoint regardless of billing country.
+            // Wizall Money. The country is still mandatory, but any value maps
+            // to the single `softpay/wizall-senegal` endpoint.
             (Some(enums::PaymentMethodType::Wizall), _) => Ok(Self::WizallSenegal),
 
             // Expresso family — Senegal is the only region Paydunya exposes for
-            // Expresso, so any Expresso attempt resolves to the single
-            // `softpay/expresso-senegal` endpoint regardless of billing country.
+            // Expresso. The country is still mandatory, but any value maps to
+            // the single `softpay/expresso-senegal` endpoint.
             (Some(enums::PaymentMethodType::Expresso), _) => Ok(Self::ExpressoSenegal),
 
             // Free Money family — Senegal is the only region Paydunya exposes
-            // for Free Money, so any Free Money attempt resolves to the single
-            // `softpay/free-money-senegal` endpoint regardless of billing
-            // country.
+            // for Free Money. The country is still mandatory, but any value
+            // maps to the single `softpay/free-money-senegal` endpoint.
             (Some(enums::PaymentMethodType::FreeMoney), _) => Ok(Self::FreeMoneySenegal),
 
             _ => Err(errors::ConnectorError::NotImplemented(format!(
@@ -403,8 +436,6 @@ pub struct PaydunyaMoovMaliRequest {
     pub moov_ml_customer_fullname: Secret<String>,
     pub moov_ml_email: Email,
     pub moov_ml_phone_number: Secret<String>,
-    /// Free-form payer address. Paydunya's reference payload sends the city
-    /// ("Bamako"); we prefer the billing city and fall back to address line1.
     pub moov_ml_customer_address: Secret<String>,
     pub payment_token: String,
 }
@@ -413,8 +444,6 @@ pub struct PaydunyaMoovMaliRequest {
 pub struct PaydunyaMoovTogoRequest {
     pub moov_togo_customer_fullname: Secret<String>,
     pub moov_togo_email: Email,
-    /// Free-form payer address, mirroring the Moov Mali endpoint. We prefer
-    /// the billing city and fall back to address line1.
     pub moov_togo_customer_address: Secret<String>,
     pub moov_togo_phone_number: Secret<String>,
     pub payment_token: String,
@@ -455,9 +484,6 @@ pub struct PaydunyaOrangeMoneyMaliRequest {
     pub orange_money_mali_customer_fullname: Secret<String>,
     pub orange_money_mali_email: Email,
     pub orange_money_mali_phone_number: Secret<String>,
-    /// Free-form payer address. Paydunya's example uses the city ("Bamako")
-    /// and the API accepts any non-empty string; we send the billing city
-    /// when available and fall back to the line1 of the billing address.
     pub orange_money_mali_customer_address: Secret<String>,
     pub payment_token: String,
 }
@@ -542,8 +568,6 @@ pub struct PaydunyaWizallSenegalRequest {
     pub wizall_senegal_payment_token: String,
 }
 
-/// Fields common to every SOFTPAY operator: payer identity, contact info and
-/// the invoice token returned by the preprocessing flow.
 struct CommonAuthorizeFields {
     full_name: Secret<String>,
     email: Email,
@@ -566,9 +590,6 @@ fn extract_orange_money_otp(payment_method_data: &PaymentMethodData) -> Option<S
     }
 }
 
-/// Resolve the free-form payer address required by some SOFTPAY endpoints
-/// (Orange Money Mali, Moov Mali, Moov Togo). Paydunya's reference payloads
-/// use the city, so we prefer the billing city and fall back to address line1.
 fn billing_customer_address(
     item: &PaydunyaRouterData<&PaymentsAuthorizeRouterData>,
 ) -> Result<Secret<String>, error_stack::Report<errors::ConnectorError>> {
@@ -592,11 +613,11 @@ impl CommonAuthorizeFields {
         let router_data = item.router_data;
 
         // The SOFTPAY payment_token must be the invoice token returned by the
-        // checkout-invoice/create preprocessing call, which we stash on
-        // `RouterData.preprocessing_id`.
-        let payment_token = router_data.preprocessing_id.clone().ok_or(
+        // checkout-invoice/create order-create call, which the order-create
+        // pre-task stashes on `request.order_id`.
+        let payment_token = router_data.request.order_id.clone().ok_or(
             errors::ConnectorError::MissingConnectorRelatedTransactionID {
-                id: "payment_token (paydunya invoice token from preprocessing)".to_string(),
+                id: "payment_token (paydunya invoice token from order create)".to_string(),
             },
         )?;
 
@@ -610,7 +631,11 @@ impl CommonAuthorizeFields {
             })?
             .get_full_name()?;
 
-        let phone_number = router_data.get_billing_phone_number()?;
+        let phone_number = router_data.get_optional_billing_phone_number().ok_or(
+            errors::ConnectorError::MissingRequiredField {
+                field_name: "payment_method_data.billing.phone.number",
+            },
+        )?;
         let email = router_data.request.get_email()?;
 
         Ok(Self {
@@ -689,12 +714,12 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 // USSD `#144*82#` (option 2) before confirming. The merchant
                 // must collect that code and ship it through the typed
                 // `WalletData::OrangeMoneyRedirect { otp }` transport — we
-                // refuse the call outright if it isn't supplied rather than
+                // fail the call outright if it is not supplied rather than
                 // hitting Paydunya with an empty `orange_money_ci_otp`.
                 let otp = extract_orange_money_otp(&item.router_data.request.payment_method_data)
                     .ok_or(errors::ConnectorError::MissingRequiredField {
-                        field_name: "payment_method_data.wallet.orange_money_redirect.otp",
-                    })?;
+                    field_name: "payment_method_data.wallet.orange_money_redirect.otp",
+                })?;
                 Self::OrangeMoneyCi(PaydunyaOrangeMoneyCiRequest {
                     orange_money_ci_customer_fullname: common.full_name,
                     orange_money_ci_email: common.email,
@@ -710,8 +735,8 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 // when the merchant hasn't shipped the code through.
                 let otp = extract_orange_money_otp(&item.router_data.request.payment_method_data)
                     .ok_or(errors::ConnectorError::MissingRequiredField {
-                        field_name: "payment_method_data.wallet.orange_money_redirect.otp",
-                    })?;
+                    field_name: "payment_method_data.wallet.orange_money_redirect.otp",
+                })?;
                 Self::OrangeMoneyBurkina(PaydunyaOrangeMoneyBurkinaRequest {
                     name_bf: common.full_name,
                     email_bf: common.email,
@@ -729,11 +754,6 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 })
             }
             PaydunyaOperator::OrangeMoneyMali => {
-                // Mali's SOFTPAY endpoint requires a free-form payer address;
-                // Paydunya's reference payload uses the city ("Bamako"), so we
-                // prefer the billing city and fall back to address line1 when
-                // the city isn't provided. Both come from the same billing
-                // block we already resolved for the common fields above.
                 Self::OrangeMoneyMali(PaydunyaOrangeMoneyMaliRequest {
                     orange_money_mali_customer_fullname: common.full_name,
                     orange_money_mali_email: common.email,
@@ -771,9 +791,6 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 })
             }
             PaydunyaOperator::DjamoCi | PaydunyaOperator::DjamoSn => {
-                // Both regions hit `softpay/djamo`; the regional account is
-                // selected via `code_country` ("ci"/"sn") derived from the
-                // resolved operator.
                 Self::Djamo(PaydunyaDjamoRequest {
                     djamo_full_name: common.full_name,
                     djamo_email: common.email,
@@ -788,22 +805,18 @@ impl TryFrom<&PaydunyaRouterData<&PaymentsAuthorizeRouterData>> for PaydunyaPaym
                 phone_t_money: common.phone_number,
                 payment_token: common.payment_token,
             }),
-            PaydunyaOperator::WizallSenegal => {
-                Self::WizallSenegal(PaydunyaWizallSenegalRequest {
-                    wizall_senegal_full_name: common.full_name,
-                    wizall_senegal_email: common.email,
-                    wizall_senegal_phone: common.phone_number,
-                    wizall_senegal_payment_token: common.payment_token,
-                })
-            }
+            PaydunyaOperator::WizallSenegal => Self::WizallSenegal(PaydunyaWizallSenegalRequest {
+                wizall_senegal_full_name: common.full_name,
+                wizall_senegal_email: common.email,
+                wizall_senegal_phone: common.phone_number,
+                wizall_senegal_payment_token: common.payment_token,
+            }),
         };
 
         Ok(request)
     }
 }
 
-//TODO: Fill the struct with respective fields
-// Auth Struct
 #[derive(Debug)]
 pub struct PaydunyaAuthType {
     pub(super) master_key: Secret<String>,
@@ -829,62 +842,91 @@ impl TryFrom<&ConnectorAuthType> for PaydunyaAuthType {
     }
 }
 // PaymentsResponse
-//TODO: Append the remaining status flags
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum PaydunyaPaymentStatus {
-    Succeeded,
-    Failed,
-    #[default]
-    Processing,
+//
+// SOFTPAY rails (e.g. MTN Benin) respond to the authorize call with a simple
+// envelope rather than a transaction object:
+//
+//   { "success": true, "message": "...en cours de traitement...", "fees": 100, "currency": "XOF" }
+//
+// `success: true` only means the debit was *initiated*; the customer still has
+// to validate it on their handset (SMS/USSD). The final outcome arrives later
+// via the IPN webhook / PSync (`checkout-invoice/confirm/{token}`), so we treat
+// a successful initiation as `Pending`. Unknown extra fields (`fees`,
+// `currency`, ...) are ignored by serde.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaydunyaPaymentsResponse {
+    pub success: bool,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
-impl From<PaydunyaPaymentStatus> for common_enums::AttemptStatus {
-    fn from(item: PaydunyaPaymentStatus) -> Self {
-        match item {
-            PaydunyaPaymentStatus::Succeeded => Self::Charged,
-            PaydunyaPaymentStatus::Failed => Self::Failure,
-            PaydunyaPaymentStatus::Processing => Self::Authorizing,
+impl
+    TryFrom<
+        ResponseRouterData<
+            Authorize,
+            PaydunyaPaymentsResponse,
+            PaymentsAuthorizeData,
+            PaymentsResponseData,
+        >,
+    > for RouterData<Authorize, PaymentsAuthorizeData, PaymentsResponseData>
+{
+    type Error = error_stack::Report<errors::ConnectorError>;
+    fn try_from(
+        item: ResponseRouterData<
+            Authorize,
+            PaydunyaPaymentsResponse,
+            PaymentsAuthorizeData,
+            PaymentsResponseData,
+        >,
+    ) -> Result<Self, Self::Error> {
+        let invoice_token = item.data.request.order_id.clone();
+
+        if item.response.success {
+            let resource_id = invoice_token
+                .clone()
+                .map(ResponseId::ConnectorTransactionId)
+                .unwrap_or(ResponseId::NoResponseId);
+            Ok(Self {
+                status: common_enums::AttemptStatus::Pending,
+                response: Ok(PaymentsResponseData::TransactionResponse {
+                    resource_id,
+                    redirection_data: Box::new(None),
+                    mandate_reference: Box::new(None),
+                    connector_metadata: None,
+                    network_txn_id: None,
+                    connector_response_reference_id: invoice_token,
+                    incremental_authorization_allowed: None,
+                    authentication_data: None,
+                    charges: None,
+                }),
+                ..item.data
+            })
+        } else {
+            Ok(Self {
+                status: common_enums::AttemptStatus::Failure,
+                response: Err(ErrorResponse {
+                    status_code: item.http_code,
+                    code: NO_ERROR_CODE.to_string(),
+                    message: item
+                        .response
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| NO_ERROR_MESSAGE.to_string()),
+                    reason: item.response.message.clone(),
+                    attempt_status: None,
+                    connector_transaction_id: invoice_token,
+                    connector_response_reference_id: None,
+                    network_advice_code: None,
+                    network_decline_code: None,
+                    network_error_message: None,
+                    connector_metadata: None,
+                }),
+                ..item.data
+            })
         }
     }
 }
 
-//TODO: Fill the struct with respective fields
-#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PaydunyaPaymentsResponse {
-    status: PaydunyaPaymentStatus,
-    id: String,
-}
-
-impl<F, T> TryFrom<ResponseRouterData<F, PaydunyaPaymentsResponse, T, PaymentsResponseData>>
-    for RouterData<F, T, PaymentsResponseData>
-{
-    type Error = error_stack::Report<errors::ConnectorError>;
-    fn try_from(
-        item: ResponseRouterData<F, PaydunyaPaymentsResponse, T, PaymentsResponseData>,
-    ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            status: common_enums::AttemptStatus::from(item.response.status),
-            response: Ok(PaymentsResponseData::TransactionResponse {
-                resource_id: ResponseId::ConnectorTransactionId(item.response.id),
-                redirection_data: Box::new(None),
-                mandate_reference: Box::new(None),
-                connector_metadata: None,
-                network_txn_id: None,
-                connector_response_reference_id: None,
-                incremental_authorization_allowed: None,
-                authentication_data: None,
-                charges: None,
-            }),
-            ..item.data
-        })
-    }
-}
-
-/// Lifecycle states reported by Paydunya's `checkout-invoice/confirm/{token}`
-/// endpoint. The set comes straight from the public API docs (`pending`,
-/// `completed`, `cancelled`, `failed`) — note that `pending` can flip to
-/// `cancelled` automatically 24h after invoice creation if it isn't paid.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PaydunyaSyncStatus {
@@ -908,8 +950,6 @@ impl From<PaydunyaSyncStatus> for common_enums::AttemptStatus {
     }
 }
 
-/// Invoice block embedded inside the `confirm` response. We only deserialise
-/// the fields we use; everything else (items / taxes / custom_data) is dropped.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaydunyaSyncInvoice {
     pub token: String,
@@ -919,9 +959,6 @@ pub struct PaydunyaSyncInvoice {
     pub description: Option<String>,
 }
 
-/// Optional `errors` block returned by Paydunya for failed or cancelled
-/// transactions. Card-rail failures populate both fields; SOFTPAY rails
-/// usually rely on the top-level `fail_reason` instead.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaydunyaSyncErrors {
     #[serde(default)]
@@ -930,16 +967,16 @@ pub struct PaydunyaSyncErrors {
     pub description: Option<String>,
 }
 
-/// Response body returned by `GET checkout-invoice/confirm/{invoice_token}`.
-///
-/// Mirrors the shape documented at <https://developers.paydunya.com/doc/EN/http_json>.
-/// We keep fields we do not currently consume (e.g. `customer`, `receipt_url`)
-/// as `serde_json::Value` so future flows can read them without another
-/// round-trip and without forcing strict typing today.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaydunyaSyncResponse {
     pub response_code: String,
-    pub response_text: String,
+    // Paydunya does not always populate `response_text` (it is absent on some
+    // statuses, and the IPN body — which is replayed through this struct on the
+    // source-verified webhook path — carries it as optional). Keeping it
+    // required caused a deserialization failure that surfaced as a webhook
+    // processing error, so it must be optional.
+    #[serde(default)]
+    pub response_text: Option<String>,
     #[serde(default)]
     pub hash: Option<Secret<String>>,
     pub status: PaydunyaSyncStatus,
@@ -958,9 +995,6 @@ pub struct PaydunyaSyncResponse {
 }
 
 impl PaydunyaSyncResponse {
-    /// Best-effort human-readable failure reason, preferring the rail-specific
-    /// `errors.description`/`errors.message` block (populated for card rails)
-    /// and falling back to the top-level `fail_reason` used by SOFTPAY rails.
     fn failure_reason(&self) -> Option<String> {
         self.errors
             .as_ref()
@@ -1126,16 +1160,19 @@ impl TryFrom<RefundsResponseRouterData<RSync, RefundResponse>> for RefundsRouter
     }
 }
 
-//TODO: Fill the struct with respective fields
+// Paydunya error bodies are JSON objects that always carry at least the
+// `response_code` and `response_text` nodes (see Paydunya HTTP/JSON docs).
+// Every field is optional so a JSON body never fails to deserialize; the
+// connector falls back to the raw body when the response isn't JSON at all
+// (e.g. an HTML 404/5xx page).
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PaydunyaErrorResponse {
-    pub status_code: u16,
-    pub code: String,
-    pub message: String,
-    pub reason: Option<String>,
-    pub network_advice_code: Option<String>,
-    pub network_decline_code: Option<String>,
-    pub network_error_message: Option<String>,
+    #[serde(default)]
+    pub response_code: Option<String>,
+    #[serde(default)]
+    pub response_text: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 // =====================================================================
@@ -1162,16 +1199,11 @@ pub struct PaydunyaErrorResponse {
 // `serde_json::Value` so future flows can grow into them without forcing a
 // strict schema today.
 
-/// Top-level envelope of a Paydunya IPN body. The `data` key is the only
-/// thing we care about — everything else is dropped during deserialization.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaydunyaIpnEnvelope {
     pub data: PaydunyaIpnBody,
 }
 
-/// Invoice block inside the IPN payload. We deliberately type `total_amount`
-/// as a string because Paydunya serializes integers as strings inside the
-/// PHP-style form payload (e.g. `data[invoice][total_amount]=42300`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaydunyaIpnInvoice {
     pub token: String,
@@ -1181,17 +1213,11 @@ pub struct PaydunyaIpnInvoice {
     pub description: Option<String>,
 }
 
-/// Body of `data[...]` carried by the Paydunya IPN. The payload mirrors the
-/// `checkout-invoice/confirm/{token}` JSON response (cf. [`PaydunyaSyncResponse`]),
-/// but we keep the IPN-shaped struct separate so the form-decoder doesn't
-/// have to share semantics with the JSON-decoded sync flow.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PaydunyaIpnBody {
     pub response_code: String,
     #[serde(default)]
     pub response_text: Option<String>,
-    /// Hex-encoded SHA-512 of the merchant's master key. Used to verify that
-    /// the IPN actually originated from Paydunya's servers.
     pub hash: Secret<String>,
     pub status: PaydunyaSyncStatus,
     pub invoice: PaydunyaIpnInvoice,
@@ -1206,8 +1232,6 @@ pub struct PaydunyaIpnBody {
 }
 
 impl PaydunyaIpnBody {
-    /// Connector-side reference id used to look up the original payment —
-    /// Paydunya identifies every transaction by the invoice token.
     pub fn invoice_token(&self) -> &str {
         &self.invoice.token
     }
@@ -1338,19 +1362,24 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn payment_status_maps_to_attempt_status() {
+    fn softpay_response_deserializes_success_envelope() {
+        // MTN Benin SOFTPAY success envelope: initiation accepted, awaiting
+        // customer confirmation. Extra fields (`fees`, `currency`) are ignored.
+        let body = r#"{"success": true, "message": "Votre paiement est en cours de traitement.", "fees": 100, "currency": "XOF"}"#;
+        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.success);
         assert_eq!(
-            AttemptStatus::from(PaydunyaPaymentStatus::Succeeded),
-            AttemptStatus::Charged
+            parsed.message.as_deref(),
+            Some("Votre paiement est en cours de traitement.")
         );
-        assert_eq!(
-            AttemptStatus::from(PaydunyaPaymentStatus::Failed),
-            AttemptStatus::Failure
-        );
-        assert_eq!(
-            AttemptStatus::from(PaydunyaPaymentStatus::Processing),
-            AttemptStatus::Authorizing
-        );
+    }
+
+    #[test]
+    fn softpay_response_deserializes_failure_envelope() {
+        let body = r#"{"success": false, "message": "Le compte n'existe pas"}"#;
+        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
+        assert!(!parsed.success);
+        assert_eq!(parsed.message.as_deref(), Some("Le compte n'existe pas"));
     }
 
     #[test]
@@ -1438,7 +1467,7 @@ mod tests {
     ) -> PaydunyaSyncResponse {
         PaydunyaSyncResponse {
             response_code: "00".to_string(),
-            response_text: "Transaction Found".to_string(),
+            response_text: Some("Transaction Found".to_string()),
             hash: None,
             status: PaydunyaSyncStatus::Failed,
             fail_reason: fail_reason.map(str::to_string),
@@ -1569,11 +1598,19 @@ mod tests {
     // PaydunyaIpnEnvelope (urlencoded webhook body)
     // ---------------------------------------------------------------
 
+    // Matches the runtime config used by `parse_paydunya_ipn`: non-strict so
+    // percent-encoded brackets (`%5B`/`%5D`) are decoded, with extra depth for
+    // Paydunya's nested `invoice.items[...]` blocks.
+    fn parse_ipn(body: &str) -> PaydunyaIpnEnvelope {
+        serde_qs::Config::new(10, false)
+            .deserialize_bytes(body.as_bytes())
+            .unwrap()
+    }
+
     #[test]
     fn ipn_envelope_decodes_bracket_form_body() {
         // Paydunya posts IPNs as `application/x-www-form-urlencoded` with
-        // PHP-style nested keys. `serde_qs` is what the connector uses at
-        // runtime — replicate it here to make sure renames stay in sync.
+        // PHP-style nested keys.
         let body = "data[response_code]=00\
                     &data[response_text]=Transaction+Found\
                     &data[hash]=deadbeef\
@@ -1584,8 +1621,7 @@ mod tests {
                     &data[mode]=test\
                     &data[receipt_url]=https://paydunya.com/receipt/test_jkEdPY8SuG";
 
-        let envelope: PaydunyaIpnEnvelope = serde_qs::from_bytes(body.as_bytes()).unwrap();
-        let ipn = envelope.data;
+        let ipn = parse_ipn(body).data;
 
         assert_eq!(ipn.response_code, "00");
         assert_eq!(ipn.response_text.as_deref(), Some("Transaction Found"));
@@ -1599,6 +1635,34 @@ mod tests {
     }
 
     #[test]
+    fn ipn_envelope_decodes_percent_encoded_bracket_body() {
+        // The real Paydunya IPN is sent by a PHP/Guzzle client, which
+        // percent-encodes the bracket keys (`data%5Binvoice%5D%5Btoken%5D`).
+        // serde_qs' default strict parser does NOT decode `%5B`/`%5D` and fails
+        // with "missing field `data`" (observed as a `WE_03` webhook error), so
+        // this must parse via the non-strict runtime config. Includes the
+        // nested `items`/`taxes`/`custom_data` blocks real IPNs carry.
+        let body = "data%5Bresponse_code%5D=00\
+                    &data%5Bresponse_text%5D=Transaction+Found\
+                    &data%5Bhash%5D=deadbeef\
+                    &data%5Bstatus%5D=completed\
+                    &data%5Binvoice%5D%5Btoken%5D=test_jkEdPY8SuG\
+                    &data%5Binvoice%5D%5Btotal_amount%5D=42300\
+                    &data%5Binvoice%5D%5Bitems%5D%5Bitem_0%5D%5Bname%5D=Product\
+                    &data%5Binvoice%5D%5Btaxes%5D%5Btax_0%5D%5Bname%5D=TVA\
+                    &data%5Bcustom_data%5D%5Border_id%5D=abc123\
+                    &data%5Bmode%5D=live";
+
+        let ipn = parse_ipn(body).data;
+
+        assert_eq!(ipn.response_code, "00");
+        assert_eq!(ipn.status, PaydunyaSyncStatus::Completed);
+        assert_eq!(ipn.hash.peek(), "deadbeef");
+        assert_eq!(ipn.invoice.token, "test_jkEdPY8SuG");
+        assert_eq!(ipn.invoice_token(), "test_jkEdPY8SuG");
+    }
+
+    #[test]
     fn ipn_envelope_decodes_cancelled_status() {
         // Auto-cancellation by inactivity uses the same opcode as a manual
         // cancel, so we still expect `cancelled` to flow through cleanly.
@@ -1608,8 +1672,7 @@ mod tests {
                     &data[invoice][token]=cancelled_token\
                     &data[fail_reason]=customer_cancelled";
 
-        let envelope: PaydunyaIpnEnvelope = serde_qs::from_bytes(body.as_bytes()).unwrap();
-        let ipn = envelope.data;
+        let ipn = parse_ipn(body).data;
 
         assert_eq!(ipn.status, PaydunyaSyncStatus::Cancelled);
         assert_eq!(ipn.invoice_token(), "cancelled_token");
@@ -1965,6 +2028,51 @@ mod tests {
     }
 
     #[test]
+    fn metadata_parses_store_name_from_connector_meta_data() {
+        // The invoice `store.name` is now sourced from
+        // `connector_meta_data.store_name` rather than being hardcoded, so
+        // confirm the metadata object pulls it back out intact.
+        let meta = common_utils::pii::SecretSerdeValue::new(serde_json::json!({
+            "store_name": "My Store"
+        }));
+        let parsed = PaydunyaConnectorMetadataObject::try_from(Some(&meta))
+            .expect("store_name should parse");
+        assert_eq!(parsed.store_name, "My Store");
+    }
+
+    #[test]
+    fn metadata_missing_returns_invalid_connector_config() {
+        // Without connector metadata there is no store name to put on the
+        // invoice, so the connector must surface InvalidConnectorConfig
+        // instead of sending an empty store to Paydunya.
+        let err = PaydunyaConnectorMetadataObject::try_from(None)
+            .expect_err("missing metadata must error");
+        assert!(matches!(
+            err.current_context(),
+            errors::ConnectorError::InvalidConnectorConfig {
+                config: "metadata.store_name"
+            }
+        ));
+    }
+
+    #[test]
+    fn metadata_without_store_name_returns_invalid_connector_config() {
+        // Metadata present but missing the required `store_name` key must
+        // also be rejected with the same InvalidConnectorConfig error.
+        let meta = common_utils::pii::SecretSerdeValue::new(serde_json::json!({
+            "unrelated": "value"
+        }));
+        let err = PaydunyaConnectorMetadataObject::try_from(Some(&meta))
+            .expect_err("metadata without store_name must error");
+        assert!(matches!(
+            err.current_context(),
+            errors::ConnectorError::InvalidConnectorConfig {
+                config: "metadata.store_name"
+            }
+        ));
+    }
+
+    #[test]
     fn preprocessing_response_deserializes_success_envelope() {
         let body = r#"{
             "response_code": "00",
@@ -1975,7 +2083,22 @@ mod tests {
 
         let response: PaydunyaPaymentsPreProcessingResponse = serde_json::from_str(body).unwrap();
         assert_eq!(response.response_code, "00");
-        assert_eq!(response.token, "test_jkEdPY8SuG");
+        assert_eq!(response.token.as_deref(), Some("test_jkEdPY8SuG"));
+    }
+
+    #[test]
+    fn preprocessing_response_deserializes_failure_envelope_without_token() {
+        // Paydunya returns HTTP 200 even on failure, with only
+        // `response_code`/`response_text` and no `description`/`token`.
+        let body = r#"{
+            "response_code": "1001",
+            "response_text": "Token invalide"
+        }"#;
+
+        let response: PaydunyaPaymentsPreProcessingResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(response.response_code, "1001");
+        assert_eq!(response.token, None);
+        assert_eq!(response.description, None);
     }
 
     // ---------------------------------------------------------------
@@ -1983,20 +2106,11 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn payments_response_deserializes_status_and_id() {
-        let body = r#"{"status": "succeeded", "id": "txn_123"}"#;
+    fn softpay_response_message_is_optional() {
+        // `message` may be absent; parsing must still succeed.
+        let body = r#"{"success": true}"#;
         let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
-        assert_eq!(parsed.status, PaydunyaPaymentStatus::Succeeded);
-        assert_eq!(parsed.id, "txn_123");
-    }
-
-    #[test]
-    fn payments_response_defaults_status_to_processing() {
-        // Older Paydunya replies sometimes omit `status` entirely; rely on
-        // serde's #[default] to keep parsing successful instead of failing
-        // the attempt.
-        let body = r#"{"id": "txn_456", "status": "processing"}"#;
-        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
-        assert_eq!(parsed.status, PaydunyaPaymentStatus::Processing);
+        assert!(parsed.success);
+        assert_eq!(parsed.message, None);
     }
 }

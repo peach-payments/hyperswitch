@@ -1,5 +1,24 @@
 import { getCurrency, getCustomExchange } from "./Modifiers";
 
+// IMPORTANT: Paydunya requires a store name on every invoice, surfaced from
+// the connector account's `metadata.store_name` (config field is
+// `required = true`). The merchant connector account in these tests is
+// provisioned from your `creds.json`, where metadata is merged in from the
+// `paydunya` entry. That entry MUST include `metadata.store_name`, e.g.:
+//
+//   "paydunya": {
+//     "connector_account_details": {
+//       "auth_type": "...",
+//       "api_key": "...",
+//       "key1": "..."
+//     },
+//     "metadata": { "store_name": "Your Store" }
+//   }
+//
+// Without it, the order-create leg fails with `InvalidConnectorConfig`
+// (`metadata.store_name`) and every wallet flow below errors instead of
+// returning the asserted `processing` response.
+
 // Paydunya only exposes mobile-money rails today (SOFTPAY). Each rail maps to
 // a dedicated Hyperswitch wallet payment method type — `momo` (MTN family),
 // `moov_money` (Moov family), `wave`, `orange_money`, `djamo`, `t_money`,
