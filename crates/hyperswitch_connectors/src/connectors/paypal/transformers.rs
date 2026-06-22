@@ -1141,6 +1141,14 @@ impl TryFrom<&PaypalRouterData<&PaymentsAuthorizeRouterData>> for PaypalPayments
                 | WalletData::GooglePayThirdPartySdk(_)
                 | WalletData::MbWayRedirect(_)
                 | WalletData::MobilePayRedirect(_)
+                | WalletData::DjamoRedirect(_)
+                | WalletData::TMoneyRedirect(_)
+                | WalletData::WizallRedirect(_)
+                | WalletData::ExpressoRedirect(_)
+                | WalletData::FreeMoneyRedirect(_)
+                | WalletData::WaveRedirect(_)
+                | WalletData::MoovMoneyRedirect(_)
+                | WalletData::OrangeMoneyRedirect(_)
                 | WalletData::SamsungPay(_)
                 | WalletData::TwintRedirect {}
                 | WalletData::VippsRedirect {}
@@ -1335,7 +1343,15 @@ impl TryFrom<&PaypalRouterData<&PaymentsAuthorizeRouterData>> for PaypalPayments
                     | enums::PaymentMethodType::UpiQr
                     | enums::PaymentMethodType::Payjustnow
                     | enums::PaymentMethodType::OpenBanking
-                    | enums::PaymentMethodType::NetworkToken => {
+                    | enums::PaymentMethodType::NetworkToken
+                    | enums::PaymentMethodType::MoovMoney
+                    | enums::PaymentMethodType::Djamo
+                    | enums::PaymentMethodType::TMoney
+                    | enums::PaymentMethodType::Wizall
+                    | enums::PaymentMethodType::Expresso
+                    | enums::PaymentMethodType::FreeMoney
+                    | enums::PaymentMethodType::OrangeMoney
+                    | enums::PaymentMethodType::Wave => {
                         Err(errors::ConnectorError::NotImplemented(
                             utils::get_unimplemented_payment_method_error_message("paypal"),
                         ))

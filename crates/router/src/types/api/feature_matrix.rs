@@ -278,6 +278,9 @@ impl FeatureMatrixConnectorData {
                 enums::Connector::Paybox => {
                     Ok(ConnectorEnum::Old(Box::new(connector::Paybox::new())))
                 }
+                enums::Connector::Paydunya => {
+                    Ok(ConnectorEnum::Old(Box::new(connector::Paydunya::new())))
+                }
                 enums::Connector::Paytm => {
                     Ok(ConnectorEnum::Old(Box::new(connector::Paytm::new())))
                 }

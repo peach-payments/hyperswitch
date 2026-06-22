@@ -364,7 +364,15 @@ impl ConnectorValidation for Adyen {
                 | PaymentMethodType::OpenBanking
                 | PaymentMethodType::NetworkToken
                 | PaymentMethodType::PixAutomaticoPush
-                | PaymentMethodType::PixAutomaticoQr => {
+                | PaymentMethodType::PixAutomaticoQr
+                | PaymentMethodType::MoovMoney
+                | PaymentMethodType::Djamo
+                | PaymentMethodType::TMoney
+                | PaymentMethodType::Wizall
+                | PaymentMethodType::Expresso
+                | PaymentMethodType::FreeMoney
+                | PaymentMethodType::OrangeMoney
+                | PaymentMethodType::Wave => {
                     capture_method_not_supported!(connector, capture_method, payment_method_type)
                 }
             },

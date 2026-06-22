@@ -11318,6 +11318,7 @@
           "nuvei",
           "opennode",
           "paybox",
+          "paydunya",
           "payload",
           "payme",
           "payone",
@@ -13716,6 +13717,9 @@
           "dispute_won",
           "dispute_lost"
         ]
+      },
+      "DjamoRedirection": {
+        "type": "object"
       },
       "DocumentDetails": {
         "type": "object",
@@ -19716,6 +19720,16 @@
           }
         }
       },
+      "OrangeMoneyRedirection": {
+        "type": "object",
+        "properties": {
+          "otp": {
+            "type": "string",
+            "description": "One-time passcode the payer generates on their Orange Money handset\n(via USSD or the operator's app) before confirming the SOFTPAY call.\nRequired by some country variants (Côte d'Ivoire, Burkina Faso) and\nignored by the others.",
+            "nullable": true
+          }
+        }
+      },
       "Order": {
         "type": "object",
         "required": [
@@ -23140,6 +23154,8 @@
           "dana",
           "danamon_va",
           "debit",
+          "djamo",
+          "t_money",
           "duit_now",
           "efecty",
           "eft",
@@ -23165,6 +23181,7 @@
           "mobile_pay",
           "momo",
           "momo_atm",
+          "moov_money",
           "multibanco",
           "online_banking_thailand",
           "online_banking_czech_republic",
@@ -23172,6 +23189,7 @@
           "online_banking_fpx",
           "online_banking_poland",
           "online_banking_slovakia",
+          "orange_money",
           "oxxo",
           "pago_efectivo",
           "permata_bank_transfer",
@@ -23209,6 +23227,7 @@
           "viet_qr",
           "venmo",
           "walley",
+          "wave",
           "we_chat_pay",
           "seven_eleven",
           "lawson",
@@ -29556,6 +29575,7 @@
           "nuvei",
           "opennode",
           "paybox",
+          "paydunya",
           "payme",
           "payload",
           "payone",
@@ -31563,6 +31583,9 @@
       "SwishQrData": {
         "type": "object"
       },
+      "TMoneyRedirection": {
+        "type": "object"
+      },
       "TaxCalculationOverride": {
         "type": "string",
         "enum": [
@@ -33134,6 +33157,90 @@
           },
           {
             "type": "object",
+            "title": "DjamoRedirect",
+            "required": [
+              "djamo_redirect"
+            ],
+            "properties": {
+              "djamo_redirect": {
+                "$ref": "#/components/schemas/DjamoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "TMoneyRedirect",
+            "required": [
+              "t_money_redirect"
+            ],
+            "properties": {
+              "t_money_redirect": {
+                "$ref": "#/components/schemas/TMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "WizallRedirect",
+            "required": [
+              "wizall_redirect"
+            ],
+            "properties": {
+              "wizall_redirect": {
+                "$ref": "#/components/schemas/WizallRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "ExpressoRedirect",
+            "required": [
+              "expresso_redirect"
+            ],
+            "properties": {
+              "expresso_redirect": {
+                "$ref": "#/components/schemas/ExpressoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "FreeMoneyRedirect",
+            "required": [
+              "free_money_redirect"
+            ],
+            "properties": {
+              "free_money_redirect": {
+                "$ref": "#/components/schemas/FreeMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "WaveRedirect",
+            "required": [
+              "wave_redirect"
+            ],
+            "properties": {
+              "wave_redirect": {
+                "$ref": "#/components/schemas/WaveRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "MoovMoneyRedirect",
+            "required": [
+              "moov_money_redirect"
+            ],
+            "properties": {
+              "moov_money_redirect": {
+                "$ref": "#/components/schemas/MoovMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
             "title": "MomoRedirect",
             "required": [
               "momo_redirect"
@@ -33141,6 +33248,18 @@
             "properties": {
               "momo_redirect": {
                 "$ref": "#/components/schemas/MomoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "OrangeMoneyRedirect",
+            "required": [
+              "orange_money_redirect"
+            ],
+            "properties": {
+              "orange_money_redirect": {
+                "$ref": "#/components/schemas/OrangeMoneyRedirection"
               }
             }
           },
@@ -33401,6 +33520,21 @@
         "type": "object"
       },
       "WeChatPayRedirection": {
+        "type": "object"
+      },
+      "WizallRedirection": {
+        "type": "object"
+      },
+      "ExpressoRedirection": {
+        "type": "object"
+      },
+      "FreeMoneyRedirection": {
+        "type": "object"
+      },
+      "WaveRedirection": {
+        "type": "object"
+      },
+      "MoovMoneyRedirection": {
         "type": "object"
       },
       "WebhookDeliveryAttempt": {

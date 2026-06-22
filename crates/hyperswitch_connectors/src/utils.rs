@@ -6783,6 +6783,14 @@ pub enum PaymentMethodDataType {
     GooglePayThirdPartySdk,
     MbWayRedirect,
     MobilePayRedirect,
+    DjamoRedirect,
+    TMoneyRedirect,
+    WizallRedirect,
+    ExpressoRedirect,
+    FreeMoneyRedirect,
+    WaveRedirect,
+    MoovMoneyRedirect,
+    OrangeMoneyRedirect,
     PaypalRedirect,
     PaypalSdk,
     Paze,
@@ -6937,6 +6945,16 @@ impl From<PaymentMethodData> for PaymentMethodDataType {
                 }
                 payment_method_data::WalletData::MbWayRedirect(_) => Self::MbWayRedirect,
                 payment_method_data::WalletData::MobilePayRedirect(_) => Self::MobilePayRedirect,
+                payment_method_data::WalletData::DjamoRedirect(_) => Self::DjamoRedirect,
+                payment_method_data::WalletData::TMoneyRedirect(_) => Self::TMoneyRedirect,
+                payment_method_data::WalletData::WizallRedirect(_) => Self::WizallRedirect,
+                payment_method_data::WalletData::ExpressoRedirect(_) => Self::ExpressoRedirect,
+                payment_method_data::WalletData::FreeMoneyRedirect(_) => Self::FreeMoneyRedirect,
+                payment_method_data::WalletData::WaveRedirect(_) => Self::WaveRedirect,
+                payment_method_data::WalletData::MoovMoneyRedirect(_) => Self::MoovMoneyRedirect,
+                payment_method_data::WalletData::OrangeMoneyRedirect(_) => {
+                    Self::OrangeMoneyRedirect
+                }
                 payment_method_data::WalletData::PaypalRedirect(_) => Self::PaypalRedirect,
                 payment_method_data::WalletData::PaypalSdk(_) => Self::PaypalSdk,
                 payment_method_data::WalletData::Paze(_) => Self::Paze,

@@ -3601,6 +3601,13 @@ impl GetPaymentMethodType for WalletData {
             }
             Self::Skrill(_) => api_enums::PaymentMethodType::Skrill,
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
+            Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
+            Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
+            Self::WizallRedirect(_) => api_enums::PaymentMethodType::Wizall,
+            Self::ExpressoRedirect(_) => api_enums::PaymentMethodType::Expresso,
+            Self::FreeMoneyRedirect(_) => api_enums::PaymentMethodType::FreeMoney,
+            Self::WaveRedirect(_) => api_enums::PaymentMethodType::Wave,
+            Self::MoovMoneyRedirect(_) => api_enums::PaymentMethodType::MoovMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,
@@ -3614,6 +3621,7 @@ impl GetPaymentMethodType for WalletData {
             }
             Self::MbWayRedirect(_) => api_enums::PaymentMethodType::MbWay,
             Self::MobilePayRedirect(_) => api_enums::PaymentMethodType::MobilePay,
+            Self::OrangeMoneyRedirect(_) => api_enums::PaymentMethodType::OrangeMoney,
             Self::PaypalRedirect(_) | Self::PaypalSdk(_) => api_enums::PaymentMethodType::Paypal,
             Self::Paze(_) => api_enums::PaymentMethodType::Paze,
             Self::SamsungPay(_) => api_enums::PaymentMethodType::SamsungPay,
@@ -5045,10 +5053,59 @@ pub enum WalletData {
     #[schema(title = "MobilePayRedirect")]
     #[smithy(value_type = "MobilePayRedirection")]
     MobilePayRedirect(Box<MobilePayRedirection>),
+    /// The wallet data for Djamo redirect (Paydunya SOFTPAY, Côte d'Ivoire and
+    /// Senegal). Carries no payer-supplied fields; the regional endpoint is
+    /// selected from the billing country.
+    #[schema(title = "DjamoRedirect")]
+    #[smithy(value_type = "DjamoRedirection")]
+    DjamoRedirect(DjamoRedirection),
+    /// The wallet data for T-Money redirect (Paydunya SOFTPAY, Togo). Carries
+    /// no payer-supplied fields; payer identity is taken from the billing
+    /// details and the operator is fixed to T-Money Togo.
+    #[schema(title = "TMoneyRedirect")]
+    #[smithy(value_type = "TMoneyRedirection")]
+    TMoneyRedirect(TMoneyRedirection),
+    /// The wallet data for Wizall redirect (Paydunya SOFTPAY, Senegal). Carries
+    /// no payer-supplied fields; payer identity is taken from the billing
+    /// details and the operator is fixed to Wizall Senegal.
+    #[schema(title = "WizallRedirect")]
+    #[smithy(value_type = "WizallRedirection")]
+    WizallRedirect(WizallRedirection),
+    /// The wallet data for Expresso redirect (Paydunya SOFTPAY, Senegal).
+    /// Carries no payer-supplied fields; payer identity is taken from the
+    /// billing details and the operator is fixed to Expresso Senegal.
+    #[schema(title = "ExpressoRedirect")]
+    #[smithy(value_type = "ExpressoRedirection")]
+    ExpressoRedirect(ExpressoRedirection),
+    /// The wallet data for Free Money redirect (Paydunya SOFTPAY, Senegal).
+    /// Carries no payer-supplied fields; payer identity is taken from the
+    /// billing details and the operator is fixed to Free Money Senegal.
+    #[schema(title = "FreeMoneyRedirect")]
+    #[smithy(value_type = "FreeMoneyRedirection")]
+    FreeMoneyRedirect(FreeMoneyRedirection),
+    /// The wallet data for Wave redirect (Paydunya SOFTPAY, Senegal and Côte
+    /// d'Ivoire). Carries no payer-supplied fields; the regional endpoint is
+    /// selected from the billing country.
+    #[schema(title = "WaveRedirect")]
+    #[smithy(value_type = "WaveRedirection")]
+    WaveRedirect(WaveRedirection),
+    /// The wallet data for Moov Money redirect (Paydunya SOFTPAY). Carries no
+    /// payer-supplied fields; the regional endpoint is selected from the
+    /// billing country.
+    #[schema(title = "MoovMoneyRedirect")]
+    #[smithy(value_type = "MoovMoneyRedirection")]
+    MoovMoneyRedirect(MoovMoneyRedirection),
     /// The wallet data for Momo redirect
     #[schema(title = "MomoRedirect")]
     #[smithy(value_type = "MomoRedirection")]
     MomoRedirect(MomoRedirection),
+    /// The wallet data for Orange Money redirect. Carries an optional one-time
+    /// passcode for the SOFTPAY operators that ask the payer to generate one
+    /// out-of-band (e.g. Orange Money Côte d'Ivoire `#144*82#`, Orange Money
+    /// Burkina Faso app menu).
+    #[schema(title = "OrangeMoneyRedirect")]
+    #[smithy(value_type = "OrangeMoneyRedirection")]
+    OrangeMoneyRedirect(Box<OrangeMoneyRedirection>),
     /// This is for paypal redirection
     #[schema(title = "PaypalRedirect")]
     #[smithy(value_type = "PaypalRedirection")]
@@ -5131,7 +5188,15 @@ impl GetAddressFromPaymentMethodData for WalletData {
             | Self::AliPayQr(_)
             | Self::AliPayRedirect(_)
             | Self::AliPayHkRedirect(_)
+            | Self::DjamoRedirect(_)
+            | Self::TMoneyRedirect(_)
+            | Self::WizallRedirect(_)
+            | Self::ExpressoRedirect(_)
+            | Self::FreeMoneyRedirect(_)
+            | Self::WaveRedirect(_)
+            | Self::MoovMoneyRedirect(_)
             | Self::MomoRedirect(_)
+            | Self::OrangeMoneyRedirect(_)
             | Self::KakaoPayRedirect(_)
             | Self::GoPayRedirect(_)
             | Self::GcashRedirect(_)
@@ -5481,6 +5546,48 @@ pub struct BluecodeQrRedirect {}
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct DjamoRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct TMoneyRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct WizallRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct ExpressoRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct FreeMoneyRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct WaveRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct MoovMoneyRedirection {}
+
+#[derive(
+    Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct MomoRedirection {}
 
 #[derive(
@@ -5506,6 +5613,28 @@ pub struct GcashRedirection {}
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct MobilePayRedirection {}
+
+#[derive(
+    Default,
+    Eq,
+    PartialEq,
+    Clone,
+    Debug,
+    serde::Deserialize,
+    serde::Serialize,
+    ToSchema,
+    SmithyModel,
+)]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub struct OrangeMoneyRedirection {
+    /// One-time passcode the payer generates on their Orange Money handset
+    /// (via USSD or the operator's app) before confirming the SOFTPAY call.
+    /// Required by some country variants (Côte d'Ivoire, Burkina Faso) and
+    /// ignored by the others.
+    #[schema(value_type = Option<String>)]
+    #[smithy(value_type = "Option<String>")]
+    pub otp: Option<Secret<String>>,
+}
 
 #[derive(
     Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
