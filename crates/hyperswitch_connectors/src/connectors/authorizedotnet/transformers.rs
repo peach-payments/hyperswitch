@@ -12,13 +12,14 @@ use common_utils::{
 };
 use error_stack::ResultExt;
 use hyperswitch_domain_models::{
+    mandates,
     payment_method_data::{Card, PaymentMethodData, WalletData},
     router_data::{
         AdditionalPaymentMethodConnectorResponse, ConnectorAuthType, ConnectorResponseData,
         ErrorResponse, RouterData,
     },
     router_flow_types::RSync,
-    router_request_types::ResponseId,
+    router_request_types::{ResponseId, SurchargeDetails},
     router_response_types::{
         ConnectorCustomerResponseData, MandateReference, PaymentsResponseData, RedirectForm,
         RefundsResponseData,
@@ -164,9 +165,16 @@ struct TransactionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     user_fields: Option<UserFields>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    surcharge: Option<Surcharge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     processing_options: Option<ProcessingOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     subsequent_auth_information: Option<SubsequentAuthInformation>,
+}
+
+#[derive(Debug, Serialize)]
+struct Surcharge {
+    amount: FloatMajorUnit,
 }
 
 #[derive(Debug, Serialize)]
@@ -610,6 +618,21 @@ pub struct AuthorizedotnetCustomerResponse {
     pub messages: ResponseMessages,
 }
 
+fn extract_surcharge_amount(
+    surcharge_details: Option<&SurchargeDetails>,
+    currency: common_enums::Currency,
+) -> CustomResult<Option<FloatMajorUnit>, errors::ConnectorError> {
+    surcharge_details
+        .map(|details| {
+            details
+                .get_total_surcharge_amount()
+                .to_major_unit_as_f64(currency)
+                .change_context(errors::ConnectorError::RequestEncodingFailed)
+                .attach_printable("Failed to convert minor unit amount to major unit float")
+        })
+        .transpose()
+}
+
 fn extract_customer_id(text: &str) -> Option<String> {
     let re = Regex::new(r"ID (\d+)").ok()?;
     re.captures(text)
@@ -720,6 +743,7 @@ impl<F, T>
                     })),
                     connector_metadata: None,
                     network_txn_id: None,
+                    network_txn_link_id: None,
                     connector_response_reference_id: None,
                     incremental_authorization_allowed: None,
                     authentication_data: None,
@@ -821,14 +845,17 @@ impl TryFrom<&AuthorizedotnetRouterData<&PaymentsAuthorizeRouterData>>
             .clone()
             .and_then(|mandate_ids| mandate_ids.mandate_reference_id)
         {
-            Some(api_models::payments::MandateReferenceId::NetworkMandateId(network_trans_id)) => {
-                TransactionRequest::try_from((item, network_trans_id))?
+            Some(mandates::MandateReferenceId::NetworkMandateId(network_trans_id)) => {
+                TransactionRequest::try_from((
+                    item,
+                    network_trans_id.network_transaction_id.clone(),
+                ))?
             }
-            Some(api_models::payments::MandateReferenceId::ConnectorMandateId(
-                connector_mandate_id,
-            )) => TransactionRequest::try_from((item, connector_mandate_id))?,
-            Some(api_models::payments::MandateReferenceId::NetworkTokenWithNTI(_))
-            | Some(api_models::payments::MandateReferenceId::CardWithLimitedData) => {
+            Some(mandates::MandateReferenceId::ConnectorMandateId(connector_mandate_id)) => {
+                TransactionRequest::try_from((item, connector_mandate_id))?
+            }
+            Some(mandates::MandateReferenceId::NetworkTokenWithNTI(_))
+            | Some(mandates::MandateReferenceId::CardWithLimitedData) => {
                 Err(errors::ConnectorError::NotImplemented(
                     utils::get_unimplemented_payment_method_error_message("authorizedotnet"),
                 ))?
@@ -893,6 +920,13 @@ impl
             String,
         ),
     ) -> Result<Self, Self::Error> {
+        let surcharge_amount = extract_surcharge_amount(
+            item.router_data.request.surcharge_details.as_ref(),
+            item.router_data.request.currency,
+        )?;
+
+        let surcharge = surcharge_amount.map(|amount| Surcharge { amount });
+
         Ok(Self {
             transaction_type: TransactionType::try_from(item.router_data.request.capture_method)?,
             amount: item.amount,
@@ -982,6 +1016,7 @@ impl
                 original_network_trans_id: Secret::new(network_trans_id),
                 reason: Reason::Resubmission,
             }),
+            surcharge,
         })
     }
 }
@@ -1011,19 +1046,27 @@ fn get_address_line(
 impl
     TryFrom<(
         &AuthorizedotnetRouterData<&PaymentsAuthorizeRouterData>,
-        api_models::payments::ConnectorMandateReferenceId,
+        mandates::ConnectorMandateReferenceId,
     )> for TransactionRequest
 {
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(
         (item, connector_mandate_id): (
             &AuthorizedotnetRouterData<&PaymentsAuthorizeRouterData>,
-            api_models::payments::ConnectorMandateReferenceId,
+            mandates::ConnectorMandateReferenceId,
         ),
     ) -> Result<Self, Self::Error> {
         let mandate_id = connector_mandate_id
             .get_connector_mandate_id()
             .ok_or(errors::ConnectorError::MissingConnectorMandateID)?;
+
+        let surcharge_amount = extract_surcharge_amount(
+            item.router_data.request.surcharge_details.as_ref(),
+            item.router_data.request.currency,
+        )?;
+
+        let surcharge = surcharge_amount.map(|amount| Surcharge { amount });
+
         Ok(Self {
             transaction_type: TransactionType::try_from(item.router_data.request.capture_method)?,
             amount: item.amount,
@@ -1065,6 +1108,7 @@ impl
                 is_subsequent_auth: true,
             }),
             subsequent_auth_information: None,
+            surcharge,
         })
     }
 }
@@ -1124,6 +1168,13 @@ impl
             None
         };
 
+        let surcharge_amount = extract_surcharge_amount(
+            item.router_data.request.surcharge_details.as_ref(),
+            item.router_data.request.currency,
+        )?;
+
+        let surcharge = surcharge_amount.map(|amount| Surcharge { amount });
+
         Ok(Self {
             transaction_type: TransactionType::try_from(item.router_data.request.capture_method)?,
             amount: item.amount,
@@ -1170,6 +1221,7 @@ impl
             },
             processing_options: None,
             subsequent_auth_information: None,
+            surcharge,
         })
     }
 }
@@ -1222,6 +1274,13 @@ impl
             None
         };
 
+        let surcharge_amount = extract_surcharge_amount(
+            item.router_data.request.surcharge_details.as_ref(),
+            item.router_data.request.currency,
+        )?;
+
+        let surcharge = surcharge_amount.map(|amount| Surcharge { amount });
+
         Ok(Self {
             transaction_type: TransactionType::try_from(item.router_data.request.capture_method)?,
             amount: item.amount,
@@ -1267,6 +1326,7 @@ impl
             },
             processing_options: None,
             subsequent_auth_information: None,
+            surcharge,
         })
     }
 }
@@ -1630,6 +1690,7 @@ impl<F, T>
                                 .network_trans_id
                                 .clone()
                                 .map(|network_trans_id| network_trans_id.expose()),
+                            network_txn_link_id: None,
                             connector_response_reference_id: Some(
                                 transaction_response.transaction_id.clone(),
                             ),
@@ -1706,6 +1767,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, AuthorizedotnetVoidResponse, T, Payment
                                 .network_trans_id
                                 .clone()
                                 .map(|network_trans_id| network_trans_id.expose()),
+                            network_txn_link_id: None,
                             connector_response_reference_id: Some(
                                 transaction_response.transaction_id.clone(),
                             ),
@@ -2066,6 +2128,7 @@ impl<F, Req> TryFrom<ResponseRouterData<F, AuthorizedotnetSyncResponse, Req, Pay
                         mandate_reference: Box::new(None),
                         connector_metadata: None,
                         network_txn_id: None,
+                        network_txn_link_id: None,
                         connector_response_reference_id: Some(transaction.transaction_id.clone()),
                         incremental_authorization_allowed: None,
                         authentication_data: None,

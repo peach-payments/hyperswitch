@@ -6,6 +6,7 @@ use common_types::payments::{ApplePayPredecryptData, GPayPredecryptData};
 use common_utils::{id_type, pii::Email, request::Method, types::StringMajorUnit};
 use error_stack::report;
 use hyperswitch_domain_models::{
+    mandates,
     payment_method_data::{
         ApplePayWalletData, BankRedirectData, Card, GooglePayWalletData, NetworkTokenData,
         PayLaterData, PaymentMethodData, SamsungPayWalletData, WalletData,
@@ -1124,14 +1125,14 @@ impl
 impl
     TryFrom<(
         &AciRouterData<&PaymentsAuthorizeRouterData>,
-        api_models::payments::MandateIds,
+        mandates::MandateIds,
     )> for AciPaymentsRequest
 {
     type Error = Error;
     fn try_from(
         value: (
             &AciRouterData<&PaymentsAuthorizeRouterData>,
-            api_models::payments::MandateIds,
+            mandates::MandateIds,
         ),
     ) -> Result<Self, Self::Error> {
         let (item, _mandate_data) = value;
@@ -1471,6 +1472,7 @@ where
                 mandate_reference: Box::new(mandate_reference),
                 connector_metadata: None,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: Some(item.response.id),
                 incremental_authorization_allowed: None,
                 authentication_data: None,
@@ -1609,6 +1611,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, AciCaptureResponse, T, PaymentsResponse
                 mandate_reference: Box::new(None),
                 connector_metadata: None,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: Some(item.response.referenced_id.clone()),
                 incremental_authorization_allowed: None,
                 authentication_data: None,
@@ -1673,6 +1676,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, AciVoidResponse, T, PaymentsResponseDat
                 mandate_reference: Box::new(None),
                 connector_metadata: None,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: Some(item.response.referenced_id.clone()),
                 incremental_authorization_allowed: None,
                 authentication_data: None,
@@ -1850,6 +1854,7 @@ impl
                 mandate_reference: Box::new(mandate_reference),
                 connector_metadata: None,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: Some(item.response.id),
                 incremental_authorization_allowed: None,
                 authentication_data: None,

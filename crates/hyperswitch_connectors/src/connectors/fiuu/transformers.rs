@@ -14,6 +14,7 @@ use common_utils::{
 };
 use error_stack::{Report, ResultExt};
 use hyperswitch_domain_models::{
+    mandates,
     payment_method_data::{
         BankRedirectData, Card, CardDetailsForNetworkTransactionId, GooglePayWalletData,
         PaymentMethodData, RealTimePaymentData, WalletData,
@@ -630,10 +631,13 @@ impl TryFrom<&FiuuRouterData<&PaymentsAuthorizeRouterData>> for FiuuPaymentReque
                 }
             },
             // Card payments using network transaction ID
-            Some(payments::MandateReferenceId::NetworkMandateId(network_transaction_id)) => {
+            Some(mandates::MandateReferenceId::NetworkMandateId(network_transaction_id)) => {
                 match item.router_data.request.payment_method_data {
                     PaymentMethodData::CardDetailsForNetworkTransactionId(ref raw_card_details) => {
-                        FiuuPaymentMethodData::try_from((raw_card_details, network_transaction_id))
+                        FiuuPaymentMethodData::try_from((
+                            raw_card_details,
+                            network_transaction_id.network_transaction_id.clone(),
+                        ))
                     }
                     _ => Err(errors::ConnectorError::NotImplemented(
                         utils::get_unimplemented_payment_method_error_message("fiuu"),
@@ -893,6 +897,7 @@ impl TryFrom<PaymentsResponseRouterData<FiuuPaymentsResponse>> for PaymentsAutho
                     mandate_reference: Box::new(None),
                     connector_metadata: get_qr_metadata(response)?,
                     network_txn_id: None,
+                    network_txn_link_id: None,
                     connector_response_reference_id: None,
                     incremental_authorization_allowed: None,
                     authentication_data: None,
@@ -935,6 +940,7 @@ impl TryFrom<PaymentsResponseRouterData<FiuuPaymentsResponse>> for PaymentsAutho
                             mandate_reference: Box::new(None),
                             connector_metadata: None,
                             network_txn_id: None,
+                            network_txn_link_id: None,
                             connector_response_reference_id: None,
                             incremental_authorization_allowed: None,
                             authentication_data: None,
@@ -997,6 +1003,7 @@ impl TryFrom<PaymentsResponseRouterData<FiuuPaymentsResponse>> for PaymentsAutho
                             mandate_reference: Box::new(mandate_reference),
                             connector_metadata: None,
                             network_txn_id: None,
+                            network_txn_link_id: None,
                             connector_response_reference_id: None,
                             incremental_authorization_allowed: None,
                             authentication_data: None,
@@ -1049,6 +1056,7 @@ impl TryFrom<PaymentsResponseRouterData<FiuuPaymentsResponse>> for PaymentsAutho
                                 mandate_reference: Box::new(None),
                                 connector_metadata: None,
                                 network_txn_id: None,
+                                network_txn_link_id: None,
                                 connector_response_reference_id: None,
                                 incremental_authorization_allowed: None,
                                 authentication_data: None,
@@ -1069,6 +1077,7 @@ impl TryFrom<PaymentsResponseRouterData<FiuuPaymentsResponse>> for PaymentsAutho
                             mandate_reference: Box::new(None),
                             connector_metadata: None,
                             network_txn_id: None,
+                            network_txn_link_id: None,
                             connector_response_reference_id: None,
                             incremental_authorization_allowed: None,
                             authentication_data: None,
@@ -1426,6 +1435,7 @@ impl TryFrom<PaymentsSyncResponseRouterData<FiuuPaymentResponse>> for PaymentsSy
                         .scheme_transaction_id
                         .as_ref()
                         .map(|id| id.clone().expose()),
+                    network_txn_link_id: None,
                     connector_response_reference_id: None,
                     incremental_authorization_allowed: None,
                     authentication_data: None,
@@ -1496,6 +1506,7 @@ impl TryFrom<PaymentsSyncResponseRouterData<FiuuPaymentResponse>> for PaymentsSy
                     mandate_reference: Box::new(mandate_reference),
                     connector_metadata: None,
                     network_txn_id: None,
+                    network_txn_link_id: None,
                     connector_response_reference_id: None,
                     incremental_authorization_allowed: None,
                     authentication_data: None,
@@ -1674,6 +1685,7 @@ impl TryFrom<PaymentsCaptureResponseRouterData<PaymentCaptureResponse>>
             mandate_reference: Box::new(None),
             connector_metadata: None,
             network_txn_id: None,
+            network_txn_link_id: None,
             connector_response_reference_id: None,
             incremental_authorization_allowed: None,
             authentication_data: None,
@@ -1795,6 +1807,7 @@ impl TryFrom<PaymentsCancelResponseRouterData<FiuuPaymentCancelResponse>>
             mandate_reference: Box::new(None),
             connector_metadata: None,
             network_txn_id: None,
+            network_txn_link_id: None,
             connector_response_reference_id: None,
             incremental_authorization_allowed: None,
             authentication_data: None,

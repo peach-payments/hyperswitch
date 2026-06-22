@@ -2146,6 +2146,7 @@ impl From<AttemptStatus> for IntentStatus {
             AttemptStatus::VoidedPostCharge => Self::CancelledPostCapture,
             AttemptStatus::Expired => Self::Expired,
             AttemptStatus::PartiallyAuthorized => Self::PartiallyAuthorizedAndRequiresCapture,
+            AttemptStatus::CaptureReview => Self::Review,
         }
     }
 }
@@ -2160,7 +2161,8 @@ impl From<IntentStatus> for Option<EventType> {
             }
             IntentStatus::RequiresMerchantAction
             | IntentStatus::RequiresCustomerAction
-            | IntentStatus::Conflicted => Some(EventType::ActionRequired),
+            | IntentStatus::Conflicted
+            | IntentStatus::Review => Some(EventType::ActionRequired),
             IntentStatus::Cancelled => Some(EventType::PaymentCancelled),
             IntentStatus::CancelledPostCapture => Some(EventType::PaymentCancelledPostCapture),
             IntentStatus::Expired => Some(EventType::PaymentExpired),

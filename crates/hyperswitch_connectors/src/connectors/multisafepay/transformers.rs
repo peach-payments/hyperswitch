@@ -7,6 +7,7 @@ use common_utils::{
 };
 use error_stack::ResultExt;
 use hyperswitch_domain_models::{
+    mandates,
     payment_method_data::{BankRedirectData, PayLaterData, PaymentMethodData, WalletData},
     router_data::{ConnectorAuthType, ErrorResponse, RouterData},
     router_flow_types::refunds::{Execute, RSync},
@@ -948,7 +949,7 @@ impl TryFrom<&MultisafepayRouterData<&types::PaymentsAuthorizeRouterData>>
                 .mandate_id
                 .clone()
                 .and_then(|mandate_ids| match mandate_ids.mandate_reference_id {
-                    Some(api_models::payments::MandateReferenceId::ConnectorMandateId(
+                    Some(mandates::MandateReferenceId::ConnectorMandateId(
                         connector_mandate_ids,
                     )) => connector_mandate_ids
                         .get_connector_mandate_id()
@@ -1109,6 +1110,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, MultisafepayAuthResponse, T, PaymentsRe
                             ),
                             connector_metadata: None,
                             network_txn_id: None,
+                            network_txn_link_id: None,
                             connector_response_reference_id: Some(
                                 payment_response.data.order_id.clone(),
                             ),

@@ -181,6 +181,27 @@ diesel::table! {
         processor_merchant_id -> Nullable<Varchar>,
         #[max_length = 255]
         created_by -> Nullable<Varchar>,
+        #[max_length = 32]
+        updated_by -> Nullable<Varchar>,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use crate::enums::diesel_exports::*;
+
+    batch_blocklist_jobs (id) {
+        #[max_length = 64]
+        id -> Varchar,
+        #[max_length = 64]
+        merchant_id -> Varchar,
+        #[max_length = 32]
+        status -> Varchar,
+        total_rows -> Int4,
+        succeeded_rows -> Int4,
+        failed_rows -> Int4,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
     }
 }
 
@@ -196,6 +217,10 @@ diesel::table! {
         data_kind -> BlocklistDataKind,
         metadata -> Nullable<Jsonb>,
         created_at -> Timestamp,
+        #[max_length = 64]
+        processor_merchant_id -> Nullable<Varchar>,
+        #[max_length = 255]
+        created_by -> Nullable<Varchar>,
     }
 }
 
@@ -302,6 +327,7 @@ diesel::table! {
         network_tokenization_credentials -> Nullable<Bytea>,
         payment_method_blocking -> Nullable<Jsonb>,
         default_fallback_routing -> Nullable<Jsonb>,
+        surcharge_connector_details -> Nullable<Jsonb>,
     }
 }
 
@@ -581,6 +607,10 @@ diesel::table! {
         delivery_attempt -> Nullable<WebhookDeliveryAttempt>,
         metadata -> Nullable<Jsonb>,
         is_overall_delivery_successful -> Nullable<Bool>,
+        #[max_length = 64]
+        processor_merchant_id -> Nullable<Varchar>,
+        #[max_length = 64]
+        initiator_merchant_id -> Nullable<Varchar>,
     }
 }
 
@@ -918,6 +948,8 @@ diesel::table! {
         updated_by -> Nullable<Varchar>,
         #[max_length = 2048]
         customer_user_agent_extended -> Nullable<Varchar>,
+        #[max_length = 255]
+        network_transaction_link_id -> Nullable<Varchar>,
     }
 }
 
@@ -1180,6 +1212,13 @@ diesel::table! {
         #[max_length = 64]
         retry_type -> Nullable<Varchar>,
         installment_data -> Nullable<Jsonb>,
+        external_surcharge_details -> Nullable<Jsonb>,
+        #[max_length = 255]
+        network_transaction_link_id -> Nullable<Varchar>,
+        #[max_length = 255]
+        sender_payment_instrument_id -> Nullable<Varchar>,
+        #[max_length = 64]
+        external_threeds_authentication_type -> Nullable<Varchar>,
     }
 }
 
@@ -1292,6 +1331,11 @@ diesel::table! {
         partner_merchant_identifier_details -> Nullable<Jsonb>,
         state_metadata -> Nullable<Jsonb>,
         installment_options -> Nullable<Jsonb>,
+        #[max_length = 64]
+        profile_acquirer_id -> Nullable<Varchar>,
+        #[max_length = 64]
+        external_surcharge_strategy -> Nullable<Varchar>,
+        external_surcharge_applicable -> Nullable<Bool>,
     }
 }
 
@@ -1322,6 +1366,10 @@ diesel::table! {
         profile_id -> Nullable<Varchar>,
         #[max_length = 255]
         secure_link -> Nullable<Varchar>,
+        #[max_length = 64]
+        processor_merchant_id -> Nullable<Varchar>,
+        #[max_length = 255]
+        created_by -> Nullable<Varchar>,
     }
 }
 
@@ -1401,6 +1449,9 @@ diesel::table! {
         payment_method_type_v2 -> Nullable<Varchar>,
         #[max_length = 64]
         payment_method_subtype -> Nullable<Varchar>,
+        #[max_length = 255]
+        network_transaction_link_id -> Nullable<Varchar>,
+        compatibility_updated_at -> Nullable<Timestamp>,
     }
 }
 
@@ -1452,6 +1503,9 @@ diesel::table! {
         processor_merchant_id -> Nullable<Varchar>,
         #[max_length = 255]
         created_by -> Nullable<Varchar>,
+        #[max_length = 64]
+        source_bank_data_token -> Nullable<Varchar>,
+        additional_source_bank_data -> Nullable<Jsonb>,
     }
 }
 
@@ -1630,6 +1684,10 @@ diesel::table! {
         created_at -> Timestamp,
         modified_at -> Timestamp,
         response_data -> Nullable<Jsonb>,
+        #[max_length = 64]
+        processor_merchant_id -> Nullable<Varchar>,
+        #[max_length = 255]
+        created_by -> Nullable<Varchar>,
     }
 }
 
@@ -1705,6 +1763,10 @@ diesel::table! {
         algorithm_for -> TransactionType,
         #[max_length = 64]
         decision_engine_routing_id -> Nullable<Varchar>,
+        #[max_length = 64]
+        processor_merchant_id -> Nullable<Varchar>,
+        #[max_length = 255]
+        created_by -> Nullable<Varchar>,
     }
 }
 
@@ -1894,4 +1956,55 @@ diesel::table! {
 }
 
 diesel::allow_tables_to_appear_in_same_query!(
-    address,api_keys,authentication,blocklist,blocklist_fingerprint,blocklist_lookup,business_profile,callback_mapper,captures,card_issuers,cards_info,configs,customers,dashboard_metadata,dispute,dynamic_routing_stats,events,file_metadata,fraud_check,gateway_status_map,generic_link,hyperswitch_ai_interaction,hyperswitch_ai_interaction_default,incremental_authorization,invoice,locker_mock_up,mandate,merchant_account,merchant_connector_account,merchant_key_store,organization,payment_attempt,payment_intent,payment_link,payment_methods,payout_attempt,payouts,process_tracker,refund,relay,reverse_lookup,roles,routing_algorithm,subscription,themes,unified_translations,user_authentication_methods,user_key_store,user_roles,users,);
+    address,
+    api_keys,
+    authentication,
+    batch_blocklist_jobs,
+    blocklist,
+    blocklist_fingerprint,
+    blocklist_lookup,
+    business_profile,
+    callback_mapper,
+    captures,
+    card_issuers,
+    cards_info,
+    configs,
+    customers,
+    dashboard_metadata,
+    dispute,
+    dynamic_routing_stats,
+    events,
+    file_metadata,
+    fraud_check,
+    gateway_status_map,
+    generic_link,
+    hyperswitch_ai_interaction,
+    hyperswitch_ai_interaction_default,
+    incremental_authorization,
+    invoice,
+    locker_mock_up,
+    mandate,
+    merchant_account,
+    merchant_connector_account,
+    merchant_key_store,
+    organization,
+    payment_attempt,
+    payment_intent,
+    payment_link,
+    payment_methods,
+    payout_attempt,
+    payouts,
+    process_tracker,
+    refund,
+    relay,
+    reverse_lookup,
+    roles,
+    routing_algorithm,
+    subscription,
+    themes,
+    unified_translations,
+    user_authentication_methods,
+    user_key_store,
+    user_roles,
+    users,
+);
