@@ -5615,7 +5615,15 @@ pub struct GcashRedirection {}
 pub struct MobilePayRedirection {}
 
 #[derive(
-    Default, Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize, ToSchema, SmithyModel,
+    Default,
+    Eq,
+    PartialEq,
+    Clone,
+    Debug,
+    serde::Deserialize,
+    serde::Serialize,
+    ToSchema,
+    SmithyModel,
 )]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
 pub struct OrangeMoneyRedirection {
