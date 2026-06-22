@@ -87,6 +87,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, PaymentData<F>, api::PaymentsRequest>
         header_payload: &hyperswitch_domain_models::payments::HeaderPayload,
         payment_method_fetch_data: operations::PaymentMethodFetchData,
         dimensions: &dimension_state::DimensionsWithProcessorAndProviderMerchantId,
+        _payment_pre_fetched_info: Option<operations::PaymentPreFetchedInformation>,
     ) -> RouterResult<operations::GetTrackerResponse<'a, F, api::PaymentsRequest, PaymentData<F>>>
     {
         let operations::PaymentMethodFetchData {
@@ -1137,7 +1138,8 @@ impl<F: Clone + Send + Sync> Domain<F, api::PaymentsRequest, PaymentData<F>> for
                                         == Some(common_enums::FutureUsage::OffSession)
                                 }
                                 Some(api_models::payments::PaymentMethodData::Card(_))
-                                | Some(api_models::payments::PaymentMethodData::BankRedirect(_)) => {
+                                | Some(api_models::payments::PaymentMethodData::BankRedirect(_))
+                                | Some(api_models::payments::PaymentMethodData::BankDebit(_)) => {
                                     true
                                 }
                                 _ => false,
@@ -2373,6 +2375,7 @@ impl PaymentConfirm {
             &profile_id,
             payment_method_ref,
             card_token_data,
+            true, // fetch raw card detail from the internal vault
         )
         .await?;
         logger::info!("Payment method fetched from PM Modular Service.");
