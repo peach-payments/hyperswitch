@@ -43,7 +43,7 @@ use hyperswitch_interfaces::{
     errors,
     events::connector_api_logs::ConnectorEvent,
     types::Response,
-    webhooks::{IncomingWebhook, IncomingWebhookRequestDetails},
+    webhooks::{IncomingWebhook, IncomingWebhookRequestDetails, WebhookContext},
 };
 use hyperswitch_masking::{Mask, PeekInterface};
 use transformers as capitecvrp;
@@ -659,6 +659,7 @@ impl IncomingWebhook for Capitecvrp {
     fn get_webhook_event_type(
         &self,
         _request: &IncomingWebhookRequestDetails<'_>,
+        _context: Option<&WebhookContext>,
     ) -> CustomResult<IncomingWebhookEvent, errors::ConnectorError> {
         // Capitec webhook doesn't include status - triggers a sync
         Ok(IncomingWebhookEvent::PaymentIntentProcessing)
