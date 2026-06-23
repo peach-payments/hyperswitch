@@ -12,7 +12,7 @@ use hyperswitch_domain_models::{
     types::{PaymentsAuthorizeRouterData, SetupMandateRouterData},
 };
 use hyperswitch_interfaces::errors;
-use masking::{PeekInterface, Secret};
+use hyperswitch_masking::{PeekInterface, Secret};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
