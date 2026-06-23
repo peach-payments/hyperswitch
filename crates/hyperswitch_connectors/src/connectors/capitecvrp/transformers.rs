@@ -569,8 +569,10 @@ impl<F>
                 })),
                 connector_metadata: None,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: None,
                 incremental_authorization_allowed: None,
+                authentication_data: None,
                 charges: None,
             }),
             ..item.data
@@ -669,9 +671,11 @@ impl<F>
                     })
                 ),
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: Some(item.response.payment_transaction_id),
                 incremental_authorization_allowed: None,
                 charges: None,
+                authentication_data: None,
             }),
             ..item.data
         })
@@ -707,8 +711,10 @@ impl<F>
                 mandate_reference: Box::new(None),
                 connector_metadata: None,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: Some(item.response.payment_id),
                 incremental_authorization_allowed: None,
+                authentication_data: None,
                 charges: None,
             }),
             ..item.data
@@ -759,7 +765,9 @@ impl<F>
                 mandate_reference: Box::new(None),
                 connector_metadata,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id: None,
+                authentication_data: None,
                 incremental_authorization_allowed: None,
                 charges: None,
             }),
@@ -822,8 +830,10 @@ impl<F>
                 mandate_reference: Box::new(None),
                 connector_metadata,
                 network_txn_id: None,
+                network_txn_link_id: None,
                 connector_response_reference_id,
                 incremental_authorization_allowed: None,
+                authentication_data: None,
                 charges: None,
             }),
             ..item.data
