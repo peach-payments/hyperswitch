@@ -10651,6 +10651,7 @@ default_imp_for_connector_webhook_register!(
     connectors::Braintree,
     connectors::Boku,
     connectors::Breadpay,
+    connectors::Capitecvrp,
     connectors::Cashtocode,
     connectors::Chargebee,
     connectors::Celero,
