@@ -7326,6 +7326,7 @@ default_imp_for_uas_webhook!(
     connectors::Braintree,
     connectors::Boku,
     connectors::Breadpay,
+    connectors::Capitecvrp,
     connectors::Cashtocode,
     connectors::Celero,
     connectors::Chargebee,
