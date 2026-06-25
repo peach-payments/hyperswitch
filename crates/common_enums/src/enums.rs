@@ -9318,6 +9318,9 @@ pub enum AuthenticationConnectors {
     Juspaythreedsserver,
     CtpVisa,
     Cardinal,
+    /// ACI / Peach Payments stand-alone 3DS authentication (`/v1/threeDSecure`).
+    /// Reuses the same `aci` connector credentials as the card gateway.
+    Aci,
 }
 
 impl AuthenticationConnectors {
@@ -9329,7 +9332,8 @@ impl AuthenticationConnectors {
             | Self::UnifiedAuthenticationService
             | Self::Juspaythreedsserver
             | Self::CtpVisa
-            | Self::Cardinal => false,
+            | Self::Cardinal
+            | Self::Aci => false,
             Self::Gpayments => true,
         }
     }
@@ -9342,7 +9346,8 @@ impl AuthenticationConnectors {
             | Self::UnifiedAuthenticationService
             | Self::Juspaythreedsserver
             | Self::CtpVisa
-            | Self::Gpayments => false,
+            | Self::Gpayments
+            | Self::Aci => false,
             Self::Cardinal => true,
         }
     }
