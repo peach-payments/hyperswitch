@@ -8629,6 +8629,19 @@ key1 = "Account Id"
 [capitecvrp]
 [[capitecvrp.open_banking]]
   payment_method_type = "open_banking_capitec"
+[capitecvrp.additional_merchant_data.open_banking_recipient_data]
+name="open_banking_recipient_data"
+label="Open Banking Recipient Data"
+placeholder="Enter Open Banking Recipient Data"
+required=true
+type="Select"
+options=["connector_recipient_id"]
+[capitecvrp.additional_merchant_data.connector_recipient_id]
+name="connector_recipient_id"
+label="Merchant Identifier"
+placeholder="Enter Merchant Identifier"
+required=true
+type="Text"
 [capitecvrp.connector_auth.MultiAuthKey]
 api_key = "Client ID"
 key1 = "Client Secret"
