@@ -13,8 +13,8 @@ import { connectorDetails as bamboraConnectorDetails } from "./Bambora.js";
 import { connectorDetails as bamboraapacConnectorDetails } from "./Bamboraapac.js";
 import { connectorDetails as bankOfAmericaConnectorDetails } from "./BankOfAmerica.js";
 import { connectorDetails as barclaycardConnectorDetails } from "./Barclaycard.js";
-import { connectorDetails as bitpayConnectorDetails } from "./Bitpay.js";
 import { connectorDetails as billwerkConnectorDetails } from "./Billwerk.js";
+import { connectorDetails as bitpayConnectorDetails } from "./Bitpay.js";
 import { connectorDetails as bluesnapConnectorDetails } from "./Bluesnap.js";
 import { connectorDetails as braintreeConnectorDetails } from "./Braintree.js";
 import { connectorDetails as calidaConnectorDetails } from "./Calida.js";
@@ -46,6 +46,7 @@ import { connectorDetails as itaubankConnectorDetails } from "./ItauBank.js";
 import { connectorDetails as jpmorganConnectorDetails } from "./Jpmorgan.js";
 import { connectorDetails as klarnaConnectorDetails } from "./Klarna.js";
 import { connectorDetails as loonioConnectorDetails } from "./Loonio.js";
+import { connectorDetails as mifinityConnectorDetails } from "./Mifinity.js";
 import { connectorDetails as mollieConnectorDetails } from "./Mollie.js";
 import { connectorDetails as monerisConnectorDetails } from "./Moneris.js";
 import { connectorDetails as multisafepayConnectorDetails } from "./Multisafepay.js";
@@ -57,6 +58,7 @@ import { connectorDetails as novalnetConnectorDetails } from "./Novalnet.js";
 import { connectorDetails as nuveiConnectorDetails } from "./Nuvei.js";
 import { connectorDetails as payboxConnectorDetails } from "./Paybox.js";
 import { connectorDetails as paydunyaConnectorDetails } from "./Paydunya.js";
+import { connectorDetails as payjustnowConnectorDetails } from "./Payjustnow.js";
 import { connectorDetails as payloadConnectorDetails } from "./Payload.js";
 import { connectorDetails as paypalConnectorDetails } from "./Paypal.js";
 import { connectorDetails as paysafeConnectorDetails } from "./Paysafe.js";
@@ -82,7 +84,6 @@ import { connectorDetails as worldpayvantivConnectorDetails } from "./Worldpayva
 import { connectorDetails as worldpayxmlConnectorDetails } from "./Worldpayxml.js";
 import { connectorDetails as xenditConnectorDetails } from "./Xendit.js";
 import { connectorDetails as ziftConnectorDetails } from "./Zift.js";
-import { connectorDetails as mifinityConnectorDetails } from "./Mifinity.js";
 const connectorDetails = {
   aci: aciConnectorDetails,
   adyen: adyenConnectorDetails,
@@ -138,6 +139,7 @@ const connectorDetails = {
   nuvei: nuveiConnectorDetails,
   paybox: payboxConnectorDetails,
   paydunya: paydunyaConnectorDetails,
+  payjustnow: payjustnowConnectorDetails,
   payload: payloadConnectorDetails,
   paypal: paypalConnectorDetails,
   paysafe: paysafeConnectorDetails,
@@ -230,6 +232,7 @@ export function handleMultipleConnectors(keys) {
     MULTIPLE_CONNECTORS: {
       status: true,
       count: keys.length,
+      connectorCredentials: keys,
     },
   };
 }
@@ -406,6 +409,49 @@ export function createMerchantConnectorAccount(
   }
 }
 
+export function createBusinessProfilesAndMerchantConnectorAccounts(
+  paymentType,
+  createMerchantConnectorAccountBody,
+  createBusinessProfileBody,
+  globalState,
+  paymentMethodsEnabled
+) {
+  const connectorCount = globalState.get("MULTIPLE_CONNECTORS")?.count || 0;
+
+  if (connectorCount <= 1) {
+    cy.task(
+      "cli_log",
+      "Skipping multiple connector account setup; no multiple connector credentials configured."
+    );
+    return;
+  }
+
+  for (
+    let connectorIndex = 2;
+    connectorIndex <= connectorCount;
+    connectorIndex++
+  ) {
+    const multipleConnector = {
+      nextConnector: true,
+      value: `connector_${connectorIndex}`,
+    };
+
+    createBusinessProfile(
+      structuredClone(createBusinessProfileBody),
+      globalState,
+      multipleConnector
+    );
+
+    createMerchantConnectorAccount(
+      paymentType,
+      structuredClone(createMerchantConnectorAccountBody),
+      globalState,
+      paymentMethodsEnabled,
+      multipleConnector
+    );
+  }
+}
+
 export function updateBusinessProfile(
   updateBusinessProfileBody,
   is_connector_agnostic_enabled,
@@ -440,12 +486,12 @@ export const CONNECTOR_LISTS = {
   // Exclusion lists (skip these connectors)
   EXCLUDE: {
     CONNECTOR_AGNOSTIC_NTID: [
-      "authorizedotnet",
       "bamboraapac",
       "bankofamerica",
       "billwerk",
       "bluesnap",
       "braintree",
+      "calida",
       "cashtocode",
       "facilitapay",
       "fiserv",
@@ -456,6 +502,7 @@ export const CONNECTOR_LISTS = {
       "jpmorgan",
       "loonio",
       "nexinets",
+      "nmi",
       "noon",
       "novalnet",
       "payload",
@@ -470,6 +517,7 @@ export const CONNECTOR_LISTS = {
     ],
     MANDATE_ID_TEST: [
       "airwallex",
+      "calida",
       "payload",
       "gigadat",
       "loonio",
@@ -552,7 +600,14 @@ export const CONNECTOR_LISTS = {
       "paypal",
       "stripe",
     ],
-    BANK_DEBIT: ["adyen", "novalnet", "payload", "wellsfargo", "stax"], // payload verified as working
+    BANK_DEBIT: [
+      "adyen",
+      "novalnet",
+      "payload",
+      "stax",
+      "stripe",
+      "wellsfargo",
+    ], // payload verified as working
     BANK_REDIRECT_BANCONTACT: ["adyen", "stripe"],
     BANK_REDIRECT_MANDATE: ["adyen"],
     BLUECODE_WALLET: ["calida"],
@@ -565,8 +620,8 @@ export const CONNECTOR_LISTS = {
       "paypal",
     ],
     MIFINITY_WALLET: ["mifinity"],
-    ALIPAY_WALLET: ["multisafepay"],
-    WECHATPAY_WALLET: ["multisafepay"],
+    ALIPAY_WALLET: ["stripe", "multisafepay"],
+    WECHATPAY_WALLET: ["stripe", "multisafepay"],
     MBWAY_WALLET: ["multisafepay"],
     SKRILL_WALLET: ["paysafe"],
     PAYSAFECARD_GIFT_CARD: ["paysafe"],
@@ -620,6 +675,9 @@ export const CONNECTOR_LISTS = {
     GIFT_CARD: ["adyen"],
     VOUCHER: ["adyen", "dlocal"],
     RELAY_OPERATIONS: ["bankofamerica"],
+    AMAZONPAY_WALLET: ["stripe"],
+    CASHAPP_WALLET: ["stripe"],
+    REVOLUTPAY_WALLET: ["stripe"],
     PAY_LATER: [
       "klarna",
       "adyen",
@@ -628,9 +686,11 @@ export const CONNECTOR_LISTS = {
       "airwallex",
       "mollie",
       "affirm",
+      "payjustnow",
     ],
     AFFIRM: ["stripe"],
     ATOME: ["adyen"],
+    PAYJUSTNOW: ["payjustnow"],
     AUTH_SERVICE_ELIGIBILITY: ["stripe", "cybersource"],
     STEP_UP_AUTH: ["cybersource"],
     PARTIAL_AUTH: ["nuvei", "checkout", "worldpay", "worldpayvantiv"],
@@ -679,6 +739,7 @@ export const CONNECTOR_LISTS = {
       "worldpayvantiv",
     ],
     POLL_CONFIG: ["stripe"],
+    PAYOUT_PRIORITY: ["adyenplatform"],
     DELAYED_SESSION_TOKEN: ["trustpay", "payme"],
     CLIENT_SESSION_VALIDATION: ["stripe"],
     // Add more inclusion lists

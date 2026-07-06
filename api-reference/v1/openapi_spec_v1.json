@@ -20088,6 +20088,14 @@
             "type": "boolean",
             "description": "Filter all events by `is_overall_delivery_successful` field of the event.",
             "nullable": true
+          },
+          "recipient": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventRecipient"
+              }
+            ],
+            "nullable": true
           }
         }
       },
@@ -20159,6 +20167,13 @@
             "example": "2022-09-10T10:11:12Z"
           }
         }
+      },
+      "EventRecipient": {
+        "type": "string",
+        "enum": [
+          "merchant",
+          "connector"
+        ]
       },
       "EventRetrieveResponse": {
         "allOf": [
@@ -28472,6 +28487,11 @@
                 "$ref": "#/components/schemas/Address"
               }
             ],
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "description": "The email associated with the payment",
             "nullable": true
           },
           "metadata": {
