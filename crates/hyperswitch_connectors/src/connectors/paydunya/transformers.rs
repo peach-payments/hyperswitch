@@ -1,5 +1,6 @@
+use api_models::payments::PollConfig;
 use common_enums::enums;
-use common_utils::{pii::Email, types::MinorUnit};
+use common_utils::{errors::CustomResult, pii::Email, request::Method, types::MinorUnit};
 use error_stack::ResultExt;
 use hyperswitch_domain_models::{
     payment_method_data::{PaymentMethodData, WalletData},
@@ -9,7 +10,7 @@ use hyperswitch_domain_models::{
         Authorize, PSync,
     },
     router_request_types::{PaymentsAuthorizeData, PaymentsSyncData, ResponseId},
-    router_response_types::{PaymentsResponseData, RefundsResponseData},
+    router_response_types::{PaymentsResponseData, RedirectForm, RefundsResponseData},
     types::{CreateOrderRouterData, PaymentsAuthorizeRouterData, RefundsRouterData},
 };
 use hyperswitch_interfaces::{
@@ -18,6 +19,7 @@ use hyperswitch_interfaces::{
 };
 use hyperswitch_masking::Secret;
 use serde::{Deserialize, Serialize};
+use time::{Duration, OffsetDateTime};
 
 use crate::{
     types::{CreateOrderResponseRouterData, RefundsResponseRouterData, ResponseRouterData},
@@ -858,6 +860,76 @@ pub struct PaydunyaPaymentsResponse {
     pub success: bool,
     #[serde(default)]
     pub message: Option<String>,
+    // Some SOFTPAY rails (Wave Senegal/CI, Djamo SN/CI, Orange Money Senegal)
+    // return a `url` at which the payer must be redirected to in order to
+    // complete the payment.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Wait-screen instructions persisted on the payment attempt's
+/// `connector_metadata`. The router parses this shape back out
+/// (`WaitScreenInstructions`) and surfaces it as a
+/// `next_action: wait_screen_information`, telling the SDK/merchant to render a
+/// "validate the payment on your phone" screen and poll for completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PaydunyaWaitScreenData {
+    display_from_timestamp: i128,
+    display_to_timestamp: Option<i128>,
+    poll_config: Option<PollConfig>,
+}
+
+/// SOFTPAY only *initiates* the debit; the customer validates it out-of-band on
+/// their handset (push/USSD) and the final status arrives later via the IPN
+/// webhook / PSync. Emit a wait screen so the client shows a pending screen and
+/// polls `force_sync` until the payment resolves.
+fn get_wait_screen_metadata() -> CustomResult<Option<serde_json::Value>, errors::ConnectorError> {
+    let current_time = OffsetDateTime::now_utc().unix_timestamp_nanos();
+    Ok(Some(serde_json::json!(PaydunyaWaitScreenData {
+        display_from_timestamp: current_time,
+        display_to_timestamp: Some(current_time + Duration::minutes(5).whole_nanoseconds()),
+        poll_config: Some(PollConfig {
+            delay_in_secs: 5,
+            frequency: 60,
+        }),
+    })))
+}
+
+/// Resolve the attempt outcome for a *successful* SOFTPAY authorize response.
+///
+/// Redirect rails (Wave Senegal/CI, Djamo SN/CI, Orange Money Senegal, card
+/// 3DS) carry a `url` the payer must be sent to — surface it as a redirect so
+/// the router emits a `redirect_to_url` next_action (status=`AuthenticationPending`).
+/// Rails without a (parseable) `url` are validated out-of-band on the handset,
+/// so fall back to a wait screen the client polls until completion (status=`Pending`).
+fn resolve_softpay_success_outcome(
+    response: &PaydunyaPaymentsResponse,
+) -> CustomResult<
+    (
+        common_enums::AttemptStatus,
+        Option<RedirectForm>,
+        Option<serde_json::Value>,
+    ),
+    errors::ConnectorError,
+> {
+    let redirection_data = response
+        .url
+        .as_ref()
+        .and_then(|url| url::Url::parse(url).ok())
+        .map(|url| RedirectForm::from((url, Method::Get)));
+
+    Ok(match redirection_data {
+        Some(redirect_form) => (
+            common_enums::AttemptStatus::AuthenticationPending,
+            Some(redirect_form),
+            None,
+        ),
+        None => (
+            common_enums::AttemptStatus::Pending,
+            None,
+            get_wait_screen_metadata()?,
+        ),
+    })
 }
 
 impl
@@ -886,13 +958,17 @@ impl
                 .clone()
                 .map(ResponseId::ConnectorTransactionId)
                 .unwrap_or(ResponseId::NoResponseId);
+
+            let (status, redirection_data, connector_metadata) =
+                resolve_softpay_success_outcome(&item.response)?;
+
             Ok(Self {
-                status: common_enums::AttemptStatus::Pending,
+                status,
                 response: Ok(PaymentsResponseData::TransactionResponse {
                     resource_id,
-                    redirection_data: Box::new(None),
+                    redirection_data: Box::new(redirection_data),
                     mandate_reference: Box::new(None),
-                    connector_metadata: None,
+                    connector_metadata,
                     network_txn_id: None,
                     network_txn_link_id: None,
                     connector_response_reference_id: invoice_token,
@@ -2114,5 +2190,114 @@ mod tests {
         let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
         assert!(parsed.success);
         assert_eq!(parsed.message, None);
+    }
+
+    #[test]
+    fn softpay_response_without_url_defaults_to_none() {
+        // Rails validated out-of-band on the handset (MTN/Moov/etc.) omit `url`;
+        // the missing field must default to None so we fall back to a wait
+        // screen rather than a redirect.
+        let body = r#"{
+            "success": true,
+            "message": "Votre paiement est en cours de traitement.",
+            "fees": 100,
+            "currency": "XOF"
+        }"#;
+        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.success);
+        assert_eq!(parsed.url, None);
+    }
+
+    #[test]
+    fn softpay_response_captures_redirect_url() {
+        // Wave/Djamo/Orange Money Senegal return a `url` the payer is redirected
+        // to; it must be captured so the Authorize flow can surface a redirect
+        // next_action instead of a wait screen.
+        let body = r#"{
+            "success": true,
+            "message": "Rediriger vers cette URL pour completer le paiement.",
+            "url": "https://pay.wave.com/c/cos-1cj669hbr1350?a=200&c=XOF&m=JOE",
+            "fees": 100,
+            "currency": "XOF"
+        }"#;
+        let parsed: PaydunyaPaymentsResponse = serde_json::from_str(body).unwrap();
+        assert!(parsed.success);
+        assert_eq!(
+            parsed.url.as_deref(),
+            Some("https://pay.wave.com/c/cos-1cj669hbr1350?a=200&c=XOF&m=JOE")
+        );
+        // The captured URL must be parseable into the redirect form we build.
+        assert!(url::Url::parse(parsed.url.as_deref().unwrap()).is_ok());
+    }
+
+    // ---------------------------------------------------------------
+    // resolve_softpay_success_outcome (redirect vs. wait-screen)
+    // ---------------------------------------------------------------
+
+    fn softpay_response(url: Option<&str>) -> PaydunyaPaymentsResponse {
+        PaydunyaPaymentsResponse {
+            success: true,
+            message: Some("ok".to_string()),
+            url: url.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn outcome_with_redirect_url_emits_redirect_not_wait_screen() {
+        // A `url` (Wave/Djamo/Orange Money SN) must drive the payer through a
+        // redirect: AuthenticationPending (-> RequiresCustomerAction upstream),
+        // a GET RedirectForm pointing at the connector URL, and no wait screen.
+        let response = softpay_response(Some("https://p.djamo.com/payment-link/?chargeId=abc"));
+        let (status, redirection_data, connector_metadata) =
+            resolve_softpay_success_outcome(&response).unwrap();
+
+        assert_eq!(status, AttemptStatus::AuthenticationPending);
+        assert!(
+            connector_metadata.is_none(),
+            "redirect rails must not also emit a wait screen"
+        );
+        match redirection_data.expect("redirect rails must build a RedirectForm") {
+            RedirectForm::Form {
+                endpoint,
+                method,
+                form_fields,
+            } => {
+                // `RedirectForm::from((Url, Get))` strips the query string into
+                // `form_fields`, which are re-appended when the GET form submits.
+                assert_eq!(endpoint, "https://p.djamo.com/payment-link/");
+                assert_eq!(method, Method::Get);
+                assert_eq!(form_fields.get("chargeId").map(String::as_str), Some("abc"));
+            }
+            other => panic!("expected RedirectForm::Form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_without_url_falls_back_to_wait_screen() {
+        // Out-of-band rails (no `url`) keep the wait-screen flow: Pending, no
+        // redirect, and wait-screen metadata for the client to poll on.
+        let response = softpay_response(None);
+        let (status, redirection_data, connector_metadata) =
+            resolve_softpay_success_outcome(&response).unwrap();
+
+        assert_eq!(status, AttemptStatus::Pending);
+        assert!(redirection_data.is_none());
+        let metadata = connector_metadata.expect("out-of-band rails must emit a wait screen");
+        // The metadata must round-trip into the shape the router parses out.
+        let wait: PaydunyaWaitScreenData = serde_json::from_value(metadata).unwrap();
+        assert!(wait.poll_config.is_some());
+    }
+
+    #[test]
+    fn outcome_with_unparseable_url_falls_back_to_wait_screen() {
+        // A malformed `url` must degrade safely to the wait-screen path rather
+        // than erroring, so the payment can still resolve via IPN / poll.
+        let response = softpay_response(Some("not a url"));
+        let (status, redirection_data, connector_metadata) =
+            resolve_softpay_success_outcome(&response).unwrap();
+
+        assert_eq!(status, AttemptStatus::Pending);
+        assert!(redirection_data.is_none());
+        assert!(connector_metadata.is_some());
     }
 }

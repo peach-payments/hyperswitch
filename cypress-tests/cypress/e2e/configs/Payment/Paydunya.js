@@ -256,15 +256,28 @@ const paydunyaPaymentIntent = (paymentMethodType) => {
   });
 };
 
-// The SOFTPAY confirmation returns `processing` while the payer is asked to
-// validate the transaction on their mobile (push notification / USSD). The
-// IPN webhook ultimately drives the payment to `succeeded`, but the initial
-// `/payments/confirm` call surfaces a pending intent — we assert on that
-// here rather than coupling the test to webhook delivery timing.
+// Most SOFTPAY rails (MTN/Moov families, Orange Money CI/Mali/Burkina, Free
+// Money, Expresso, Wizall, T-Money, Paydunya) only *initiate* the debit and
+// return `processing` while the payer validates the transaction on their mobile
+// (push notification / USSD / app popup). The IPN webhook ultimately drives the
+// payment to `succeeded`, but the initial `/payments/confirm` call surfaces a
+// pending intent — we assert on that here rather than coupling the test to
+// webhook delivery timing.
 const softpayPendingResponse = {
   status: 200,
   body: {
     status: "processing",
+  },
+};
+
+// A handful of rails (Wave Senegal/CI, Djamo SN/CI and Orange Money Senegal)
+// instead return a redirect `url` that the payer must complete the payment on.
+// Hyperswitch surfaces that as a `redirect_to_url` next_action, so the
+// confirm response is `requires_customer_action` rather than `processing`.
+const softpayRedirectResponse = {
+  status: 200,
+  body: {
+    status: "requires_customer_action",
   },
 };
 
@@ -364,7 +377,8 @@ export const connectorDetails = {
       Response: softpayPendingResponse,
     }),
     // Wave Senegal — payment_method_type=wave + country=SN resolves to the
-    // `softpay/wave-senegal` endpoint.
+    // `softpay/wave-senegal` endpoint, which returns a `pay.wave.com` redirect
+    // URL (-> requires_customer_action).
     Wave: getCustomExchange({
       Request: {
         payment_method: "wallet",
@@ -378,10 +392,12 @@ export const connectorDetails = {
         billing: waveSenegalBilling,
         email: waveSenegalBilling.email,
       },
-      Response: softpayPendingResponse,
+      Response: softpayRedirectResponse,
     }),
     // Orange Money Senegal — payment_method_type=orange_money + country=SN
-    // resolves to the `softpay/new-orange-money-senegal` endpoint.
+    // resolves to the `softpay/new-orange-money-senegal` endpoint, which returns
+    // a QR-code/payment-page redirect URL (-> requires_customer_action). Note
+    // this is Senegal-specific: Orange Money CI/Mali/Burkina stay `processing`.
     OrangeMoney: getCustomExchange({
       Request: {
         payment_method: "wallet",
@@ -395,10 +411,11 @@ export const connectorDetails = {
         billing: orangeMoneySenegalBilling,
         email: orangeMoneySenegalBilling.email,
       },
-      Response: softpayPendingResponse,
+      Response: softpayRedirectResponse,
     }),
     // Djamo Côte d'Ivoire — payment_method_type=djamo + country=CI resolves to
-    // the shared `softpay/djamo` endpoint with `code_country=ci`.
+    // the shared `softpay/djamo` endpoint with `code_country=ci`, which returns
+    // a `p.djamo.com` redirect URL (-> requires_customer_action).
     Djamo: getCustomExchange({
       Request: {
         payment_method: "wallet",
@@ -412,7 +429,7 @@ export const connectorDetails = {
         billing: djamoCiBilling,
         email: djamoCiBilling.email,
       },
-      Response: softpayPendingResponse,
+      Response: softpayRedirectResponse,
     }),
     // T-Money Togo — payment_method_type=t_money resolves to the single
     // `softpay/t-money-togo` endpoint regardless of billing country.
