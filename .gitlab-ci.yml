@@ -146,15 +146,18 @@ secret_detection:
 
 .build-images:
   stage: image-build
-  image: docker:27
+  image: docker:24-dind
   services:
-    - docker:27-dind
+    - docker:24-dind
   variables:
-    # Point the docker CLI at the dind service over TLS.
-    DOCKER_HOST: "tcp://docker:2376"
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_TLS_VERIFY: "1"
-    DOCKER_CERT_PATH: "/certs/client"
+    # dind config proven on our runners (mirrors card-bin-loader): plain TCP on
+    # 2375 with TLS disabled. The TLS-on-2376 setup needs a shared /certs volume
+    # between the service and job containers that these runners don't provide, so
+    # its health check times out ("Waiting for dind..." hangs).
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+    CI_SERVICES_WAIT_FOR_TIMEOUT: "120"
   before_script:
     - *assume-role-and-ecr-login
   script:
