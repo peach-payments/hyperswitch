@@ -13,7 +13,11 @@
 #   * No static AWS keys. Each job assumes a per-account role (TERRAFORM_ROLE_ARN
 #     -> EC2_Runner) via `aws sts assume-role`, using the runner's own identity.
 #   * ECR repos are auto-created (MUTABLE, scan-on-push) if missing.
-#   * Jobs run on dind-capable, environment-tagged runners.
+#   * dind builds run on the privileged eng runners (docker+qa / docker+prod),
+#     not the non-privileged cde-* runners. The target ECR account is selected
+#     by the assumed role, independent of which runner builds. This assumes the
+#     eng runner can assume the CDE EC2_Runner role; if it cannot, the ECR push
+#     (not the build) will fail and we'd need a Kaniko step on a cde-* runner.
 #
 # Unlike card-bin-loader (light python image, built per-env with Kaniko), these
 # are heavy Rust builds, so each job builds all four images once against a single
@@ -178,9 +182,12 @@ build-images:cde-qa:
   extends:
     - .build-images
     - .rules-qa
+  # dind builds run on the privileged eng runners (docker+qa/prod), NOT the
+  # non-privileged cde-* runners — mirrors card-bin-loader:build. The target ECR
+  # account is chosen by TERRAFORM_ROLE_ARN below, independent of the runner.
   tags:
     - docker
-    - cde-qa
+    - qa
   variables:
     CI_ENVIRONMENT_NAME: cde-qa
     TERRAFORM_ROLE_ARN: "arn:aws:iam::349829657212:role/EC2_Runner"
@@ -195,7 +202,7 @@ build-images:cde-sandbox:
     - .rules-main-only
   tags:
     - docker
-    - cde-sandbox
+    - prod
   variables:
     CI_ENVIRONMENT_NAME: cde-sandbox
     TERRAFORM_ROLE_ARN: "arn:aws:iam::699663557621:role/EC2_Runner"
@@ -210,7 +217,7 @@ build-images:cde-prod:
     - .rules-main-only
   tags:
     - docker
-    - cde-prod
+    - prod
   variables:
     CI_ENVIRONMENT_NAME: cde-prod
     TERRAFORM_ROLE_ARN: "arn:aws:iam::968724509936:role/EC2_Runner"
