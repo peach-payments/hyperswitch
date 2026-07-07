@@ -1,10 +1,14 @@
 # GitLab CI for the Hyperswitch fork.
 #
-# Scope (for now): build the four deployable container images
-# (router, producer, consumer, drainer) from the root Dockerfile and push them
-# to AWS ECR in each CDE environment.
+# Two things:
+#   1. validate    — Rust quality gates on merge requests (fmt, clippy, cargo
+#                    audit) plus GitLab Secret Detection.
+#   2. image-build — build the four deployable container images (router,
+#                    producer, consumer, drainer) from the root Dockerfile and
+#                    push them to AWS ECR in each CDE environment.
 #
-# Model mirrors the CDE house pattern (see card-bin-loader in the deploy repo):
+# Image build model mirrors the CDE house pattern (see card-bin-loader in the
+# deploy repo):
 #   * No static AWS keys. Each job assumes a per-account role (TERRAFORM_ROLE_ARN
 #     -> EC2_Runner) via `aws sts assume-role`, using the runner's own identity.
 #   * ECR repos are auto-created (MUTABLE, scan-on-push) if missing.
@@ -15,13 +19,101 @@
 # dind daemon — the shared builder stage compiles the workspace a single time and
 # is reused for the other three images.
 
+include:
+  # Language-agnostic secret scanning. GitLab's managed SAST has no Rust
+  # analyzer, so Rust static analysis is covered by clippy + cargo audit below.
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
 stages:
+  - validate
+  - test # used by the Secret Detection template
   - image-build
 
 variables:
   AWS_DEFAULT_REGION: eu-west-1
   # cargo feature set passed to the Dockerfile builder stage (v1 or v2).
   VERSION_FEATURE_SET: "v1"
+
+# ---------------------------------------------------------------------------
+# validate — MR quality gates
+# ---------------------------------------------------------------------------
+
+# Only run the (expensive, full-workspace-compile) Rust gates when Rust or
+# Cargo files change, on merge requests and main.
+.rust-changes-rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &rust-changes
+        - "**/*.rs"
+        - "**/Cargo.toml"
+        - Cargo.lock
+        - rust-toolchain.toml
+        - .rustfmt.toml
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: *rust-changes
+
+.rust-job:
+  extends: .rust-changes-rules
+  stage: validate
+  image: public.ecr.aws/docker/library/rust:trixie
+  needs: []
+  variables:
+    CARGO_INCREMENTAL: "0"
+    CARGO_NET_RETRY: "10"
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo/
+      - target/
+  before_script:
+    - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
+
+fmt:
+  extends: .rust-job
+  # rustfmt only — no workspace compile, so skip the heavy cache/deps.
+  cache: []
+  before_script:
+    - rustup toolchain install nightly --component rustfmt --profile minimal
+  script:
+    - cargo +nightly fmt --all --check
+
+clippy:
+  extends: .rust-job
+  before_script:
+    - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
+    - rustup component add clippy
+    - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+  script:
+    # Reuse the repo's own recipes so the feature set matches local/dev clippy.
+    - just clippy "redis-rs" -- -D warnings
+    - just clippy_v2 "redis-rs"
+
+cargo-audit:
+  extends: .rust-job
+  # Non-blocking to start: the upstream dependency tree will surface existing
+  # RUSTSEC advisories. Triage them (or add `--ignore RUSTSEC-xxxx`) and flip
+  # this to blocking once the baseline is clean.
+  allow_failure: true
+  cache:
+    key: cargo-audit
+    paths:
+      - .cargo/
+  before_script:
+    - cargo install cargo-audit --locked
+  script:
+    - cargo audit
+
+# Run Secret Detection on merge requests (the template defaults to branch pipelines).
+secret_detection:
+  stage: validate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
 
 # Assume the environment role and log the docker CLI into that account's ECR.
 # Runs in before_script; exported creds persist into the script step (same shell).
