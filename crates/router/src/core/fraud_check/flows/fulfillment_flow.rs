@@ -143,6 +143,7 @@ pub async fn construct_fulfillment_router_data<'a>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        merchant_profile_name: None,
     };
     Ok(router_data)
 }

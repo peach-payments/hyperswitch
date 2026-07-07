@@ -7813,6 +7813,7 @@ pub(crate) fn convert_payment_authorize_router_response<F1, F2, T1, T2>(
         customer_document_details: data.customer_document_details.clone(),
         feature_data: data.feature_data.clone(),
         sender_payment_instrument_id: None,
+        merchant_profile_name: data.merchant_profile_name.clone(),
     }
 }
 

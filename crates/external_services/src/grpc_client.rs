@@ -217,6 +217,10 @@ impl LineageIds {
     pub fn get_url_encoded_string(self) -> Result<String, serde_urlencoded::ser::Error> {
         serde_urlencoded::to_string(&self)
     }
+    /// get a reference to the profile id
+    pub fn get_profile_id(&self) -> &id_type::ProfileId {
+        &self.profile_id
+    }
 }
 
 #[cfg(feature = "dynamic_routing")]

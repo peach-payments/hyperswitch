@@ -1,7 +1,6 @@
 use api_models::payments::PollConfig;
 use common_enums::enums;
 use common_utils::{errors::CustomResult, pii::Email, request::Method, types::MinorUnit};
-use error_stack::ResultExt;
 use hyperswitch_domain_models::{
     payment_method_data::{PaymentMethodData, WalletData},
     router_data::{ConnectorAuthType, ErrorResponse, RouterData},
@@ -23,10 +22,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::{
     types::{CreateOrderResponseRouterData, RefundsResponseRouterData, ResponseRouterData},
-    utils::{
-        to_connector_meta_from_secret, AddressDetailsData, PaymentsAuthorizeRequestData,
-        RouterData as _,
-    },
+    utils::{AddressDetailsData, PaymentsAuthorizeRequestData, RouterData as _},
 };
 
 pub mod paydunya_constants {
@@ -75,42 +71,25 @@ pub struct Actions {
     pub return_url: String,
 }
 
-/// Paydunya requires a store name on every invoice, which we surface
-/// from the merchant's business/profile name sent to Paydunya as `store.name`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PaydunyaConnectorMetadataObject {
-    pub store_name: String,
-}
-
-impl TryFrom<Option<&common_utils::pii::SecretSerdeValue>> for PaydunyaConnectorMetadataObject {
-    type Error = error_stack::Report<errors::ConnectorError>;
-    fn try_from(
-        meta_data: Option<&common_utils::pii::SecretSerdeValue>,
-    ) -> Result<Self, Self::Error> {
-        to_connector_meta_from_secret::<Self>(meta_data.cloned()).change_context(
-            errors::ConnectorError::InvalidConnectorConfig {
-                config: "metadata.store_name",
-            },
-        )
-    }
-}
-
 impl TryFrom<&CreateOrderRouterData> for PaydunyaPreprocessingRequest {
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(item: &CreateOrderRouterData) -> Result<Self, Self::Error> {
         let callback_url = item.request.webhook_url.clone().unwrap_or_default();
         let return_url = item.request.router_return_url.clone().unwrap_or_default();
 
-        let metadata =
-            PaydunyaConnectorMetadataObject::try_from(item.connector_meta_data.as_ref())?;
+        // Paydunya requires a store name on every invoice, which we surface
+        // from the merchant's business profile name sent to Paydunya as `store.name`.
+        let store_name = item.merchant_profile_name.clone().ok_or(
+            errors::ConnectorError::InvalidConnectorConfig {
+                config: "merchant profile name",
+            },
+        )?;
 
         Ok(Self {
             invoice: Invoice {
                 total_amount: item.request.minor_amount,
             },
-            store: Store {
-                name: metadata.store_name,
-            },
+            store: Store { name: store_name },
             actions: Actions {
                 callback_url,
                 return_url,
@@ -2103,51 +2082,6 @@ mod tests {
             "https://example.com/webhook"
         );
         assert_eq!(value["actions"]["return_url"], "https://example.com/return");
-    }
-
-    #[test]
-    fn metadata_parses_store_name_from_connector_meta_data() {
-        // The invoice `store.name` is now sourced from
-        // `connector_meta_data.store_name` rather than being hardcoded, so
-        // confirm the metadata object pulls it back out intact.
-        let meta = common_utils::pii::SecretSerdeValue::new(serde_json::json!({
-            "store_name": "My Store"
-        }));
-        let parsed = PaydunyaConnectorMetadataObject::try_from(Some(&meta))
-            .expect("store_name should parse");
-        assert_eq!(parsed.store_name, "My Store");
-    }
-
-    #[test]
-    fn metadata_missing_returns_invalid_connector_config() {
-        // Without connector metadata there is no store name to put on the
-        // invoice, so the connector must surface InvalidConnectorConfig
-        // instead of sending an empty store to Paydunya.
-        let err = PaydunyaConnectorMetadataObject::try_from(None)
-            .expect_err("missing metadata must error");
-        assert!(matches!(
-            err.current_context(),
-            errors::ConnectorError::InvalidConnectorConfig {
-                config: "metadata.store_name"
-            }
-        ));
-    }
-
-    #[test]
-    fn metadata_without_store_name_returns_invalid_connector_config() {
-        // Metadata present but missing the required `store_name` key must
-        // also be rejected with the same InvalidConnectorConfig error.
-        let meta = common_utils::pii::SecretSerdeValue::new(serde_json::json!({
-            "unrelated": "value"
-        }));
-        let err = PaydunyaConnectorMetadataObject::try_from(Some(&meta))
-            .expect_err("metadata without store_name must error");
-        assert!(matches!(
-            err.current_context(),
-            errors::ConnectorError::InvalidConnectorConfig {
-                config: "metadata.store_name"
-            }
-        ));
     }
 
     #[test]
