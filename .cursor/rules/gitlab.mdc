@@ -1,0 +1,39 @@
+---
+description: Gitlab rules for managing merge requests and monitoring CI/CD pipelines
+globs:
+alwaysApply: false
+---
+
+# Gitlab
+
+- We use Gitlab for our repos.
+- We use glab cli for gitlab interaction.
+- We use Gitlab CICD pipelines for automated build/test/deploy.
+
+## glab cli
+
+- Use `glab mr ...` for handling reading,creating,updating of Merge Requests.
+- Use `glab api` commands for programmatic interaction with other GitLab features.
+- Monitoring CICD Pipelit pipeline: `glab api "projects/:id/pipelines/{pipeline_id}"`
+  - Get job logs: `glab api "projects/:id/jobs/{job_id}/trace"`
+- Use `| jq` to format JSON responses for readability
+- Avoid interactive commands (ending in `view`)
+- Changes to .gitlab-ci.yml files need to be reviewed, staged, committed and pushed before the pipeline will be automatically triggered.
+- `sleep 15` before checking CICID pipeline or job statuses to allow for the pipeline to be triggered.
+
+## Merge Request (MR) Creation Process
+
+1. Use the [default.md](.gitlab/merge_request_templates/default.md) as a template and create a temporary MR file in the `/tmp/` directory
+2. Verify the content is properly formatted using markdown compatible with Gitlab
+3. Use "glab mr create" with these mandatory parameters:
+   - "--title" in format "{JIRA_TICKET}: {Descriptive title}"
+   - "--description" containing the template-based content using "$(cat /tmp/{mr filename})"
+   - "--target-branch" specifying the target branch is `main`
+   - "--remove-source-branch"
+
+## MR Description Guidelines
+
+- **No file diffs or change reports** - Available via `git diff` or MR diff view
+- Focus on why changes matter and what they accomplish
+- Include testing evidence and reviewer guidance
+- Keep descriptions concise and scannable

@@ -1,0 +1,264 @@
+---
+description: Principles and standards for writing Jira tickets (stories, bugs, spikes, tech debt).
+globs:
+alwaysApply: false
+---
+
+# Jira Ticket Principles
+
+Guidelines for creating well-structured tickets that deliver value and maintain consistency across the platform.
+
+## General Ticket Guidelines
+
+- Default project: PT. Default type: Story.
+- Add PCI label for this repo's tickets.
+- Reference code via GitLab URLs, not inline.
+- Use custom fields where available.
+- Check for existing tickets before creating new ones to prevent duplicates.
+- Do not repeat details in the description that are added in additional fields.
+
+### Inline Code Formatting
+
+Use inline code formatting for **technical identifiers and literals**:
+
+- API paths and routes: `GET /v1/payments/{id}`
+- HTTP status codes: `200`, `404`, `502`
+- Result code patterns: `000.100.xxx`, `000.400.xxx`
+- Field names and parameters: `paymentType`, `entityId`
+- Configuration values: `customfield_10533`
+
+Do not use for general technical terms or component names (e.g., HyperswitchClient, DynamoDB).
+
+### Ticket Types
+
+Jira has distinct ticket types - choose the appropriate type based on the work:
+
+- **Story** - User stories that deliver features/value to customers
+- **Spike** - Time-boxed research or exploration activities
+- **Bug** - Unintended/incorrect software behavior
+- **Technical Debt** - Code quality improvements, refactoring, or architectural cleanup
+
+See [@jira-operations.mdc](mdc:.cursor/rules/jira-operations.mdc) for operational details on ticket type IDs.
+
+## User Stories
+
+User stories are the **smallest unit of work** in agile - an **end goal, not a feature** - that delivers **value to customers** (external or internal).
+
+### User Story Statement
+
+- Format: "As a [persona], I want [some goal] so that [reason/benefit]"
+- Plain text only - no bold formatting.
+
+### Examples
+
+- ✅ "As a customer, I want to search products by name so that I can find items quickly"
+- ❌ "As a developer, I want to implement a search API endpoint"
+- ✅ "As the platform, I want Facade→Hyperswitch requests to be authenticated and authorized using merchant-scope credentials so that only the correct tenant/merchant context can transact via the Hyperswitch adapter."
+
+### Supporting Details
+
+Structure descriptions with appropriate headings:
+
+- **Requirements** - Break down the user story into specific technical and business requirements
+- **Security impact** - See section below
+- **Prior work** - Link to related tickets and documentation
+
+## Acceptance Criteria
+
+Define **measurable conditions** for completion. Use `customfield_10533` (task list), not description.
+
+**Key characteristics:** Clear, testable, outcome-focused, measurable, independent. Prefer given/when/then format.
+
+### Core Principles
+
+- **Business outcomes over technical implementation** - Focus on WHAT needs to be achieved, not HOW
+- **Concise scenarios** - Use "and" to create compound statements and reduce scenario count
+- **Customer value** - Each criterion should deliver measurable business value
+- **Avoid verbose technical details** - Keep implementation specifics out of acceptance criteria
+
+### Formatting
+
+- Use `given`, `when`, and `then` for the Gherkin format.
+- For readability, place `given`, `when`, and `then` on separate lines.
+- Use `and` to separate steps and create compound statements.
+- Use lowercase, no indentation. (Given with uppercase because it's the start of the sentence of course)
+
+### Examples
+
+✅ **Business-focused and concise:**
+
+- Given a customer initiated transaction with CVV
+  and recurringType=REPEATED parameter is provided
+  when the payment is processed
+  then the transaction completes immediately without 3DS challenge
+  and returns ECI 07 exemption behavior
+  and no redirect URL or 3DS fields are present in response.
+
+❌ **Too technical and verbose:**
+
+- Given the facade currently denies recurringType parameter
+  when the parameter allowlist is updated
+  then recurringType=REPEATED requests are accepted.
+- Given a payment request contains recurringType parameter
+  when the request is processed
+  then the RequestData shim extracts the parameter for orchestration access.
+- Given a request contains recurringType=REPEATED
+  when card service orchestration processes the request
+  then Standalone3ds is skipped entirely.
+
+✅ **Good - Outcome focused:** "Search returns exact and partial name matches"
+❌ **Bad - Implementation focused:** "Update the search function code"
+
+✅ **Good - Compound statement:**
+
+- Given the user has valid credentials
+  and they are on the login page
+  when they click "Login"
+  then they are redirected to their dashboard
+  and their session is established
+  and they can access protected features.
+
+❌ **Bad - Multiple separate scenarios for the same flow:**
+
+- Given the user has valid credentials... then they are redirected...
+- Given the user is redirected... then their session is established...
+- Given the user has a session... then they can access features...
+
+## Bug Tickets
+
+Use for unintended/incorrect software behavior.
+
+### Required Custom Fields
+
+- Bug severity: `customfield_10635`
+  - 10261: Critical SEV-1
+  - 10262: Urgent SEV-2
+  - 10263: Important SEV-3
+  - 10264: Discomfort SEV-4
+  - 10552: Cosmetic SEV-5
+- Affected Environment(s): `customfield_10715` (options: QA | Sandbox | Live)
+- Steps to Reproduce: `customfield_10534`
+- Acceptance Criteria: `customfield_10533`
+
+## Technical Debt Tickets
+
+Code quality improvements, refactoring, or architectural cleanup that maintains system health without directly delivering user features.
+
+### Title Format
+
+**Format:** "[Action]: [What] - [Brief Why]"
+
+**Examples:**
+
+- ✅ "Refactor: Split jira.mdc into focused modules - improve maintainability"
+- ✅ "Consolidate: Merge duplicate error handling - reduce code duplication"
+- ❌ "Fix tech debt" (too vague)
+
+### Required Structure
+
+1. **Problem Statement** - What technical problem exists? Why does it matter?
+2. **Proposed Solution** - Desired outcomes, not implementation details (focus on what, not how)
+3. **Business Justification & Success** - Measurable impact (time saved, incidents prevented, velocity improved). How we know it worked.
+4. **Scope** - What's included/excluded
+5. **Security impact** - Standard PCI analysis
+
+Use `customfield_10533` for acceptance criteria like stories.
+
+### Key Principles
+
+- **Tie to business value** - "Reduces MTTR from 45min to 10min" not "code is messy"
+- **What, not how** - Describe outcomes ("support reliable operations"), not implementation ("add acli, split files")
+- **Measurable success** - Quantitative metrics or qualitative feedback
+- **Clear scope** - Boundaries prevent scope creep
+
+### When NOT to Use
+
+- **Bugs** - Use Bug type for broken functionality
+- **New features** - Use Story even if improving existing code
+- **Research** - Use Spike for investigation
+- **Unclear value** - If you can't articulate business impact, reconsider priority
+
+## Spike Tickets
+
+Time-boxed research/exploration to answer questions, reduce risk, or validate approaches before implementation.
+
+### Title Format
+
+**Format:** "Spike: [topic] - [what we need to learn]"
+
+**Example:** "Spike: Hyperswitch authentication requirements and open questions"
+
+### Required Structure
+
+Start with a single paragraph overview, then include:
+
+1. **Scope** - Investigation boundaries
+2. **Questions to Answer** - Numbered list of specific unknowns to resolve
+3. **Required Artefacts** - Deliverables (ADR, updated docs, POC, follow-up stories, benchmarks, etc.)
+4. **Security impact** - Standard PCI analysis
+5. **References** - Links to relevant docs/tickets (related tickets should also be linked via Jira link mechanism)
+
+**Example:**
+
+```
+Questions to answer
+
+1. Source of truth for API keys (path, naming, permissions).
+2. Rotation and cache invalidation strategy; TTL and failure behavior.
+3. Mapping from entityId to merchant identifiers.
+
+Required artefacts
+
+- Updated design doc with answers to all questions
+- Security review notes shared with @security-team
+- Follow-up implementation stories in PT backlog
+```
+
+### Key Points
+
+- **Time-box:** 1-3 days (note in ticket)
+- **No acceptance criteria field** (`customfield_10533`) - success = questions answered + artefacts produced
+- **Labels:** Add PCI if security implications exist
+- **Outcome:** Documentation, decisions, and follow-up stories (not working software)
+
+## Security Impact Analysis for PCI
+
+Tickets created for this repo should contain a security and infrastructure impact analysis.
+
+### Specific Security Concerns
+
+a. Have there been any changes to how systems communicate with each other (e.g. connections, ports, firewalls, routing, etc.)?
+b. Have any new cloud services or library dependencies been implemented or configured?
+c. Have there been any changes to how sensitive data (e.g., account data, personal merchant or cardholder information, API tokens, etc.) is processed, transmitted, stored or viewed?
+d. Have there been any changes to how Sensitive Authentication Data (e.g. CVC/CVV, track1/track2, PIN) is processed or transmitted? Remember that Sensitive Authentication Data must never be stored or viewed, even if encrypted.
+e. Have there been any changes to how systems or users authenticate themselves (e.g. JWT, API token or MFA changes)?
+f. Have there been any changes to how user access to systems or data is restricted (e.g. ACL changes)?
+
+### Response Format
+
+If yes to any of the above, provide a very brief description of the impact (e.g. "This change opens port X"), apply the PCI tag, @ the security team for feedback.
+
+If no to all of the above, provide a simple reason (e.g. "change does not impact live/prod" or "closing a port does not impact security").
+
+Be terse.
+
+### Example
+
+```
+a. No changes to system communication patterns (uses existing TLS).
+b. No new cloud services.
+c. Uses existing secret storage and redaction patterns for credentials.
+d. No Sensitive Authentication Data involved.
+e. Changes to authentication: Uses merchant-scope API keys for Facade→Hyperswitch.
+f. No changes to ACLs beyond existing scope-based authorization.
+
+@security-team for review on merchant-scope credential handling.
+
+PCI tag applied.
+```
+
+## Duplicate Ticket Management
+
+**Prevention:** Search existing tickets before creating new ones.
+
+**Resolution:** Link as duplicate → Cancel duplicate → Comment "Cancelled due to duplicating [TICKET-ID]" → Continue work on original.

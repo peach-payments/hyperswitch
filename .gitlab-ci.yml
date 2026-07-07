@@ -1,0 +1,130 @@
+# GitLab CI for the Hyperswitch fork.
+#
+# Scope (for now): build the four deployable container images
+# (router, producer, consumer, drainer) from the root Dockerfile and push them
+# to AWS ECR in each CDE environment.
+#
+# Model mirrors the CDE house pattern (see card-bin-loader in the deploy repo):
+#   * No static AWS keys. Each job assumes a per-account role (TERRAFORM_ROLE_ARN
+#     -> EC2_Runner) via `aws sts assume-role`, using the runner's own identity.
+#   * ECR repos are auto-created (MUTABLE, scan-on-push) if missing.
+#   * Jobs run on dind-capable, environment-tagged runners.
+#
+# Unlike card-bin-loader (light python image, built per-env with Kaniko), these
+# are heavy Rust builds, so each job builds all four images once against a single
+# dind daemon — the shared builder stage compiles the workspace a single time and
+# is reused for the other three images.
+
+stages:
+  - image-build
+
+variables:
+  AWS_DEFAULT_REGION: eu-west-1
+  # cargo feature set passed to the Dockerfile builder stage (v1 or v2).
+  VERSION_FEATURE_SET: "v1"
+
+# Assume the environment role and log the docker CLI into that account's ECR.
+# Runs in before_script; exported creds persist into the script step (same shell).
+.assume-role-and-ecr-login: &assume-role-and-ecr-login
+  - apk add --no-cache aws-cli bash jq
+  - |
+    set -euo pipefail
+    echo "Waiting for dind..."
+    until docker info >/dev/null 2>&1; do sleep 1; done
+    : "${TERRAFORM_ROLE_ARN:?TERRAFORM_ROLE_ARN required for ${CI_ENVIRONMENT_NAME}}"
+    SESSION_NAME="${TERRAFORM_SESSION_NAME:-gitlab-ci-hyperswitch-images-${CI_PIPELINE_ID}}"
+    echo "Assuming role: $TERRAFORM_ROLE_ARN (session $SESSION_NAME)"
+    TEMP_ROLE=$(aws sts assume-role \
+      --role-arn "$TERRAFORM_ROLE_ARN" \
+      --role-session-name "$SESSION_NAME" \
+      --duration-seconds 3600 \
+      --output json)
+    AWS_ACCESS_KEY_ID=$(echo "$TEMP_ROLE" | jq -r .Credentials.AccessKeyId)
+    AWS_SECRET_ACCESS_KEY=$(echo "$TEMP_ROLE" | jq -r .Credentials.SecretAccessKey)
+    AWS_SESSION_TOKEN=$(echo "$TEMP_ROLE" | jq -r .Credentials.SessionToken)
+    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    export ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+    echo "Logging in to ${ECR_REGISTRY}"
+    aws ecr get-login-password --region "$AWS_DEFAULT_REGION" \
+      | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+.build-images:
+  stage: image-build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    # Point the docker CLI at the dind service over TLS.
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  before_script:
+    - *assume-role-and-ecr-login
+  script:
+    - bash ci/build-images.sh
+
+# QA builds on merge requests and main (matches card-bin-loader QA rules).
+.rules-qa:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# Sandbox / prod build on main and tags only (never on MRs or schedules).
+.rules-main-only:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+build-images:cde-qa:
+  extends:
+    - .build-images
+    - .rules-qa
+  tags:
+    - docker
+    - cde-qa
+  variables:
+    CI_ENVIRONMENT_NAME: cde-qa
+    TERRAFORM_ROLE_ARN: "arn:aws:iam::349829657212:role/EC2_Runner"
+    TERRAFORM_SESSION_NAME: "HyperswitchImages-QA-${CI_PIPELINE_ID}"
+  environment:
+    name: cde-qa
+    action: prepare
+
+build-images:cde-sandbox:
+  extends:
+    - .build-images
+    - .rules-main-only
+  tags:
+    - docker
+    - cde-sandbox
+  variables:
+    CI_ENVIRONMENT_NAME: cde-sandbox
+    TERRAFORM_ROLE_ARN: "arn:aws:iam::699663557621:role/EC2_Runner"
+    TERRAFORM_SESSION_NAME: "HyperswitchImages-Sandbox-${CI_PIPELINE_ID}"
+  environment:
+    name: cde-sandbox
+    action: prepare
+
+build-images:cde-prod:
+  extends:
+    - .build-images
+    - .rules-main-only
+  tags:
+    - docker
+    - cde-prod
+  variables:
+    CI_ENVIRONMENT_NAME: cde-prod
+    TERRAFORM_ROLE_ARN: "arn:aws:iam::968724509936:role/EC2_Runner"
+    TERRAFORM_SESSION_NAME: "HyperswitchImages-Prod-${CI_PIPELINE_ID}"
+  environment:
+    name: cde-prod
+    action: prepare
