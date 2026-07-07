@@ -31,9 +31,9 @@ variables:
   AWS_DEFAULT_REGION: eu-west-1
   # cargo feature set passed to the Dockerfile builder stage (v1 or v2).
   VERSION_FEATURE_SET: "v1"
-  DOCKER_HOST: tcp://docker:2375
-  DOCKER_TLS_CERTDIR: ""
-  DOCKER_DRIVER: overlay2
+  # Talk to the host's Docker daemon over its mounted socket, overriding the
+  # tcp://docker:2375 (dind) endpoint the runner injects by default.
+  DOCKER_HOST: "unix:///var/run/docker.sock"
   DOCKER_AUTH_CONFIG: '{ "auths": { "https://index.docker.io/v1/": { "auth": "$DOCKER_AUTH" } }}'
 
 # ---------------------------------------------------------------------------
