@@ -4,7 +4,7 @@ ARG EXTRA_FEATURES=""
 ARG VERSION_FEATURE_SET="v1"
 
 # Use HTTPS apt sources — the build network blocks outbound HTTP (port 80).
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler
 
@@ -64,7 +64,7 @@ ARG SCHEDULER_FLOW=consumer
 # Use HTTPS apt sources (build network blocks outbound HTTP). Bring a CA bundle
 # from the builder so apt can validate TLS before ca-certificates is installed.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y ca-certificates tzdata libpq-dev curl procps
 
