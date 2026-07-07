@@ -38,6 +38,7 @@ RUN cargo build \
     --no-default-features \
     --features release \
     --features ${VERSION_FEATURE_SET} \
+    --features redis-rs \
     ${EXTRA_FEATURES}
 
 
