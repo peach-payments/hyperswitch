@@ -1,9 +1,10 @@
 # GitLab CI for the Hyperswitch fork.
 #
-# Two things:
-#   1. validate    — Rust quality gates on merge requests (fmt, clippy, cargo
-#                    audit) plus GitLab Secret Detection.
-#   2. image-build — build the four deployable container images (router,
+# Stages run fast -> slow -> publish, so cheap checks fail before expensive ones:
+#   1. lint        — fast, no workspace compile (fmt, secret detection).
+#   2. analyze     — compile-heavy Rust gates (clippy, cargo audit); only run
+#                    after lint passes and only when Rust/Cargo files change.
+#   3. image-build — build the four deployable container images (router,
 #                    producer, consumer, drainer) from the root Dockerfile and
 #                    push them to AWS ECR in each CDE environment.
 #
@@ -25,8 +26,8 @@ include:
   - template: Security/Secret-Detection.gitlab-ci.yml
 
 stages:
-  - validate
-  - test # used by the Secret Detection template
+  - lint
+  - analyze
   - image-build
 
 variables:
@@ -35,7 +36,7 @@ variables:
   VERSION_FEATURE_SET: "v1"
 
 # ---------------------------------------------------------------------------
-# validate — MR quality gates
+# lint / analyze — MR quality gates
 # ---------------------------------------------------------------------------
 
 # Only run the (expensive, full-workspace-compile) Rust gates when Rust or
@@ -56,9 +57,9 @@ variables:
 
 .rust-job:
   extends: .rust-changes-rules
-  stage: validate
+  # Default stage for the compile-heavy gates; fmt overrides to `lint`.
+  stage: analyze
   image: public.ecr.aws/docker/library/rust:trixie
-  needs: []
   variables:
     CARGO_INCREMENTAL: "0"
     CARGO_NET_RETRY: "10"
@@ -75,6 +76,7 @@ variables:
 
 fmt:
   extends: .rust-job
+  stage: lint
   # rustfmt only — no workspace compile, so skip the heavy cache/deps.
   cache: []
   before_script:
@@ -110,7 +112,8 @@ cargo-audit:
 
 # Run Secret Detection on merge requests (the template defaults to branch pipelines).
 secret_detection:
-  stage: validate
+  stage: lint
+  needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
