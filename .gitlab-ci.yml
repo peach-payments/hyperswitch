@@ -122,6 +122,8 @@ build-images:
     - .dind
     - .rules-build-and-qa
   stage: build
+  # Full Rust workspace compile — well over the default 1h job timeout.
+  timeout: 3h
   tags:
     - cde-qa
   before_script:
