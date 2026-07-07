@@ -1,10 +1,8 @@
 # GitLab CI for the Hyperswitch fork.
 #
 # Three stages:
-#   1. validate — one job running all static-analysis and security gates
-#                 (rustfmt, clippy, cargo audit, gitleaks secret scan), combined
-#                 so the image/deps/toolchain are set up once and ordered cheap
-#                 -> expensive to fail fast.
+#   1. validate — Rust static-analysis (rustfmt, clippy) in one job, plus
+#                 GitLab's managed secret detection as its own separate job.
 #   2. build    — build the four container images (router, producer, consumer,
 #                 drainer) ONCE and push them to the GitLab Container Registry.
 #                 One Docker daemon => the shared builder stage compiles the
@@ -19,6 +17,10 @@
 #   * ECR repos are auto-created (MUTABLE, scan-on-push) if missing.
 #   * Jobs run on the cde-* runners' host Docker daemon (mounted socket) — no
 #     dind service, no privileged mode. Target ECR account = the assumed role.
+
+include:
+  # GitLab-managed secret detection — runs as its own separate job.
+  - template: Security/Secret-Detection.gitlab-ci.yml
 
 stages:
   - validate
@@ -35,41 +37,49 @@ variables:
 # validate — static analysis + security gates (run on every merge request and main)
 # ---------------------------------------------------------------------------
 
-# One job: rustfmt + gitleaks + clippy + cargo audit. Combined so the image,
-# apt deps, toolchain and cargo registry are set up once instead of per-job.
-# Ordered cheap -> expensive: a formatting or secret failure short-circuits the
-# workspace clippy compile (GitLab runs each script line under set -e).
-static-analysis:
+# rustfmt + clippy in one job so the image, apt deps, toolchain and cargo
+# registry are set up once. Ordered cheap -> expensive: a formatting failure
+# short-circuits the workspace clippy compile (GitLab runs each line under set
+# -e). Secret scanning runs separately via the managed secret_detection job.
+# static-analysis:
+#   stage: validate
+#   image: public.ecr.aws/docker/library/rust:trixie
+#   rules:
+#     - if: $CI_PIPELINE_SOURCE == "schedule"
+#       when: never
+#     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#     - if: $CI_COMMIT_BRANCH == "main"
+#   variables:
+#     CARGO_INCREMENTAL: "0"
+#     CARGO_NET_RETRY: "10"
+#     CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+#   cache:
+#     key:
+#       files:
+#         - Cargo.lock
+#     paths:
+#       - .cargo/
+#       - target/
+#   before_script:
+#     - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
+#     - rustup component add clippy
+#     - rustup toolchain install nightly --component rustfmt --profile minimal
+#     - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+#   script:
+#     - echo "=== rustfmt ===" && cargo +nightly fmt --all --check
+#     # Reuse the repo's own recipes so the feature set matches local/dev clippy.
+#     - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
+
+# GitLab-managed secret detection (from the included template), pinned to the
+# validate stage and run on merge requests and main as its own separate job.
+secret_detection:
   stage: validate
-  image: public.ecr.aws/docker/library/rust:trixie
+  needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
-  variables:
-    CARGO_INCREMENTAL: "0"
-    CARGO_NET_RETRY: "10"
-    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-    GITLEAKS_VERSION: "8.21.2"
-  cache:
-    key:
-      files:
-        - Cargo.lock
-    paths:
-      - .cargo/
-      - target/
-  before_script:
-    - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
-    - rustup component add clippy
-    - rustup toolchain install nightly --component rustfmt --profile minimal
-    - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-    - curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks
-  script:
-    - echo "=== rustfmt ===" && cargo +nightly fmt --all --check
-    - echo "=== secret scan (gitleaks) ===" && gitleaks dir . --no-banner --redact
-    # Reuse the repo's own recipes so the feature set matches local/dev clippy.
-    - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
 
 # Runs whenever any release could run: merge requests (for QA), main and tags.
 .rules-build-and-qa:
@@ -101,6 +111,7 @@ build-images:
   image: docker:24
   tags:
     - docker
+    - cde-qa
   before_script:
     - docker info >/dev/null
     - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
