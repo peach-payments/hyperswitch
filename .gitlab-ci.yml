@@ -127,8 +127,8 @@ build-images:
   tags:
     - cde-qa
   before_script:
-    # docker:24 is Alpine — install bash for the build script.
-    - apk add --no-cache bash
+    # docker:24 is Alpine — install bash and the buildx plugin for the build script.
+    - apk add --no-cache bash docker-cli-buildx
     - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
     - bash ci/build-images.sh
