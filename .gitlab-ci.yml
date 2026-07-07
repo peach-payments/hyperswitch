@@ -1,10 +1,11 @@
 # GitLab CI for the Hyperswitch fork.
 #
-# Stages run fast -> slow -> publish, so cheap checks fail before expensive ones:
-#   1. lint        — fast, no workspace compile (fmt, secret detection).
-#   2. analyze     — compile-heavy Rust gates (clippy, cargo audit); run after
-#                    lint passes.
-#   3. image-build — build the four deployable container images (router,
+# Two stages:
+#   1. validate    — one job running all static-analysis and security gates
+#                    (rustfmt, clippy, cargo audit, gitleaks secret scan),
+#                    combined so the image/deps/toolchain are set up once and
+#                    ordered cheap -> expensive to fail fast.
+#   2. image-build — build the four deployable container images (router,
 #                    producer, consumer, drainer) from the root Dockerfile and
 #                    push them to AWS ECR in each CDE environment.
 #
@@ -21,14 +22,8 @@
 # same Docker daemon — the shared builder stage compiles the workspace a single
 # time and is reused for the other three images.
 
-include:
-  # Language-agnostic secret scanning. GitLab's managed SAST has no Rust
-  # analyzer, so Rust static analysis is covered by clippy + cargo audit below.
-  - template: Security/Secret-Detection.gitlab-ci.yml
-
 stages:
-  - lint
-  - analyze
+  - validate
   - image-build
 
 variables:
@@ -38,26 +33,26 @@ variables:
   DOCKER_AUTH_CONFIG: '{ "auths": { "https://index.docker.io/v1/": { "auth": "$DOCKER_AUTH" } }}'
 
 # ---------------------------------------------------------------------------
-# lint / analyze — MR quality gates (run on every merge request and on main)
+# validate — static analysis + security gates (run on every merge request and main)
 # ---------------------------------------------------------------------------
 
-# Run the Rust gates on every merge request and on main (never on schedules).
-.rust-rules:
+# One job: rustfmt + gitleaks + clippy + cargo audit. Combined so the image,
+# apt deps, toolchain and cargo registry are set up once instead of per-job.
+# Ordered cheap -> expensive: a formatting or secret failure short-circuits the
+# workspace clippy compile (GitLab runs each script line under set -e).
+static-analysis:
+  stage: validate
+  image: public.ecr.aws/docker/library/rust:trixie
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
-
-.rust-job:
-  extends: .rust-rules
-  # Default stage for the compile-heavy gates; fmt overrides to `lint`.
-  stage: analyze
-  image: public.ecr.aws/docker/library/rust:trixie
   variables:
     CARGO_INCREMENTAL: "0"
     CARGO_NET_RETRY: "10"
     CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+    GITLEAKS_VERSION: "8.21.2"
   cache:
     key:
       files:
@@ -67,50 +62,18 @@ variables:
       - target/
   before_script:
     - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
-
-fmt:
-  extends: .rust-job
-  stage: lint
-  # rustfmt only — no workspace compile, so skip the heavy cache/deps.
-  cache: []
-  before_script:
-    - rustup toolchain install nightly --component rustfmt --profile minimal
-  script:
-    - cargo +nightly fmt --all --check
-
-clippy:
-  extends: .rust-job
-  before_script:
-    - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
     - rustup component add clippy
+    - rustup toolchain install nightly --component rustfmt --profile minimal
     - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+    - curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks
   script:
+    - echo "=== rustfmt ===" && cargo +nightly fmt --all --check
+    - echo "=== secret scan (gitleaks) ===" && gitleaks dir . --no-banner --redact
     # Reuse the repo's own recipes so the feature set matches local/dev clippy.
-    - just clippy "redis-rs" -- -D warnings
-    - just clippy_v2 "redis-rs"
-
-cargo-audit:
-  extends: .rust-job
-  # Non-blocking to start: the upstream dependency tree will surface existing
-  # RUSTSEC advisories. Triage them (or add `--ignore RUSTSEC-xxxx`) and flip
-  # this to blocking once the baseline is clean.
-  allow_failure: true
-  cache:
-    key: cargo-audit
-    paths:
-      - .cargo/
-  before_script:
-    - cargo install cargo-audit --locked
-  script:
-    - cargo audit
-
-# Run Secret Detection on merge requests (the template defaults to branch pipelines).
-secret_detection:
-  stage: lint
-  needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
+    - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
+    # Non-blocking: the upstream dependency tree surfaces existing RUSTSEC
+    # advisories. Triage them (or `--ignore RUSTSEC-xxxx`) then drop the guard.
+    - echo "=== cargo audit (non-blocking) ===" && cargo install cargo-audit --locked && { cargo audit || echo "cargo audit reported advisories (non-blocking)"; }
 
 # Assume the environment role and log the docker CLI into that account's ECR.
 # Runs in before_script; exported creds persist into the script step (same shell).
