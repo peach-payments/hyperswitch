@@ -1,0 +1,10 @@
+# https://docs.gitlab.com/ee/user/project/codeowners/
+
+[Default][1]
+* @ben.janecke.peach @dayneo @munesh1 @pankaj9310 @saumil @sam.cronjie @nadiabadat @chris.oglaza @jahved.saib
+
+[PCI Approval Board][1]
+* @nadiabadat @andrew.steyn @grace.mukendi
+
+[Security Approval Board][1]
+* @leonlynch_peach @cameron.raaff @judywinn
