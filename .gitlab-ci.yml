@@ -13,16 +13,13 @@
 #   * No static AWS keys. Each job assumes a per-account role (TERRAFORM_ROLE_ARN
 #     -> EC2_Runner) via `aws sts assume-role`, using the runner's own identity.
 #   * ECR repos are auto-created (MUTABLE, scan-on-push) if missing.
-#   * dind builds run on the privileged eng runners (docker+qa / docker+prod),
-#     not the non-privileged cde-* runners. The target ECR account is selected
-#     by the assumed role, independent of which runner builds. This assumes the
-#     eng runner can assume the CDE EC2_Runner role; if it cannot, the ECR push
-#     (not the build) will fail and we'd need a Kaniko step on a cde-* runner.
+#   * Builds run on the cde-* runners using their host Docker daemon (mounted
+#     socket) — no dind service, no privileged mode. The target ECR account is
+#     selected by the assumed role.
 #
-# Unlike card-bin-loader (light python image, built per-env with Kaniko), these
-# are heavy Rust builds, so each job builds all four images once against a single
-# dind daemon — the shared builder stage compiles the workspace a single time and
-# is reused for the other three images.
+# These are heavy Rust builds, so each job builds all four images against the
+# same Docker daemon — the shared builder stage compiles the workspace a single
+# time and is reused for the other three images.
 
 include:
   # Language-agnostic secret scanning. GitLab's managed SAST has no Rust
@@ -38,6 +35,7 @@ variables:
   AWS_DEFAULT_REGION: eu-west-1
   # cargo feature set passed to the Dockerfile builder stage (v1 or v2).
   VERSION_FEATURE_SET: "v1"
+  DOCKER_AUTH_CONFIG: '{ "auths": { "https://index.docker.io/v1/": { "auth": "$DOCKER_AUTH" } }}'
 
 # ---------------------------------------------------------------------------
 # lint / analyze — MR quality gates (run on every merge request and on main)
@@ -120,8 +118,7 @@ secret_detection:
   - apk add --no-cache aws-cli bash jq
   - |
     set -euo pipefail
-    echo "Waiting for dind..."
-    until docker info >/dev/null 2>&1; do sleep 1; done
+    docker info >/dev/null
     : "${TERRAFORM_ROLE_ARN:?TERRAFORM_ROLE_ARN required for ${CI_ENVIRONMENT_NAME}}"
     SESSION_NAME="${TERRAFORM_SESSION_NAME:-gitlab-ci-hyperswitch-images-${CI_PIPELINE_ID}}"
     echo "Assuming role: $TERRAFORM_ROLE_ARN (session $SESSION_NAME)"
@@ -142,18 +139,11 @@ secret_detection:
 
 .build-images:
   stage: image-build
-  image: docker:24-dind
-  services:
-    - docker:24-dind
-  variables:
-    # dind config proven on our runners (mirrors card-bin-loader): plain TCP on
-    # 2375 with TLS disabled. The TLS-on-2376 setup needs a shared /certs volume
-    # between the service and job containers that these runners don't provide, so
-    # its health check times out ("Waiting for dind..." hangs).
-    DOCKER_HOST: "tcp://docker:2375"
-    DOCKER_TLS_CERTDIR: ""
-    DOCKER_DRIVER: overlay2
-    CI_SERVICES_WAIT_FOR_TIMEOUT: "120"
+  # Build against the runner's host Docker daemon via the mounted socket — no
+  # dind service. The cde-* runners aren't privileged (so a docker:dind sidecar
+  # can't start), but they expose the host daemon, which is how docker builds
+  # already work on these runners in our other repos.
+  image: docker:24
   before_script:
     - *assume-role-and-ecr-login
   script:
@@ -182,12 +172,9 @@ build-images:cde-qa:
   extends:
     - .build-images
     - .rules-qa
-  # dind builds run on the privileged eng runners (docker+qa/prod), NOT the
-  # non-privileged cde-* runners — mirrors card-bin-loader:build. The target ECR
-  # account is chosen by TERRAFORM_ROLE_ARN below, independent of the runner.
   tags:
     - docker
-    - qa
+    - cde-qa
   variables:
     CI_ENVIRONMENT_NAME: cde-qa
     TERRAFORM_ROLE_ARN: "arn:aws:iam::349829657212:role/EC2_Runner"
@@ -202,7 +189,7 @@ build-images:cde-sandbox:
     - .rules-main-only
   tags:
     - docker
-    - prod
+    - cde-sandbox
   variables:
     CI_ENVIRONMENT_NAME: cde-sandbox
     TERRAFORM_ROLE_ARN: "arn:aws:iam::699663557621:role/EC2_Runner"
@@ -217,7 +204,7 @@ build-images:cde-prod:
     - .rules-main-only
   tags:
     - docker
-    - prod
+    - cde-prod
   variables:
     CI_ENVIRONMENT_NAME: cde-prod
     TERRAFORM_ROLE_ARN: "arn:aws:iam::968724509936:role/EC2_Runner"
