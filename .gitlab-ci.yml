@@ -2,8 +2,8 @@
 #
 # Stages run fast -> slow -> publish, so cheap checks fail before expensive ones:
 #   1. lint        — fast, no workspace compile (fmt, secret detection).
-#   2. analyze     — compile-heavy Rust gates (clippy, cargo audit); only run
-#                    after lint passes and only when Rust/Cargo files change.
+#   2. analyze     — compile-heavy Rust gates (clippy, cargo audit); run after
+#                    lint passes.
 #   3. image-build — build the four deployable container images (router,
 #                    producer, consumer, drainer) from the root Dockerfile and
 #                    push them to AWS ECR in each CDE environment.
@@ -36,27 +36,19 @@ variables:
   VERSION_FEATURE_SET: "v1"
 
 # ---------------------------------------------------------------------------
-# lint / analyze — MR quality gates
+# lint / analyze — MR quality gates (run on every merge request and on main)
 # ---------------------------------------------------------------------------
 
-# Only run the (expensive, full-workspace-compile) Rust gates when Rust or
-# Cargo files change, on merge requests and main.
-.rust-changes-rules:
+# Run the Rust gates on every merge request and on main (never on schedules).
+.rust-rules:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      changes: &rust-changes
-        - "**/*.rs"
-        - "**/Cargo.toml"
-        - Cargo.lock
-        - rust-toolchain.toml
-        - .rustfmt.toml
     - if: $CI_COMMIT_BRANCH == "main"
-      changes: *rust-changes
 
 .rust-job:
-  extends: .rust-changes-rules
+  extends: .rust-rules
   # Default stage for the compile-heavy gates; fmt overrides to `lint`.
   stage: analyze
   image: public.ecr.aws/docker/library/rust:trixie
