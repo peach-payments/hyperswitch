@@ -1,30 +1,29 @@
 # GitLab CI for the Hyperswitch fork.
 #
-# Two stages:
-#   1. validate    — one job running all static-analysis and security gates
-#                    (rustfmt, clippy, cargo audit, gitleaks secret scan),
-#                    combined so the image/deps/toolchain are set up once and
-#                    ordered cheap -> expensive to fail fast.
-#   2. image-build — build the four deployable container images (router,
-#                    producer, consumer, drainer) from the root Dockerfile and
-#                    push them to AWS ECR in each CDE environment.
+# Three stages:
+#   1. validate — one job running all static-analysis and security gates
+#                 (rustfmt, clippy, cargo audit, gitleaks secret scan), combined
+#                 so the image/deps/toolchain are set up once and ordered cheap
+#                 -> expensive to fail fast.
+#   2. build    — build the four container images (router, producer, consumer,
+#                 drainer) ONCE and push them to the GitLab Container Registry.
+#                 One Docker daemon => the shared builder stage compiles the
+#                 workspace a single time and is reused for the other three.
+#   3. release  — one job per CDE env: pull the built images from the GitLab
+#                 registry, assume that account's role and push them to its ECR.
 #
-# Image build model mirrors the CDE house pattern (see card-bin-loader in the
-# deploy repo):
-#   * No static AWS keys. Each job assumes a per-account role (TERRAFORM_ROLE_ARN
-#     -> EC2_Runner) via `aws sts assume-role`, using the runner's own identity.
+# Release model mirrors the CDE house pattern (see card-bin-loader in the deploy
+# repo):
+#   * No static AWS keys. Each release job assumes a per-account role
+#     (TERRAFORM_ROLE_ARN -> EC2_Runner) via `aws sts assume-role`.
 #   * ECR repos are auto-created (MUTABLE, scan-on-push) if missing.
-#   * Builds run on the cde-* runners using their host Docker daemon (mounted
-#     socket) — no dind service, no privileged mode. The target ECR account is
-#     selected by the assumed role.
-#
-# These are heavy Rust builds, so each job builds all four images against the
-# same Docker daemon — the shared builder stage compiles the workspace a single
-# time and is reused for the other three images.
+#   * Jobs run on the cde-* runners' host Docker daemon (mounted socket) — no
+#     dind service, no privileged mode. Target ECR account = the assumed role.
 
 stages:
   - validate
-  - image-build
+  - build
+  - release
 
 variables:
   AWS_DEFAULT_REGION: eu-west-1
@@ -71,17 +70,52 @@ static-analysis:
     - echo "=== secret scan (gitleaks) ===" && gitleaks dir . --no-banner --redact
     # Reuse the repo's own recipes so the feature set matches local/dev clippy.
     - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
-    # Non-blocking: the upstream dependency tree surfaces existing RUSTSEC
-    # advisories. Triage them (or `--ignore RUSTSEC-xxxx`) then drop the guard.
-    - echo "=== cargo audit (non-blocking) ===" && cargo install cargo-audit --locked && { cargo audit || echo "cargo audit reported advisories (non-blocking)"; }
 
-# Assume the environment role and log the docker CLI into that account's ECR.
-# Runs in before_script; exported creds persist into the script step (same shell).
+# Runs whenever any release could run: merge requests (for QA), main and tags.
+.rules-build-and-qa:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# Sandbox / prod release on main and tags only (never on MRs or schedules).
+.rules-main-only:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# build — build once, push to the GitLab Container Registry (no AWS)
+# ---------------------------------------------------------------------------
+build-images:
+  extends: .rules-build-and-qa
+  stage: build
+  # Build against the runner's host Docker daemon (mounted socket) — no dind
+  # service, no privileged mode.
+  image: docker:24
+  tags:
+    - docker
+  before_script:
+    - docker info >/dev/null
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - bash ci/build-images.sh
+
+# ---------------------------------------------------------------------------
+# release — per CDE env: pull from GitLab registry, assume role, push to ECR
+# ---------------------------------------------------------------------------
+
+# Assume the environment role and log docker in to that account's ECR.
+# Exported creds/ECR_REGISTRY persist into the script step (same shell).
 .assume-role-and-ecr-login: &assume-role-and-ecr-login
-  - apk add --no-cache aws-cli bash jq
   - |
     set -euo pipefail
-    docker info >/dev/null
     : "${TERRAFORM_ROLE_ARN:?TERRAFORM_ROLE_ARN required for ${CI_ENVIRONMENT_NAME}}"
     SESSION_NAME="${TERRAFORM_SESSION_NAME:-gitlab-ci-hyperswitch-images-${CI_PIPELINE_ID}}"
     echo "Assuming role: $TERRAFORM_ROLE_ARN (session $SESSION_NAME)"
@@ -100,41 +134,24 @@ static-analysis:
     aws ecr get-login-password --region "$AWS_DEFAULT_REGION" \
       | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-.build-images:
-  stage: image-build
-  # Build against the runner's host Docker daemon via the mounted socket — no
-  # dind service. The cde-* runners aren't privileged (so a docker:dind sidecar
-  # can't start), but they expose the host daemon, which is how docker builds
-  # already work on these runners in our other repos.
+.release-ecr:
+  stage: release
   image: docker:24
+  needs:
+    - job: build-images
   before_script:
+    - apk add --no-cache aws-cli bash jq
+    - docker info >/dev/null
+    # Log in to the GitLab registry to pull the built images.
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - *assume-role-and-ecr-login
   script:
-    - bash ci/build-images.sh
+    - bash ci/release-ecr.sh
 
-# QA builds on merge requests and main (matches card-bin-loader QA rules).
-.rules-qa:
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-      when: never
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
-
-# Sandbox / prod build on main and tags only (never on MRs or schedules).
-.rules-main-only:
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-      when: never
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      when: never
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_COMMIT_TAG
-
-build-images:cde-qa:
+release:cde-qa:
   extends:
-    - .build-images
-    - .rules-qa
+    - .release-ecr
+    - .rules-build-and-qa
   tags:
     - docker
     - cde-qa
@@ -144,11 +161,11 @@ build-images:cde-qa:
     TERRAFORM_SESSION_NAME: "HyperswitchImages-QA-${CI_PIPELINE_ID}"
   environment:
     name: cde-qa
-    action: prepare
+    action: start
 
-build-images:cde-sandbox:
+release:cde-sandbox:
   extends:
-    - .build-images
+    - .release-ecr
     - .rules-main-only
   tags:
     - docker
@@ -159,11 +176,11 @@ build-images:cde-sandbox:
     TERRAFORM_SESSION_NAME: "HyperswitchImages-Sandbox-${CI_PIPELINE_ID}"
   environment:
     name: cde-sandbox
-    action: prepare
+    action: start
 
-build-images:cde-prod:
+release:cde-prod:
   extends:
-    - .build-images
+    - .release-ecr
     - .rules-main-only
   tags:
     - docker
@@ -174,4 +191,4 @@ build-images:cde-prod:
     TERRAFORM_SESSION_NAME: "HyperswitchImages-Prod-${CI_PIPELINE_ID}"
   environment:
     name: cde-prod
-    action: prepare
+    action: start
