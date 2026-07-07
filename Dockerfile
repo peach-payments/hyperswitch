@@ -85,9 +85,11 @@ ARG BINARY=router
 ARG SCHEDULER_FLOW=consumer
 
 # Use HTTPS apt sources (build network blocks outbound HTTP). Bring a CA bundle
-# from the builder so apt can validate TLS before ca-certificates is installed.
+# from the builder and point apt at it explicitly (Acquire::https::CAInfo) so it
+# can verify TLS before ca-certificates is installed on this bare image.
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
+RUN printf 'Acquire::https::CAInfo "/etc/ssl/certs/ca-certificates.crt";\n' > /etc/apt/apt.conf.d/99-ca-info \
+    && sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install -y ca-certificates tzdata libpq-dev curl procps
 
