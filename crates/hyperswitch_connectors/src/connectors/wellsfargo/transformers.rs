@@ -750,7 +750,7 @@ impl
                     )
                 }
                 Some(mandates::MandateReferenceId::NetworkTokenWithNTI(_))
-                | Some(mandates::MandateReferenceId::CardWithLimitedData)
+                | Some(mandates::MandateReferenceId::CardWithLimitedData(_))
                 | None => (None, None, None),
             }
         } else {

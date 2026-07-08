@@ -358,6 +358,7 @@ impl
             | BankTransferData::PayShap { .. }
             | BankTransferData::NedbankDirectEft {}
             | BankTransferData::PeachEft {}
+            | BankTransferData::PixQr {}
             | BankTransferData::MandiriVaBankTransfer { .. } => {
                 Err(errors::ConnectorError::NotImplemented(
                     utils::get_unimplemented_payment_method_error_message("Zen"),

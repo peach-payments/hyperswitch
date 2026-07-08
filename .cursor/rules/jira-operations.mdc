@@ -1,0 +1,820 @@
+---
+description: Operational mechanics for writing/editing Jira via MCP or acli, including ADF formatting.
+globs:
+alwaysApply: false
+---
+
+# Jira Operations
+
+Mechanics of creating, updating, and managing Jira tickets using MCP or acli.
+
+- Do not repeat details in the description that are added in additional fields.
+
+Tickets should honour our [@jira-ticket-principles.mdc](mdc:.cursor/rules/jira-ticket-principles.mdc) rules.
+
+## Table of Contents
+
+- [Jira Operations](#jira-operations)
+  - [Table of Contents](#table-of-contents)
+  - [Tool Selection](#tool-selection)
+  - [MCP (Jira Integration)](#mcp-jira-integration)
+    - [Creating Issues (`jira_create_issue`)](#creating-issues-jira_create_issue)
+    - [Updating Issues (`jira_update_issue`)](#updating-issues-jira_update_issue)
+    - [Custom fields (for creation)](#custom-fields-for-creation)
+  - [Atlassian CLI (Fallback)](#atlassian-cli-fallback)
+    - [acli Limitations](#acli-limitations)
+    - [Quick Reference](#quick-reference)
+    - [Ticket Types](#ticket-types)
+    - [Creating Tickets](#creating-tickets)
+    - [Editing Tickets](#editing-tickets)
+    - [Linking Related Tickets](#linking-related-tickets)
+    - [Complete Workflow Example](#complete-workflow-example)
+  - [Atlassian Document Format (ADF)](#atlassian-document-format-adf)
+    - [Document Structure](#document-structure)
+    - [Common Node Types](#common-node-types)
+      - [Paragraph](#paragraph)
+      - [Paragraph with Formatted Text](#paragraph-with-formatted-text)
+      - [Headings](#headings)
+      - [Bullet Lists](#bullet-lists)
+      - [Task Lists (For Acceptance Criteria)](#task-lists-for-acceptance-criteria)
+      - [Hard Break](#hard-break)
+      - [Inline Code](#inline-code)
+      - [Inline Hyperlinks](#inline-hyperlinks)
+    - [Complete Examples](#complete-examples)
+      - [User Story Example](#user-story-example)
+      - [Spike Example](#spike-example)
+    - [Converting Markdown to ADF](#converting-markdown-to-adf)
+  - [Custom Fields](#custom-fields)
+    - [Custom Field Example](#custom-field-example)
+    - [Acceptance Criteria (customfield_10533)](#acceptance-criteria-customfield_10533)
+  - [Debugging](#debugging)
+    - [MCP Common Pitfalls](#mcp-common-pitfalls)
+    - [Recommended MCP Workflow](#recommended-mcp-workflow)
+
+## Tool Selection
+
+**Always use MCP.** It supports full Jira API including custom field updates.
+
+Use acli only if MCP is unavailable. See [acli Limitations](#acli-limitations) - it cannot update custom fields on existing tickets.
+
+## MCP (Jira Integration)
+
+**If MCP auth fails:**
+
+- Reading operations: Fall back to acli silently
+- Update operations: Inform user and suggest fixing MCP (see PT-2873) - acli can't update custom fields
+
+### Creating Issues (`jira_create_issue`)
+
+- Use markdown for `description` field
+- Use `additional_fields` for custom fields (JSON object)
+- **Keep `additional_fields` simple** - complex ADF structures may fail silently
+- For acceptance criteria (`customfield_10533`), create the ticket first, then update separately
+
+**Recommended create workflow:**
+
+1. Create ticket with description and simple additional_fields (labels, priority)
+2. Update ticket separately for complex custom fields like acceptance criteria
+
+### Updating Issues (`jira_update_issue`)
+
+- **Use `fields` parameter** (required) - NOT `additional_fields`
+- The `additional_fields` parameter is optional and separate from `fields`
+- For `customfield_10533` (Acceptance Criteria): **use plain markdown text, not ADF**
+
+**Example update:**
+
+```json
+{
+  "issue_key": "PT-1234",
+  "fields": {
+    "customfield_10533": "- [ ] Given X when Y then Z.\n- [ ] Given A when B then C."
+  }
+}
+```
+
+### Custom fields (for creation)
+
+Use simple structures in `additional_fields` during creation:
+
+```json
+"additional_fields": {
+  "labels": ["PCI"],
+  "customfield_10635": {"id": "10552"},
+  "customfield_10715": [{"id": "10384"}]
+}
+```
+
+## Atlassian CLI (Fallback)
+
+Use Atlassian CLI (`acli jira`) as a fallback when MCP is unavailable or experiencing issues.
+
+- Always request JSON output (`--json`) and format with `jq`
+- Reference: [Jira CLI reference](https://developer.atlassian.com/cloud/acli/reference/commands/jira/)
+- Use Atlassian Document Format (ADF) when creating/editing tickets
+
+### acli Limitations
+
+**CAN:**
+
+- Read custom fields (`--fields '*all'`)
+- Create tickets with custom fields (`additionalAttributes`)
+- Update standard fields (summary, description, labels, assignee)
+- Link tickets
+
+**CANNOT:**
+
+- Update custom fields on existing tickets
+- Edit acceptance criteria, sprint, or any custom field after creation
+
+To update custom fields: Fix MCP (see PT-2873) or edit manually in Jira UI.
+
+### Quick Reference
+
+```bash
+# View ticket
+acli jira workitem view PT-2843 --json | jq
+
+# View ticket with all fields (includes custom fields like sprint)
+acli jira workitem view PT-2843 --fields '*all' --json | jq
+
+# Get specific field
+acli jira workitem view PT-2843 --json | jq '.fields.customfield_10533'
+
+# Get sprint info
+acli jira workitem view PT-2843 --fields '*all' --json | jq '.fields.customfield_10007'
+
+# Create ticket
+acli jira workitem create --project PT --type Story --summary "..." --json | jq
+acli jira workitem create --project PT --type Spike --summary "..." --json | jq
+acli jira workitem create --project PT --type Bug --summary "..." --json | jq
+
+# Edit ticket with ADF description
+acli jira workitem edit --from-json /path/to/update.json --yes --json | jq
+
+# Generate edit template
+acli jira workitem edit --generate-json
+
+# Link related tickets
+acli jira workitem link create --out PT-2590 --in PT-2588 --type Relates --yes
+acli jira workitem link list --key PT-2588
+
+# List available link types
+acli jira workitem link type --json | jq
+```
+
+### Ticket Types
+
+Jira has distinct ticket types, each with their own ID:
+
+- **Story** (type ID: `10128`) - User stories for feature delivery
+- **Spike** (type ID: `10163`) - Time-boxed research/exploration tickets
+- **Bug** - Bug/defect tickets
+- **Technical Debt** - Code quality improvement tickets
+
+When creating tickets via acli, use `--type` with the type name (e.g., `Story`, `Spike`, `Bug`).
+
+See [@jira-ticket-principles.mdc](mdc:.cursor/rules/jira-ticket-principles.mdc) for principles on when to use each type.
+
+### Creating Tickets
+
+When using acli to create tickets:
+
+1. Build your ADF structure as JSON in a temporary file in the `/tmp/` directory
+2. Pass it via the appropriate field parameter
+3. Always use `--json` flag and pipe to `jq` for readability
+4. Test with `view` commands before creating to understand field structure
+
+### Editing Tickets
+
+To update tickets with complex ADF descriptions, use the `--from-json` flag with the proper structure:
+
+1. **Generate the template** to see expected JSON structure:
+
+   ```bash
+   acli jira workitem edit --generate-json > /tmp/edit-template.json
+   ```
+
+2. **Create update JSON** with this structure:
+
+   ```json
+   {
+     "issues": ["PT-2588"],
+     "description": {
+       "type": "doc",
+       "version": 1,
+       "content": [
+         // Your ADF content nodes here
+       ]
+     },
+     "labelsToAdd": ["PCI"]
+   }
+   ```
+
+3. **Apply the update**:
+
+   ```bash
+   acli jira workitem edit --from-json /tmp/update.json --yes --json | jq
+   ```
+
+**Important notes:**
+
+- Using `--description` flag with ADF directly does not work - must use `--from-json`
+- Markdown is not supported for updates - it gets stored as plain text
+- The `description` field must be valid ADF with `type: "doc"` and `version: 1`
+- Use `labelsToAdd` to add labels (not `labels`)
+- Always include `--yes` flag to skip confirmation prompts
+
+### Linking Related Tickets
+
+Use `acli jira workitem link create` to establish relationships between tickets:
+
+**Link types:** Relates, Blocks, Cloners, Duplicate, and others (see `acli jira workitem link type`)
+
+**Common workflow:**
+
+```bash
+# Link related spikes/stories
+acli jira workitem link create --out PT-2590 --in PT-2588 --type Relates --yes
+
+# Verify links (check from inward side to see the link)
+acli jira workitem link list --key PT-2588  # Shows PT-2590
+acli jira workitem link list --key PT-2590  # Shows empty (acli quirk)
+```
+
+**Important:** Links are directional (`--out` → `--in`). The `acli link list` command only displays links from the inward side. To verify a link from PT-2590 to PT-2588, check PT-2588's links, not PT-2590's. Links are visible from both sides in Jira web UI.
+
+**When to link:**
+
+- Related spikes investigating different aspects of the same feature
+- Implementation stories following design/spike tickets
+- Bugs blocking or relating to features
+- Duplicate tickets (use "Duplicate" type instead of "Relates")
+
+### Complete Workflow Example
+
+```bash
+# 1. Create your ADF description in a file
+cat > /tmp/description.json << 'EOF'
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [{"type": "text", "text": "Overview paragraph..."}]
+    },
+    {
+      "type": "heading",
+      "attrs": {"level": 2},
+      "content": [{"type": "text", "text": "Section Title"}]
+    }
+  ]
+}
+EOF
+
+# 2. Build the update JSON with proper structure
+cat > /tmp/update.json << 'EOF'
+{
+  "issues": ["PT-2588"],
+  "description": {},
+  "labelsToAdd": ["PCI"]
+}
+EOF
+
+# 3. Merge the description into the update JSON
+jq --argjson desc "$(cat /tmp/description.json)" '.description = $desc' /tmp/update.json > /tmp/final-update.json
+
+# 4. Apply the update
+acli jira workitem edit --from-json /tmp/final-update.json --yes --json | jq
+
+# 5. Verify the update
+acli jira workitem view PT-2588 --json | jq '.fields | {labels, description_structure: (.description.content | map({type, level: (.attrs.level // null)}))}'
+```
+
+## Atlassian Document Format (ADF)
+
+All rich-text fields in Jira use ADF - a JSON structure representing document content.
+
+### Document Structure
+
+Every ADF document follows this base structure:
+
+```json
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    // Array of content nodes
+  ]
+}
+```
+
+### Common Node Types
+
+#### Paragraph
+
+```json
+{
+  "type": "paragraph",
+  "content": [
+    {
+      "type": "text",
+      "text": "Your text content here"
+    }
+  ]
+}
+```
+
+#### Paragraph with Formatted Text
+
+```json
+{
+  "type": "paragraph",
+  "content": [
+    {
+      "type": "text",
+      "text": "normal text "
+    },
+    {
+      "type": "text",
+      "text": "bold text",
+      "marks": [{ "type": "strong" }]
+    },
+    {
+      "type": "text",
+      "text": " more normal text"
+    }
+  ]
+}
+```
+
+#### Headings
+
+```json
+{
+  "type": "heading",
+  "attrs": { "level": 2 },
+  "content": [
+    {
+      "type": "text",
+      "text": "Requirements"
+    }
+  ]
+}
+```
+
+Levels: 1-6 (h1-h6)
+
+#### Bullet Lists
+
+```json
+{
+  "type": "bulletList",
+  "content": [
+    {
+      "type": "listItem",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "First bullet point"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "listItem",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Second bullet point"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Task Lists (For Acceptance Criteria)
+
+```json
+{
+  "type": "taskList",
+  "attrs": { "localId": "main-list" },
+  "content": [
+    {
+      "type": "taskItem",
+      "attrs": { "localId": "item1", "state": "TODO" },
+      "content": [
+        {
+          "type": "text",
+          "text": "Given a user is on the login page"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "when they enter valid credentials"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "then they are redirected to their dashboard."
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Key structure requirements:**
+
+- Use `taskList` with `taskItem` elements (not `bulletList` with `listItem`)
+- Each `taskItem` needs `attrs` with unique `localId` and `state: "TODO"`
+- Use `hardBreak` elements for line breaks within a task (e.g., between Given/When/Then clauses)
+- End statements with periods
+- The `taskList` should have `attrs` with a `localId`
+
+#### Hard Break
+
+```json
+{ "type": "hardBreak" }
+```
+
+Use for line breaks within text content (like in task lists).
+
+#### Inline Code
+
+```json
+{
+  "type": "text",
+  "text": "GET /v1/payments/{id}",
+  "marks": [{ "type": "code" }]
+}
+```
+
+Use for technical identifiers and literals within text:
+
+```json
+{
+  "type": "paragraph",
+  "content": [
+    { "type": "text", "text": "Status operation routing: " },
+    {
+      "type": "text",
+      "text": "GET /v1/payments/{id}",
+      "marks": [{ "type": "code" }]
+    },
+    { "type": "text", "text": " → Status operation" }
+  ]
+}
+```
+
+#### Inline Hyperlinks
+
+```json
+{
+  "type": "inlineCard",
+  "attrs": { "url": "https://example.com" }
+}
+```
+
+Use within paragraphs for clickable URLs:
+
+```json
+{
+  "type": "paragraph",
+  "content": [
+    { "type": "text", "text": "See design doc: " },
+    { "type": "inlineCard", "attrs": { "url": "https://gitlab.com/..." } },
+    { "type": "text", "text": " " }
+  ]
+}
+```
+
+### Complete Examples
+
+#### User Story Example
+
+Based on PT-2843, here's a complete ADF description structure for a user story:
+
+```json
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "As a [persona], I want [goal] so that [benefit]"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [
+        {
+          "type": "text",
+          "text": "Requirements"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 3 },
+      "content": [
+        {
+          "type": "text",
+          "text": "Subsection Title"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Description of requirements:"
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "First requirement"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Second requirement"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [
+        {
+          "type": "text",
+          "text": "Security impact"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "a. Answer\nb. Answer\nc. Answer\nd. Answer\ne. Answer\nf. Answer"
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Spike Example
+
+**Key ADF differences from user story:**
+
+1. **Opening paragraph** - Overview of spike purpose (not user story statement)
+2. **Section headings** - Use proper `heading` nodes with level 2
+3. **Standard sections** - Scope, Questions to answer, Required artefacts, Security impact, References
+4. **No acceptance criteria field**
+
+```json
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Overview paragraph explaining spike purpose."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [
+        {
+          "type": "text",
+          "text": "Questions to answer"
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "1. First question..."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": { "level": 2 },
+      "content": [
+        {
+          "type": "text",
+          "text": "Required artefacts"
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Updated design doc with answers"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+See [@jira-ticket-principles.mdc](mdc:.cursor/rules/jira-ticket-principles.mdc) for spike content structure and examples.
+
+### Converting Markdown to ADF
+
+When you have content in markdown, convert it to ADF:
+
+1. **Paragraphs** - Each paragraph becomes a `paragraph` node
+2. **Headings** - `## Heading` becomes `{"type": "heading", "attrs": {"level": 2}}`
+3. **Lists** - Bullet points become `bulletList` with `listItem` children
+4. **Bold/Italic** - Use `marks` array with `{"type": "strong"}` or `{"type": "em"}`
+5. **Line breaks** - Use `hardBreak` nodes
+6. **URLs** - Plain text URLs become `inlineCard` nodes with `attrs.url`
+
+## Custom Fields
+
+Common fields (use `--fields '*all'` with acli to view):
+
+- Sprint: `customfield_10007` - All types
+- Acceptance Criteria: `customfield_10533` (ADF task list) - Stories/bugs only
+- Bug Severity: `customfield_10635` - Bugs only
+- Affected Environment(s): `customfield_10715` - Bugs only
+- Steps to Reproduce: `customfield_10534` (ADF) - Bugs only
+
+### Custom Field Example
+
+```json
+"additional_fields": {
+  "customfield_10635": {"id": "10552", "value": "Cosmetic SEV-5"},
+  "customfield_10715": [{"id": "10384", "value": "QA"}],
+  "customfield_10534": {
+    "version": 1,
+    "type": "doc",
+    "content": [
+      {
+        "type": "paragraph",
+        "content": [
+          {
+            "type": "text",
+            "text": "Step 1: Navigate to login page"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Acceptance Criteria (customfield_10533)
+
+Stories and bugs only (not spikes). Use `taskList` with `taskItem` elements:
+
+```json
+"customfield_10533": {
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "taskList",
+      "attrs": {"localId": "main-list"},
+      "content": [
+        {
+          "type": "taskItem",
+          "attrs": {"localId": "item1", "state": "TODO"},
+          "content": [
+            {"type": "text", "text": "Given a user is on the login page"},
+            {"type": "hardBreak"},
+            {"type": "text", "text": "when they enter valid credentials"},
+            {"type": "hardBreak"},
+            {"type": "text", "text": "then they are redirected to their dashboard."}
+          ]
+        },
+        {
+          "type": "taskItem",
+          "attrs": {"localId": "item2", "state": "TODO"},
+          "content": [
+            {"type": "text", "text": "Given invalid credentials are provided"},
+            {"type": "hardBreak"},
+            {"type": "text", "text": "when user attempts login"},
+            {"type": "hardBreak"},
+            {"type": "text", "text": "then an error message is displayed"},
+            {"type": "hardBreak"},
+            {"type": "text", "text": "and the user remains on the login page."}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Debugging
+
+If ticket creation/update fails:
+
+1. Verify all required fields are present
+2. Check that `type` and `version` are set at document level
+3. Ensure `content` is an array
+4. Validate that nested structures match expected format
+5. Use `jq` to pretty-print and validate JSON syntax
+
+### MCP Common Pitfalls
+
+| Issue                           | Cause                                         | Fix                                                         |
+| ------------------------------- | --------------------------------------------- | ----------------------------------------------------------- |
+| Create fails silently           | Complex ADF in `additional_fields`            | Create simple, then update separately                       |
+| Update returns validation error | Using `additional_fields` instead of `fields` | Use `fields` parameter for updates                          |
+| ADF not rendering               | Complex ADF structure rejected                | Use plain markdown for text fields like `customfield_10533` |
+| Acceptance criteria not set     | Tried to set during creation with ADF         | Update after creation with markdown checklist               |
+
+### Recommended MCP Workflow
+
+1. **Create** ticket with:
+
+   - `project_key`, `summary`, `issue_type`, `description`
+   - Simple `additional_fields`: `{"labels": ["PCI"]}`
+
+2. **Update** separately for complex fields:
+
+   - Use `fields` parameter (not `additional_fields`)
+   - Use plain markdown for `customfield_10533`:
+
+     ```
+     "- [ ] Given X when Y then Z."
+     ```

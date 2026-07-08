@@ -122,6 +122,13 @@ impl TryFrom<&ItaubankRouterData<&types::PaymentsAuthorizeRouterData>> for Itaub
                         "Selected payment method through itaubank".to_string(),
                     )
                     .into()),
+                    | BankTransferData::PixQr {}
+                    | BankTransferData::LocalBankTransfer { .. } => {
+                        Err(errors::ConnectorError::NotImplemented(
+                            "Selected payment method through itaubank".to_string(),
+                        )
+                        .into())
+                    }
                 }
             }
             PaymentMethodData::Card(_)
