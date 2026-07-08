@@ -13,7 +13,7 @@ use hyperswitch_domain_models::{
     payment_method_data::{        
         Card, CardDetailsForNetworkTransactionId, CardWithLimitedDetails, NetworkTokenData,
         NetworkTokenDetailsForNetworkTransactionId, PaymentMethodData, BankTransferData, PayLaterData,
-        PaymentMethodData, VoucherData, WalletData
+        VoucherData, WalletData
     },
     payment_methods::storage_enums::MitCategory,
     router_data::{ConnectorAuthType, ErrorResponse, RouterData},

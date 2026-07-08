@@ -998,7 +998,15 @@ impl TryFrom<enums::PaymentMethodType> for StripePaymentMethodType {
             | enums::PaymentMethodType::Maucas
             | enums::PaymentMethodType::OneForYou
             | enums::PaymentMethodType::MoneyBadger
-            | enums::PaymentMethodType::NetworkToken => Err(ConnectorError::NotImplemented(
+            | enums::PaymentMethodType::NetworkToken
+            | enums::PaymentMethodType::MoovMoney
+            | enums::PaymentMethodType::Djamo
+            | enums::PaymentMethodType::TMoney
+            | enums::PaymentMethodType::Wizall
+            | enums::PaymentMethodType::Expresso
+            | enums::PaymentMethodType::FreeMoney
+            | enums::PaymentMethodType::OrangeMoney
+            | enums::PaymentMethodType::Wave => Err(ConnectorError::NotImplemented(
                 get_unimplemented_payment_method_error_message("stripe"),
             )
             .into()),
@@ -1327,6 +1335,14 @@ fn get_stripe_payment_method_type_from_wallet_data(
         | WalletData::GooglePayRedirect(_)
         | WalletData::GooglePayThirdPartySdk(_)
         | WalletData::MbWayRedirect(_)
+        | WalletData::DjamoRedirect(_)
+        | WalletData::TMoneyRedirect(_)
+        | WalletData::WizallRedirect(_)
+        | WalletData::ExpressoRedirect(_)
+        | WalletData::FreeMoneyRedirect(_)
+        | WalletData::WaveRedirect(_)
+        | WalletData::MoovMoneyRedirect(_)
+        | WalletData::OrangeMoneyRedirect(_)
         | WalletData::PaypalSdk(_)
         | WalletData::Paze(_)
         | WalletData::SamsungPay(_)
@@ -1867,6 +1883,14 @@ impl TryFrom<(&WalletData, Option<PaymentMethodToken>)> for StripePaymentMethodD
             | WalletData::GooglePayRedirect(_)
             | WalletData::GooglePayThirdPartySdk(_)
             | WalletData::MbWayRedirect(_)
+            | WalletData::DjamoRedirect(_)
+            | WalletData::TMoneyRedirect(_)
+            | WalletData::WizallRedirect(_)
+            | WalletData::ExpressoRedirect(_)
+            | WalletData::FreeMoneyRedirect(_)
+            | WalletData::WaveRedirect(_)
+            | WalletData::MoovMoneyRedirect(_)
+            | WalletData::OrangeMoneyRedirect(_)
             | WalletData::PaypalSdk(_)
             | WalletData::Paze(_)
             | WalletData::SamsungPay(_)

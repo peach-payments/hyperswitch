@@ -143,6 +143,7 @@ pub async fn construct_webhook_router_data(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        merchant_profile_name: None,
     };
     Ok(router_data)
 }

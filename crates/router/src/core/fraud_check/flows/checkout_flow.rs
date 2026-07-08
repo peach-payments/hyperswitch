@@ -191,6 +191,7 @@ impl ConstructFlowSpecificData<frm_api::Checkout, FraudCheckCheckoutData, FraudC
                 )?,
             feature_data: None,
             sender_payment_instrument_id: None,
+            merchant_profile_name: None,
         };
 
         Ok(router_data)

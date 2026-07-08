@@ -5360,6 +5360,7 @@ pub fn router_data_type_conversion<F1, F2, Req1, Req2, Res1, Res2>(
         customer_document_details: router_data.customer_document_details,
         feature_data: router_data.feature_data,
         sender_payment_instrument_id: router_data.sender_payment_instrument_id,
+        merchant_profile_name: router_data.merchant_profile_name,
     }
 }
 

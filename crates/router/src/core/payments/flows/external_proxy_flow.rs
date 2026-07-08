@@ -338,12 +338,22 @@ impl Feature<api::ExternalVaultProxy, types::ExternalVaultProxyPaymentsData>
             let response_data: Result<types::PaymentsResponseData, types::ErrorResponse> =
                 Err(types::ErrorResponse::default());
 
-            let createorder_router_data =
+            let mut createorder_router_data =
                 helpers::router_data_type_conversion::<_, api::CreateOrder, _, _, _, _>(
                     self.clone(),
                     request_data,
                     response_data,
                 );
+
+            createorder_router_data.merchant_profile_name = state
+                .store
+                .find_business_profile_by_profile_id(
+                    gateway_context.processor.get_key_store(),
+                    gateway_context.lineage_ids.get_profile_id(),
+                )
+                .await
+                .ok()
+                .map(|business_profile| business_profile.profile_name);
 
             let resp = gateway::execute_payment_gateway(
                 state,

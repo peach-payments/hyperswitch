@@ -92,6 +92,7 @@ mod opayo;
 mod opennode;
 mod paybox;
 mod payconex;
+mod paydunya;
 #[cfg(feature = "dummy_connector")]
 mod payeezy;
 mod payjustnow;

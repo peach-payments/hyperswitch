@@ -688,7 +688,15 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::ScanToPay
                         | common_enums::PaymentMethodType::Maucas
                         | common_enums::PaymentMethodType::OneForYou
-                        | common_enums::PaymentMethodType::MoneyBadger,
+                        | common_enums::PaymentMethodType::MoneyBadger
+                        | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
+                        | common_enums::PaymentMethodType::TMoney
+                        | common_enums::PaymentMethodType::Wizall
+                        | common_enums::PaymentMethodType::Expresso
+                        | common_enums::PaymentMethodType::FreeMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
+                        | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",
@@ -843,7 +851,15 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::ScanToPay
                         | common_enums::PaymentMethodType::Maucas
                         | common_enums::PaymentMethodType::OneForYou
-                        | common_enums::PaymentMethodType::MoneyBadger,
+                        | common_enums::PaymentMethodType::MoneyBadger
+                        | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
+                        | common_enums::PaymentMethodType::TMoney
+                        | common_enums::PaymentMethodType::Wizall
+                        | common_enums::PaymentMethodType::Expresso
+                        | common_enums::PaymentMethodType::FreeMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
+                        | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",
@@ -1004,7 +1020,15 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::ScanToPay
                         | common_enums::PaymentMethodType::Maucas
                         | common_enums::PaymentMethodType::OneForYou
-                        | common_enums::PaymentMethodType::MoneyBadger,
+                        | common_enums::PaymentMethodType::MoneyBadger
+                        | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
+                        | common_enums::PaymentMethodType::TMoney
+                        | common_enums::PaymentMethodType::Wizall
+                        | common_enums::PaymentMethodType::Expresso
+                        | common_enums::PaymentMethodType::FreeMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
+                        | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",
@@ -1159,7 +1183,15 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::ScanToPay
                         | common_enums::PaymentMethodType::Maucas
                         | common_enums::PaymentMethodType::OneForYou
-                        | common_enums::PaymentMethodType::MoneyBadger,
+                        | common_enums::PaymentMethodType::MoneyBadger
+                        | common_enums::PaymentMethodType::MoovMoney
+                        | common_enums::PaymentMethodType::Djamo
+                        | common_enums::PaymentMethodType::TMoney
+                        | common_enums::PaymentMethodType::Wizall
+                        | common_enums::PaymentMethodType::Expresso
+                        | common_enums::PaymentMethodType::FreeMoney
+                        | common_enums::PaymentMethodType::OrangeMoney
+                        | common_enums::PaymentMethodType::Wave,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",

@@ -933,6 +933,13 @@ pub enum WalletData {
     BluecodeRedirect {},
     Paysera(Box<PayseraData>),
     Skrill(Box<SkrillData>),
+    DjamoRedirect(DjamoRedirection),
+    TMoneyRedirect(TMoneyRedirection),
+    WizallRedirect(WizallRedirection),
+    ExpressoRedirect(ExpressoRedirection),
+    FreeMoneyRedirect(FreeMoneyRedirection),
+    WaveRedirect(WaveRedirection),
+    MoovMoneyRedirect(MoovMoneyRedirection),
     MomoRedirect(MomoRedirection),
     KakaoPayRedirect(KakaoPayRedirection),
     GoPayRedirect(GoPayRedirection),
@@ -946,6 +953,7 @@ pub enum WalletData {
     GooglePayThirdPartySdk(Box<GooglePayThirdPartySdkData>),
     MbWayRedirect(Box<MbWayRedirection>),
     MobilePayRedirect(Box<MobilePayRedirection>),
+    OrangeMoneyRedirect(Box<OrangeMoneyRedirection>),
     PaypalRedirect(PaypalRedirection),
     PaypalSdk(PayPalWalletData),
     Paze(PazeWalletData),
@@ -1104,6 +1112,50 @@ pub struct SkrillData {}
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct MomoRedirection {}
 
+/// Payer data for the Djamo SOFTPAY wallet (Paydunya, Côte d'Ivoire and
+/// Senegal). The endpoint is shared across both countries and the regional
+/// `code_country` is derived from the billing country, so no payer-supplied
+/// fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct DjamoRedirection {}
+
+/// Payer data for the T-Money SOFTPAY wallet (Paydunya, Togo). The operator is
+/// fixed to T-Money Togo and the payer identity is taken from the billing
+/// details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct TMoneyRedirection {}
+
+/// Payer data for the Wizall SOFTPAY wallet (Paydunya, Senegal). The operator
+/// is fixed to Wizall Senegal and the payer identity is taken from the billing
+/// details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct WizallRedirection {}
+
+/// Payer data for the Expresso SOFTPAY wallet (Paydunya, Senegal). The operator
+/// is fixed to Expresso Senegal and the payer identity is taken from the
+/// billing details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ExpressoRedirection {}
+
+/// Payer data for the Free Money SOFTPAY wallet (Paydunya, Senegal). The
+/// operator is fixed to Free Money Senegal and the payer identity is taken from
+/// the billing details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct FreeMoneyRedirection {}
+
+/// Payer data for the Wave SOFTPAY wallet (Paydunya, Senegal and Côte
+/// d'Ivoire). The regional endpoint is resolved from the billing country and
+/// the payer identity is taken from the billing details, so no payer-supplied
+/// fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct WaveRedirection {}
+
+/// Payer data for the Moov Money SOFTPAY wallet (Paydunya). The regional
+/// endpoint is resolved from the billing country and the payer identity is
+/// taken from the billing details, so no payer-supplied fields are needed here.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct MoovMoneyRedirection {}
+
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct KakaoPayRedirection {}
 
@@ -1118,6 +1170,15 @@ pub struct MobilePayRedirection {}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct MbWayRedirection {}
+
+/// Payer data for the Orange Money SOFTPAY wallet. Carries an optional OTP
+/// the payer generates out-of-band on their handset (USSD / operator app).
+/// The OTP is only consumed by country variants that require it
+/// (Côte d'Ivoire, Burkina Faso); the others ignore it.
+#[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct OrangeMoneyRedirection {
+    pub otp: Option<Secret<String>>,
+}
 
 #[derive(Eq, PartialEq, Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct GooglePayPaymentMethodInfo {
@@ -2403,6 +2464,27 @@ impl From<api_models::payments::WalletData> for WalletData {
             }
             api_models::payments::WalletData::Skrill(_) => Self::Skrill(Box::new(SkrillData {})),
             api_models::payments::WalletData::Paysera(_) => Self::Paysera(Box::new(PayseraData {})),
+            api_models::payments::WalletData::DjamoRedirect(_) => {
+                Self::DjamoRedirect(DjamoRedirection {})
+            }
+            api_models::payments::WalletData::TMoneyRedirect(_) => {
+                Self::TMoneyRedirect(TMoneyRedirection {})
+            }
+            api_models::payments::WalletData::WizallRedirect(_) => {
+                Self::WizallRedirect(WizallRedirection {})
+            }
+            api_models::payments::WalletData::ExpressoRedirect(_) => {
+                Self::ExpressoRedirect(ExpressoRedirection {})
+            }
+            api_models::payments::WalletData::FreeMoneyRedirect(_) => {
+                Self::FreeMoneyRedirect(FreeMoneyRedirection {})
+            }
+            api_models::payments::WalletData::WaveRedirect(_) => {
+                Self::WaveRedirect(WaveRedirection {})
+            }
+            api_models::payments::WalletData::MoovMoneyRedirect(_) => {
+                Self::MoovMoneyRedirect(MoovMoneyRedirection {})
+            }
             api_models::payments::WalletData::MomoRedirect(_) => {
                 Self::MomoRedirect(MomoRedirection {})
             }
@@ -2443,6 +2525,11 @@ impl From<api_models::payments::WalletData> for WalletData {
             }
             api_models::payments::WalletData::MobilePayRedirect(_) => {
                 Self::MobilePayRedirect(Box::new(MobilePayRedirection {}))
+            }
+            api_models::payments::WalletData::OrangeMoneyRedirect(orange_money_data) => {
+                Self::OrangeMoneyRedirect(Box::new(OrangeMoneyRedirection {
+                    otp: orange_money_data.otp,
+                }))
             }
             api_models::payments::WalletData::PaypalRedirect(paypal_redirect_data) => {
                 Self::PaypalRedirect(PaypalRedirection {
@@ -3470,6 +3557,13 @@ impl GetPaymentMethodType for WalletData {
             Self::AmazonPayRedirect(_) => api_enums::PaymentMethodType::AmazonPay,
             Self::Skrill(_) => api_enums::PaymentMethodType::Skrill,
             Self::Paysera(_) => api_enums::PaymentMethodType::Paysera,
+            Self::DjamoRedirect(_) => api_enums::PaymentMethodType::Djamo,
+            Self::TMoneyRedirect(_) => api_enums::PaymentMethodType::TMoney,
+            Self::WizallRedirect(_) => api_enums::PaymentMethodType::Wizall,
+            Self::ExpressoRedirect(_) => api_enums::PaymentMethodType::Expresso,
+            Self::FreeMoneyRedirect(_) => api_enums::PaymentMethodType::FreeMoney,
+            Self::WaveRedirect(_) => api_enums::PaymentMethodType::Wave,
+            Self::MoovMoneyRedirect(_) => api_enums::PaymentMethodType::MoovMoney,
             Self::MomoRedirect(_) => api_enums::PaymentMethodType::Momo,
             Self::KakaoPayRedirect(_) => api_enums::PaymentMethodType::KakaoPay,
             Self::GoPayRedirect(_) => api_enums::PaymentMethodType::GoPay,
@@ -3485,6 +3579,7 @@ impl GetPaymentMethodType for WalletData {
             Self::BluecodeRedirect {} => api_enums::PaymentMethodType::Bluecode,
             Self::MbWayRedirect(_) => api_enums::PaymentMethodType::MbWay,
             Self::MobilePayRedirect(_) => api_enums::PaymentMethodType::MobilePay,
+            Self::OrangeMoneyRedirect(_) => api_enums::PaymentMethodType::OrangeMoney,
             Self::PaypalRedirect(_) | Self::PaypalSdk(_) => api_enums::PaymentMethodType::Paypal,
             Self::Paze(_) => api_enums::PaymentMethodType::Paze,
             Self::SamsungPay(_) => api_enums::PaymentMethodType::SamsungPay,

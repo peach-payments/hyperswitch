@@ -7315,7 +7315,7 @@ payment_method_type = "boleto"
 [santander.connector_auth.CertificateAuth]
 certificate="Base64 encoded PEM formatted certificate chain"
 private_key="Base64 encoded PEM formatted private key"
-  
+
 [[santander.metadata.pix_qr]]
 name="client_id"
 label="Client ID"
@@ -7663,6 +7663,30 @@ payment_experience = "redirect_to_url"
 [hyperwallet.connector_auth.BodyKey]
 api_key = "Password"
 key1 = "Username"
+
+[paydunya]
+[[paydunya.wallet]]
+payment_method_type = "djamo"
+[[paydunya.wallet]]
+payment_method_type = "momo"
+[[paydunya.wallet]]
+payment_method_type = "moov_money"
+[[paydunya.wallet]]
+payment_method_type = "orange_money"
+[[paydunya.wallet]]
+payment_method_type = "wave"
+[[paydunya.wallet]]
+payment_method_type = "t_money"
+[[paydunya.wallet]]
+payment_method_type = "wizall"
+[[paydunya.wallet]]
+payment_method_type = "expresso"
+[[paydunya.wallet]]
+payment_method_type = "free_money"
+[paydunya.connector_auth.SignatureKey]
+api_key = "Master Key"
+api_secret = "Private Key"
+key1 = "Token"
 
 [paysafe]
 [[paysafe.credit]]

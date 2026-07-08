@@ -303,6 +303,7 @@ impl ForeignFrom<api_enums::PaymentMethodType> for api_enums::PaymentMethod {
             | api_enums::PaymentMethodType::Dana
             | api_enums::PaymentMethodType::MbWay
             | api_enums::PaymentMethodType::MobilePay
+            | api_enums::PaymentMethodType::MoovMoney
             | api_enums::PaymentMethodType::Paze
             | api_enums::PaymentMethodType::SamsungPay
             | api_enums::PaymentMethodType::Twint
@@ -313,6 +314,13 @@ impl ForeignFrom<api_enums::PaymentMethodType> for api_enums::PaymentMethod {
             | api_enums::PaymentMethodType::GoPay
             | api_enums::PaymentMethodType::Gcash
             | api_enums::PaymentMethodType::Momo
+            | api_enums::PaymentMethodType::Djamo
+            | api_enums::PaymentMethodType::TMoney
+            | api_enums::PaymentMethodType::Wizall
+            | api_enums::PaymentMethodType::Expresso
+            | api_enums::PaymentMethodType::FreeMoney
+            | api_enums::PaymentMethodType::OrangeMoney
+            | api_enums::PaymentMethodType::Wave
             | api_enums::PaymentMethodType::Cashapp
             | api_enums::PaymentMethodType::KakaoPay
             | api_enums::PaymentMethodType::Venmo

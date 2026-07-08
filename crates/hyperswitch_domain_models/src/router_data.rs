@@ -128,6 +128,9 @@ pub struct RouterData<Flow, Request, Response> {
     pub feature_data: Option<FeatureData>,
     /// A connector-specific identifier representing the stored payment instrument
     pub sender_payment_instrument_id: Option<String>,
+    /// Name of the business profile associated with the payment, surfaced to
+    /// connectors that require a merchant/store name (e.g. Paydunya's `store.name`).
+    pub merchant_profile_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

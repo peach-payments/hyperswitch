@@ -57,6 +57,7 @@ import { connectorDetails as noonConnectorDetails } from "./Noon.js";
 import { connectorDetails as novalnetConnectorDetails } from "./Novalnet.js";
 import { connectorDetails as nuveiConnectorDetails } from "./Nuvei.js";
 import { connectorDetails as payboxConnectorDetails } from "./Paybox.js";
+import { connectorDetails as paydunyaConnectorDetails } from "./Paydunya.js";
 import { connectorDetails as payjustnowConnectorDetails } from "./Payjustnow.js";
 import { connectorDetails as payloadConnectorDetails } from "./Payload.js";
 import { connectorDetails as paypalConnectorDetails } from "./Paypal.js";
@@ -137,6 +138,7 @@ const connectorDetails = {
   novalnet: novalnetConnectorDetails,
   nuvei: nuveiConnectorDetails,
   paybox: payboxConnectorDetails,
+  paydunya: paydunyaConnectorDetails,
   payjustnow: payjustnowConnectorDetails,
   payload: payloadConnectorDetails,
   paypal: paypalConnectorDetails,

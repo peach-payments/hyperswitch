@@ -17359,6 +17359,7 @@
           "nuvei",
           "opennode",
           "paybox",
+          "paydunya",
           "payload",
           "payme",
           "payone",
@@ -20628,6 +20629,9 @@
             }
           }
         }
+      },
+      "DjamoRedirection": {
+        "type": "object"
       },
       "DocumentDetails": {
         "type": "object",
@@ -27785,6 +27789,16 @@
           }
         }
       },
+      "OrangeMoneyRedirection": {
+        "type": "object",
+        "properties": {
+          "otp": {
+            "type": "string",
+            "description": "One-time passcode the payer generates on their Orange Money handset\n(via USSD or the operator's app) before confirming the SOFTPAY call.\nRequired by some country variants (Côte d'Ivoire, Burkina Faso) and\nignored by the others.",
+            "nullable": true
+          }
+        }
+      },
       "OrderDetailsWithAmount": {
         "type": "object",
         "required": [
@@ -31213,6 +31227,8 @@
           "dana",
           "danamon_va",
           "debit",
+          "djamo",
+          "t_money",
           "duit_now",
           "efecty",
           "eft",
@@ -31238,6 +31254,7 @@
           "mobile_pay",
           "momo",
           "momo_atm",
+          "moov_money",
           "multibanco",
           "online_banking_thailand",
           "online_banking_czech_republic",
@@ -31245,6 +31262,7 @@
           "online_banking_fpx",
           "online_banking_poland",
           "online_banking_slovakia",
+          "orange_money",
           "oxxo",
           "pago_efectivo",
           "permata_bank_transfer",
@@ -31283,6 +31301,7 @@
           "viet_qr",
           "venmo",
           "walley",
+          "wave",
           "we_chat_pay",
           "seven_eleven",
           "lawson",
@@ -41579,6 +41598,7 @@
           "nuvei",
           "opennode",
           "paybox",
+          "paydunya",
           "payme",
           "payload",
           "payone",
@@ -43941,6 +43961,9 @@
       "SwishQrData": {
         "type": "object"
       },
+      "TMoneyRedirection": {
+        "type": "object"
+      },
       "TaxStatus": {
         "type": "string",
         "enum": [
@@ -45820,6 +45843,90 @@
           },
           {
             "type": "object",
+            "title": "DjamoRedirect",
+            "required": [
+              "djamo_redirect"
+            ],
+            "properties": {
+              "djamo_redirect": {
+                "$ref": "#/components/schemas/DjamoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "TMoneyRedirect",
+            "required": [
+              "t_money_redirect"
+            ],
+            "properties": {
+              "t_money_redirect": {
+                "$ref": "#/components/schemas/TMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "WizallRedirect",
+            "required": [
+              "wizall_redirect"
+            ],
+            "properties": {
+              "wizall_redirect": {
+                "$ref": "#/components/schemas/WizallRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "ExpressoRedirect",
+            "required": [
+              "expresso_redirect"
+            ],
+            "properties": {
+              "expresso_redirect": {
+                "$ref": "#/components/schemas/ExpressoRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "FreeMoneyRedirect",
+            "required": [
+              "free_money_redirect"
+            ],
+            "properties": {
+              "free_money_redirect": {
+                "$ref": "#/components/schemas/FreeMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "WaveRedirect",
+            "required": [
+              "wave_redirect"
+            ],
+            "properties": {
+              "wave_redirect": {
+                "$ref": "#/components/schemas/WaveRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "title": "MoovMoneyRedirect",
+            "required": [
+              "moov_money_redirect"
+            ],
+            "properties": {
+              "moov_money_redirect": {
+                "$ref": "#/components/schemas/MoovMoneyRedirection"
+              }
+            }
+          },
+          {
+            "type": "object",
             "title": "MomoRedirect",
             "required": [
               "momo_redirect"
@@ -45832,6 +45939,7 @@
           },
           {
             "type": "object",
+<<<<<<< HEAD
             "title": "MpesaRedirect",
             "required": [
               "mpesa_redirect"
@@ -45840,769 +45948,793 @@
               "mpesa_redirect": {
                 "type": "object",
                 "description": "The wallet data for M-PESA redirect"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "PaypalRedirect",
-            "required": [
-              "paypal_redirect"
-            ],
-            "properties": {
-              "paypal_redirect": {
-                "$ref": "#/components/schemas/PaypalRedirection"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "PaypalSdk",
-            "required": [
-              "paypal_sdk"
-            ],
-            "properties": {
-              "paypal_sdk": {
-                "$ref": "#/components/schemas/PayPalWalletData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "Paysera",
-            "required": [
-              "paysera"
-            ],
-            "properties": {
-              "paysera": {
-                "$ref": "#/components/schemas/PayseraData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "Paze",
-            "required": [
-              "paze"
-            ],
-            "properties": {
-              "paze": {
-                "$ref": "#/components/schemas/PazeWalletData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "RevolutPay",
-            "required": [
-              "revolut_pay"
-            ],
-            "properties": {
-              "revolut_pay": {
-                "$ref": "#/components/schemas/RevolutPayData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "SamsungPay",
-            "required": [
-              "samsung_pay"
-            ],
-            "properties": {
-              "samsung_pay": {
-                "$ref": "#/components/schemas/SamsungPayWalletData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "ScanToPayRedirect",
-            "required": [
-              "scan_to_pay_redirect"
-            ],
-            "properties": {
-              "scan_to_pay_redirect": {
-                "type": "object",
-                "description": "The wallet data for Scan to Pay redirect"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "Skrill",
-            "required": [
-              "skrill"
-            ],
-            "properties": {
-              "skrill": {
-                "$ref": "#/components/schemas/SkrillData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "SwishQr",
-            "required": [
-              "swish_qr"
-            ],
-            "properties": {
-              "swish_qr": {
-                "$ref": "#/components/schemas/SwishQrData"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "TouchNGoRedirect",
-            "required": [
-              "touch_n_go_redirect"
-            ],
-            "properties": {
-              "touch_n_go_redirect": {
-                "$ref": "#/components/schemas/TouchNGoRedirection"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "TwintRedirect",
-            "required": [
-              "twint_redirect"
-            ],
-            "properties": {
-              "twint_redirect": {
-                "type": "object",
-                "description": "Wallet data for Twint Redirection"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "VippsRedirect",
-            "required": [
-              "vipps_redirect"
-            ],
-            "properties": {
-              "vipps_redirect": {
-                "type": "object",
-                "description": "Wallet data for Vipps Redirection"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "WeChatPayQr",
-            "required": [
-              "we_chat_pay_qr"
-            ],
-            "properties": {
-              "we_chat_pay_qr": {
-                "$ref": "#/components/schemas/WeChatPayQr"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "title": "WeChatPayRedirect",
-            "required": [
-              "we_chat_pay_redirect"
-            ],
-            "properties": {
-              "we_chat_pay_redirect": {
-                "$ref": "#/components/schemas/WeChatPayRedirection"
-              }
-            }
-          }
-        ]
-      },
-      "WalletDetail": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "apple_pay_decrypted_data"
-            ],
-            "properties": {
-              "apple_pay_decrypted_data": {
-                "type": "object",
+=======
+            "title": "OrangeMoneyRedirect",
                 "required": [
-                  "application_primary_account_number",
-                  "expiry_month",
-                  "expiry_year"
+                  "orange_money_redirect"
                 ],
                 "properties": {
-                  "application_primary_account_number": {
-                    "type": "string",
-                    "description": "The application primary account number associated with the card",
-                    "example": "4242424242424242"
-                  },
-                  "expiry_month": {
-                    "type": "string",
-                    "description": "The card's expiry month"
-                  },
-                  "expiry_year": {
-                    "type": "string",
-                    "description": "The card's expiry year"
+                  "orange_money_redirect": {
+                    "$ref": "#/components/schemas/OrangeMoneyRedirection"
+>>>>>>> feat/paydunya/build-paydunya-connector
                   }
                 }
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "google_pay_decrypted_data"
-            ],
-            "properties": {
-              "google_pay_decrypted_data": {
-                "type": "object",
-                "required": [
-                  "application_primary_account_number",
-                  "expiry_month",
-                  "expiry_year"
-                ],
-                "properties": {
-                  "application_primary_account_number": {
-                    "type": "string",
-                    "description": "The application primary account number (PAN) associated with the card",
-                    "example": "4242424242424242"
-                  },
-                  "expiry_month": {
-                    "type": "string",
-                    "description": "The card's expiry month"
-                  },
-                  "expiry_year": {
-                    "type": "string",
-                    "description": "The card's expiry year"
-                  }
-                }
-              }
-            }
-          }
-        ]
-      },
-      "WalletResponse": {
-        "allOf": [
-          {
-            "allOf": [
+              },
               {
-                "$ref": "#/components/schemas/WalletResponseData"
+                "type": "object",
+                "title": "PaypalRedirect",
+                "required": [
+                  "paypal_redirect"
+                ],
+                "properties": {
+                  "paypal_redirect": {
+                    "$ref": "#/components/schemas/PaypalRedirection"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "PaypalSdk",
+                "required": [
+                  "paypal_sdk"
+                ],
+                "properties": {
+                  "paypal_sdk": {
+                    "$ref": "#/components/schemas/PayPalWalletData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "Paysera",
+                "required": [
+                  "paysera"
+                ],
+                "properties": {
+                  "paysera": {
+                    "$ref": "#/components/schemas/PayseraData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "Paze",
+                "required": [
+                  "paze"
+                ],
+                "properties": {
+                  "paze": {
+                    "$ref": "#/components/schemas/PazeWalletData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "RevolutPay",
+                "required": [
+                  "revolut_pay"
+                ],
+                "properties": {
+                  "revolut_pay": {
+                    "$ref": "#/components/schemas/RevolutPayData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "SamsungPay",
+                "required": [
+                  "samsung_pay"
+                ],
+                "properties": {
+                  "samsung_pay": {
+                    "$ref": "#/components/schemas/SamsungPayWalletData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "ScanToPayRedirect",
+                "required": [
+                  "scan_to_pay_redirect"
+                ],
+                "properties": {
+                  "scan_to_pay_redirect": {
+                    "type": "object",
+                    "description": "The wallet data for Scan to Pay redirect"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "Skrill",
+                "required": [
+                  "skrill"
+                ],
+                "properties": {
+                  "skrill": {
+                    "$ref": "#/components/schemas/SkrillData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "SwishQr",
+                "required": [
+                  "swish_qr"
+                ],
+                "properties": {
+                  "swish_qr": {
+                    "$ref": "#/components/schemas/SwishQrData"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "TouchNGoRedirect",
+                "required": [
+                  "touch_n_go_redirect"
+                ],
+                "properties": {
+                  "touch_n_go_redirect": {
+                    "$ref": "#/components/schemas/TouchNGoRedirection"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "TwintRedirect",
+                "required": [
+                  "twint_redirect"
+                ],
+                "properties": {
+                  "twint_redirect": {
+                    "type": "object",
+                    "description": "Wallet data for Twint Redirection"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "VippsRedirect",
+                "required": [
+                  "vipps_redirect"
+                ],
+                "properties": {
+                  "vipps_redirect": {
+                    "type": "object",
+                    "description": "Wallet data for Vipps Redirection"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "WeChatPayQr",
+                "required": [
+                  "we_chat_pay_qr"
+                ],
+                "properties": {
+                  "we_chat_pay_qr": {
+                    "$ref": "#/components/schemas/WeChatPayQr"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "title": "WeChatPayRedirect",
+                "required": [
+                  "we_chat_pay_redirect"
+                ],
+                "properties": {
+                  "we_chat_pay_redirect": {
+                    "$ref": "#/components/schemas/WeChatPayRedirection"
+                  }
+                }
               }
-            ],
-            "nullable": true
-          },
-          {
-            "type": "object"
-          }
-        ]
-      },
-      "WalletResponseData": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "apple_pay"
-            ],
-            "properties": {
-              "apple_pay": {
-                "$ref": "#/components/schemas/WalletAdditionalDataForCard"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "google_pay"
-            ],
-            "properties": {
-              "google_pay": {
-                "$ref": "#/components/schemas/WalletAdditionalDataForCard"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "samsung_pay"
-            ],
-            "properties": {
-              "samsung_pay": {
-                "$ref": "#/components/schemas/WalletAdditionalDataForCard"
-              }
-            }
-          }
-        ],
-        "description": "Hyperswitch supports SDK integration with Apple Pay and Google Pay wallets. For other wallets, we integrate with their respective connectors, redirecting the customer to the connector for wallet payments. As a result, we don’t receive any payment method data in the confirm call for payments made through other wallets."
-      },
-      "WeChatPay": {
-        "type": "object"
-      },
-      "WeChatPayQr": {
-        "type": "object"
-      },
-      "WeChatPayRedirection": {
-        "type": "object"
-      },
-      "WebhookConfigType": {
-        "oneOf": [
-          {
-            "type": "string",
-            "description": "Standard webhook configuration supporting all events hyperswitch provides",
-            "enum": [
-              "AllEvents"
             ]
           },
-          {
-            "type": "object",
-            "required": [
-              "CustomEvents"
-            ],
-            "properties": {
-              "CustomEvents": {
+          "WalletDetail": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "apple_pay_decrypted_data"
+                ],
+                "properties": {
+                  "apple_pay_decrypted_data": {
+                    "type": "object",
+                    "required": [
+                      "application_primary_account_number",
+                      "expiry_month",
+                      "expiry_year"
+                    ],
+                    "properties": {
+                      "application_primary_account_number": {
+                        "type": "string",
+                        "description": "The application primary account number associated with the card",
+                        "example": "4242424242424242"
+                      },
+                      "expiry_month": {
+                        "type": "string",
+                        "description": "The card's expiry month"
+                      },
+                      "expiry_year": {
+                        "type": "string",
+                        "description": "The card's expiry year"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "google_pay_decrypted_data"
+                ],
+                "properties": {
+                  "google_pay_decrypted_data": {
+                    "type": "object",
+                    "required": [
+                      "application_primary_account_number",
+                      "expiry_month",
+                      "expiry_year"
+                    ],
+                    "properties": {
+                      "application_primary_account_number": {
+                        "type": "string",
+                        "description": "The application primary account number (PAN) associated with the card",
+                        "example": "4242424242424242"
+                      },
+                      "expiry_month": {
+                        "type": "string",
+                        "description": "The card's expiry month"
+                      },
+                      "expiry_year": {
+                        "type": "string",
+                        "description": "The card's expiry year"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "WalletResponse": {
+            "allOf": [
+              {
                 "allOf": [
                   {
-                    "$ref": "#/components/schemas/EventType"
+                    "$ref": "#/components/schemas/WalletResponseData"
+                  }
+                ],
+                "nullable": true
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "WalletResponseData": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "apple_pay"
+                ],
+                "properties": {
+                  "apple_pay": {
+                    "$ref": "#/components/schemas/WalletAdditionalDataForCard"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "google_pay"
+                ],
+                "properties": {
+                  "google_pay": {
+                    "$ref": "#/components/schemas/WalletAdditionalDataForCard"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "samsung_pay"
+                ],
+                "properties": {
+                  "samsung_pay": {
+                    "$ref": "#/components/schemas/WalletAdditionalDataForCard"
+                  }
+                }
+              }
+            ],
+            "description": "Hyperswitch supports SDK integration with Apple Pay and Google Pay wallets. For other wallets, we integrate with their respective connectors, redirecting the customer to the connector for wallet payments. As a result, we don’t receive any payment method data in the confirm call for payments made through other wallets."
+          },
+          "WeChatPay": {
+            "type": "object"
+          },
+          "WeChatPayQr": {
+            "type": "object"
+          },
+          "WeChatPayRedirection": {
+            "type": "object"
+          },
+          "WizallRedirection": {
+            "type": "object"
+          },
+          "ExpressoRedirection": {
+            "type": "object"
+          },
+          "FreeMoneyRedirection": {
+            "type": "object"
+          },
+          "WaveRedirection": {
+            "type": "object"
+          },
+          "MoovMoneyRedirection": {
+            "type": "object"
+          },
+          "WebhookConfigType": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Standard webhook configuration supporting all events hyperswitch provides",
+                "enum": [
+                  "AllEvents"
+                ]
+              },
+              {
+                "type": "object",
+                "required": [
+                  "CustomEvents"
+                ],
+                "properties": {
+                  "CustomEvents": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/EventType"
+                      }
+                    ],
+                    "nullable": true
+                  }
+                }
+              }
+            ],
+            "description": "Enum to represent the type of webhook configuration"
+          },
+          "WebhookDeliveryAttempt": {
+            "type": "string",
+            "enum": [
+              "initial_attempt",
+              "automatic_retry",
+              "manual_retry"
+            ]
+          },
+          "WebhookDetails": {
+            "type": "object",
+            "required": [
+              "payment_statuses_enabled",
+              "refund_statuses_enabled"
+            ],
+            "properties": {
+              "webhook_version": {
+                "type": "string",
+                "description": "The version for Webhook",
+                "example": "1.0.2",
+                "nullable": true,
+                "maxLength": 255
+              },
+              "webhook_username": {
+                "type": "string",
+                "description": "The user name for Webhook login",
+                "example": "ekart_retail",
+                "nullable": true,
+                "maxLength": 255
+              },
+              "webhook_password": {
+                "type": "string",
+                "description": "The password for Webhook login",
+                "example": "ekart@123",
+                "nullable": true,
+                "maxLength": 255
+              },
+              "webhook_url": {
+                "type": "string",
+                "description": "The url for the webhook endpoint",
+                "example": "www.ekart.com/webhooks",
+                "nullable": true
+              },
+              "payment_created_enabled": {
+                "type": "boolean",
+                "description": "If this property is true, a webhook message is posted whenever a new payment is created",
+                "example": true,
+                "nullable": true
+              },
+              "payment_succeeded_enabled": {
+                "type": "boolean",
+                "description": "If this property is true, a webhook message is posted whenever a payment is successful",
+                "example": true,
+                "nullable": true
+              },
+              "payment_failed_enabled": {
+                "type": "boolean",
+                "description": "If this property is true, a webhook message is posted whenever a payment fails",
+                "example": true,
+                "nullable": true
+              },
+              "payment_statuses_enabled": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/IntentStatus"
+                },
+                "description": "List of payment statuses that triggers a webhook for payment intents",
+                "example": [
+                  "succeeded",
+                  "failed",
+                  "partially_captured",
+                  "requires_merchant_action"
+                ]
+              },
+              "refund_statuses_enabled": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/IntentStatus"
+                },
+                "description": "List of refund statuses that triggers a webhook for refunds",
+                "example": [
+                  "success",
+                  "failure"
+                ]
+              },
+              "payout_statuses_enabled": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PayoutStatus"
+                },
+                "description": "List of payout statuses that triggers a webhook for payouts",
+                "example": [
+                  "success",
+                  "failed"
+                ],
+                "nullable": true
+              }
+            },
+            "additionalProperties": false
+          },
+          "WebhookRegistrationStatus": {
+            "type": "string",
+            "description": "The status of webhook registration",
+            "enum": [
+              "Success",
+              "Failure"
+            ]
+          },
+          "WebhookSecretErrorDetails": {
+            "type": "object",
+            "description": "Connector-reported error code and message from the webhook secret generation step.",
+            "properties": {
+              "code": {
+                "type": "string",
+                "nullable": true
+              },
+              "message": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "additionalProperties": false
+          },
+          "WebhookSecretGenerationStatus": {
+            "type": "string",
+            "description": "The status of HMAC key generation for a connector webhook",
+            "enum": [
+              "Success",
+              "Failure"
+            ]
+          },
+          "WebhookSetupCapabilities": {
+            "type": "object",
+            "description": "Connector details for webhook configuration via hyperswitch API",
+            "required": [
+              "is_webhook_auto_configuration_supported"
+            ],
+            "properties": {
+              "is_webhook_auto_configuration_supported": {
+                "type": "boolean",
+                "description": "Indicates if the connector supports webhooks configuration via API"
+              },
+              "requires_webhook_secret": {
+                "type": "boolean",
+                "description": "Indicates whether a webhook secret must be collected from the merchant for verification",
+                "nullable": true
+              },
+              "config_type": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/WebhookConfigType"
                   }
                 ],
                 "nullable": true
               }
             }
-          }
-        ],
-        "description": "Enum to represent the type of webhook configuration"
-      },
-      "WebhookDeliveryAttempt": {
-        "type": "string",
-        "enum": [
-          "initial_attempt",
-          "automatic_retry",
-          "manual_retry"
-        ]
-      },
-      "WebhookDetails": {
-        "type": "object",
-        "required": [
-          "payment_statuses_enabled",
-          "refund_statuses_enabled"
-        ],
-        "properties": {
-          "webhook_version": {
-            "type": "string",
-            "description": "The version for Webhook",
-            "example": "1.0.2",
-            "nullable": true,
-            "maxLength": 255
           },
-          "webhook_username": {
-            "type": "string",
-            "description": "The user name for Webhook login",
-            "example": "ekart_retail",
-            "nullable": true,
-            "maxLength": 255
-          },
-          "webhook_password": {
-            "type": "string",
-            "description": "The password for Webhook login",
-            "example": "ekart@123",
-            "nullable": true,
-            "maxLength": 255
-          },
-          "webhook_url": {
-            "type": "string",
-            "description": "The url for the webhook endpoint",
-            "example": "www.ekart.com/webhooks",
-            "nullable": true
-          },
-          "payment_created_enabled": {
-            "type": "boolean",
-            "description": "If this property is true, a webhook message is posted whenever a new payment is created",
-            "example": true,
-            "nullable": true
-          },
-          "payment_succeeded_enabled": {
-            "type": "boolean",
-            "description": "If this property is true, a webhook message is posted whenever a payment is successful",
-            "example": true,
-            "nullable": true
-          },
-          "payment_failed_enabled": {
-            "type": "boolean",
-            "description": "If this property is true, a webhook message is posted whenever a payment fails",
-            "example": true,
-            "nullable": true
-          },
-          "payment_statuses_enabled": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IntentStatus"
-            },
-            "description": "List of payment statuses that triggers a webhook for payment intents",
-            "example": [
-              "succeeded",
-              "failed",
-              "partially_captured",
-              "requires_merchant_action"
-            ]
-          },
-          "refund_statuses_enabled": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IntentStatus"
-            },
-            "description": "List of refund statuses that triggers a webhook for refunds",
-            "example": [
-              "success",
-              "failure"
-            ]
-          },
-          "payout_statuses_enabled": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PayoutStatus"
-            },
-            "description": "List of payout statuses that triggers a webhook for payouts",
-            "example": [
-              "success",
-              "failed"
-            ],
-            "nullable": true
-          }
-        },
-        "additionalProperties": false
-      },
-      "WebhookRegistrationStatus": {
-        "type": "string",
-        "description": "The status of webhook registration",
-        "enum": [
-          "Success",
-          "Failure"
-        ]
-      },
-      "WebhookSecretErrorDetails": {
-        "type": "object",
-        "description": "Connector-reported error code and message from the webhook secret generation step.",
-        "properties": {
-          "code": {
-            "type": "string",
-            "nullable": true
-          },
-          "message": {
-            "type": "string",
-            "nullable": true
-          }
-        },
-        "additionalProperties": false
-      },
-      "WebhookSecretGenerationStatus": {
-        "type": "string",
-        "description": "The status of HMAC key generation for a connector webhook",
-        "enum": [
-          "Success",
-          "Failure"
-        ]
-      },
-      "WebhookSetupCapabilities": {
-        "type": "object",
-        "description": "Connector details for webhook configuration via hyperswitch API",
-        "required": [
-          "is_webhook_auto_configuration_supported"
-        ],
-        "properties": {
-          "is_webhook_auto_configuration_supported": {
-            "type": "boolean",
-            "description": "Indicates if the connector supports webhooks configuration via API"
-          },
-          "requires_webhook_secret": {
-            "type": "boolean",
-            "description": "Indicates whether a webhook secret must be collected from the merchant for verification",
-            "nullable": true
-          },
-          "config_type": {
-            "allOf": [
+          "XenditChargeResponseData": {
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/WebhookConfigType"
+                "type": "object",
+                "required": [
+                  "multiple_splits"
+                ],
+                "properties": {
+                  "multiple_splits": {
+                    "$ref": "#/components/schemas/XenditMultipleSplitResponse"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "single_split"
+                ],
+                "properties": {
+                  "single_split": {
+                    "$ref": "#/components/schemas/XenditSplitSubMerchantData"
+                  }
+                }
               }
             ],
-            "nullable": true
+            "description": "Charge Information"
+          },
+          "XenditMultipleSplitRequest": {
+            "type": "object",
+            "description": "Fee information to be charged on the payment being collected via xendit",
+            "required": [
+              "name",
+              "description",
+              "routes"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name to identify split rule. Not required to be unique. Typically based on transaction and/or sub-merchant types."
+              },
+              "description": {
+                "type": "string",
+                "description": "Description to identify fee rule"
+              },
+              "for_user_id": {
+                "type": "string",
+                "description": "The sub-account user-id that you want to make this transaction for.",
+                "nullable": true
+              },
+              "routes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/XenditSplitRoute"
+                },
+                "description": "Array of objects that define how the platform wants to route the fees and to which accounts."
+              }
+            },
+            "additionalProperties": false
+          },
+          "XenditMultipleSplitResponse": {
+            "type": "object",
+            "description": "Fee information charged on the payment being collected via xendit",
+            "required": [
+              "split_rule_id",
+              "name",
+              "description",
+              "routes"
+            ],
+            "properties": {
+              "split_rule_id": {
+                "type": "string",
+                "description": "Identifier for split rule created for the payment"
+              },
+              "for_user_id": {
+                "type": "string",
+                "description": "The sub-account user-id that you want to make this transaction for.",
+                "nullable": true
+              },
+              "name": {
+                "type": "string",
+                "description": "Name to identify split rule. Not required to be unique. Typically based on transaction and/or sub-merchant types."
+              },
+              "description": {
+                "type": "string",
+                "description": "Description to identify fee rule"
+              },
+              "routes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/XenditSplitRoute"
+                },
+                "description": "Array of objects that define how the platform wants to route the fees and to which accounts."
+              }
+            },
+            "additionalProperties": false
+          },
+          "XenditSplitRequest": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "multiple_splits"
+                ],
+                "properties": {
+                  "multiple_splits": {
+                    "$ref": "#/components/schemas/XenditMultipleSplitRequest"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "single_split"
+                ],
+                "properties": {
+                  "single_split": {
+                    "$ref": "#/components/schemas/XenditSplitSubMerchantData"
+                  }
+                }
+              }
+            ],
+            "description": "Xendit Charge Request"
+          },
+          "XenditSplitRoute": {
+            "type": "object",
+            "description": "Fee information to be charged on the payment being collected via xendit",
+            "required": [
+              "currency",
+              "destination_account_id",
+              "reference_id"
+            ],
+            "properties": {
+              "flat_amount": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/MinorUnit"
+                  }
+                ],
+                "nullable": true
+              },
+              "percent_amount": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Amount of payments to be split, using a percent rate as unit",
+                "nullable": true
+              },
+              "currency": {
+                "$ref": "#/components/schemas/Currency"
+              },
+              "destination_account_id": {
+                "type": "string",
+                "description": "ID of the destination account where the amount will be routed to"
+              },
+              "reference_id": {
+                "type": "string",
+                "description": "Reference ID which acts as an identifier of the route itself"
+              }
+            },
+            "additionalProperties": false
+          },
+          "XenditSplitSubMerchantData": {
+            "type": "object",
+            "description": "Fee information to be charged on the payment being collected for sub-merchant via xendit",
+            "required": [
+              "for_user_id"
+            ],
+            "properties": {
+              "for_user_id": {
+                "type": "string",
+                "description": "The sub-account user-id that you want to make this transaction for."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "securitySchemes": {
+          "admin_api_key": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "api-key",
+            "description": "Admin API keys allow you to perform some privileged actions such as creating a merchant account and Merchant Connector account."
+          },
+          "api_key": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "api-key",
+            "description": "Use the API key created under your merchant account from the HyperSwitch dashboard. API key is used to authenticate API requests from your merchant server only. Don't expose this key on a website or embed it in a mobile application."
+          },
+          "ephemeral_key": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "api-key",
+            "description": "Ephemeral keys provide temporary access to singular data, such as access to a single customer object for a short period of time."
+          },
+          "jwt_key": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
+          },
+          "publishable_key": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "api-key",
+            "description": "Publishable keys are a type of keys that can be public and have limited scope of usage."
           }
         }
       },
-      "XenditChargeResponseData": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "multiple_splits"
-            ],
-            "properties": {
-              "multiple_splits": {
-                "$ref": "#/components/schemas/XenditMultipleSplitResponse"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "single_split"
-            ],
-            "properties": {
-              "single_split": {
-                "$ref": "#/components/schemas/XenditSplitSubMerchantData"
-              }
-            }
-          }
-        ],
-        "description": "Charge Information"
-      },
-      "XenditMultipleSplitRequest": {
-        "type": "object",
-        "description": "Fee information to be charged on the payment being collected via xendit",
-        "required": [
-          "name",
-          "description",
-          "routes"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Name to identify split rule. Not required to be unique. Typically based on transaction and/or sub-merchant types."
-          },
-          "description": {
-            "type": "string",
-            "description": "Description to identify fee rule"
-          },
-          "for_user_id": {
-            "type": "string",
-            "description": "The sub-account user-id that you want to make this transaction for.",
-            "nullable": true
-          },
-          "routes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/XenditSplitRoute"
-            },
-            "description": "Array of objects that define how the platform wants to route the fees and to which accounts."
-          }
+      "tags": [
+        {
+          "name": "Merchant Account",
+          "description": "Create and manage merchant accounts"
         },
-        "additionalProperties": false
-      },
-      "XenditMultipleSplitResponse": {
-        "type": "object",
-        "description": "Fee information charged on the payment being collected via xendit",
-        "required": [
-          "split_rule_id",
-          "name",
-          "description",
-          "routes"
-        ],
-        "properties": {
-          "split_rule_id": {
-            "type": "string",
-            "description": "Identifier for split rule created for the payment"
-          },
-          "for_user_id": {
-            "type": "string",
-            "description": "The sub-account user-id that you want to make this transaction for.",
-            "nullable": true
-          },
-          "name": {
-            "type": "string",
-            "description": "Name to identify split rule. Not required to be unique. Typically based on transaction and/or sub-merchant types."
-          },
-          "description": {
-            "type": "string",
-            "description": "Description to identify fee rule"
-          },
-          "routes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/XenditSplitRoute"
-            },
-            "description": "Array of objects that define how the platform wants to route the fees and to which accounts."
-          }
+        {
+          "name": "Profile",
+          "description": "Create and manage profiles"
         },
-        "additionalProperties": false
-      },
-      "XenditSplitRequest": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "multiple_splits"
-            ],
-            "properties": {
-              "multiple_splits": {
-                "$ref": "#/components/schemas/XenditMultipleSplitRequest"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "single_split"
-            ],
-            "properties": {
-              "single_split": {
-                "$ref": "#/components/schemas/XenditSplitSubMerchantData"
-              }
-            }
-          }
-        ],
-        "description": "Xendit Charge Request"
-      },
-      "XenditSplitRoute": {
-        "type": "object",
-        "description": "Fee information to be charged on the payment being collected via xendit",
-        "required": [
-          "currency",
-          "destination_account_id",
-          "reference_id"
-        ],
-        "properties": {
-          "flat_amount": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/MinorUnit"
-              }
-            ],
-            "nullable": true
-          },
-          "percent_amount": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Amount of payments to be split, using a percent rate as unit",
-            "nullable": true
-          },
-          "currency": {
-            "$ref": "#/components/schemas/Currency"
-          },
-          "destination_account_id": {
-            "type": "string",
-            "description": "ID of the destination account where the amount will be routed to"
-          },
-          "reference_id": {
-            "type": "string",
-            "description": "Reference ID which acts as an identifier of the route itself"
-          }
+        {
+          "name": "Merchant Connector Account",
+          "description": "Create and manage merchant connector accounts"
         },
-        "additionalProperties": false
-      },
-      "XenditSplitSubMerchantData": {
-        "type": "object",
-        "description": "Fee information to be charged on the payment being collected for sub-merchant via xendit",
-        "required": [
-          "for_user_id"
-        ],
-        "properties": {
-          "for_user_id": {
-            "type": "string",
-            "description": "The sub-account user-id that you want to make this transaction for."
-          }
+        {
+          "name": "Payments",
+          "description": "Create and manage one-time payments, recurring payments and mandates"
         },
-        "additionalProperties": false
-      }
-    },
-    "securitySchemes": {
-      "admin_api_key": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "api-key",
-        "description": "Admin API keys allow you to perform some privileged actions such as creating a merchant account and Merchant Connector account."
-      },
-      "api_key": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "api-key",
-        "description": "Use the API key created under your merchant account from the HyperSwitch dashboard. API key is used to authenticate API requests from your merchant server only. Don't expose this key on a website or embed it in a mobile application."
-      },
-      "ephemeral_key": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "api-key",
-        "description": "Ephemeral keys provide temporary access to singular data, such as access to a single customer object for a short period of time."
-      },
-      "jwt_key": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
-      },
-      "publishable_key": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "api-key",
-        "description": "Publishable keys are a type of keys that can be public and have limited scope of usage."
-      }
+        {
+          "name": "Refunds",
+          "description": "Create and manage refunds for successful payments"
+        },
+        {
+          "name": "Mandates",
+          "description": "Manage mandates"
+        },
+        {
+          "name": "Customers",
+          "description": "Create and manage customers"
+        },
+        {
+          "name": "Payment Methods",
+          "description": "Create and manage payment methods of customers"
+        },
+        {
+          "name": "Disputes",
+          "description": "Manage disputes"
+        },
+        {
+          "name": "API Key",
+          "description": "Create and manage API Keys"
+        },
+        {
+          "name": "Payouts",
+          "description": "Create and manage payouts"
+        },
+        {
+          "name": "payment link",
+          "description": "Create payment link"
+        },
+        {
+          "name": "Routing",
+          "description": "Create and manage routing configurations"
+        },
+        {
+          "name": "Event",
+          "description": "Manage events"
+        },
+        {
+          "name": "Authentication",
+          "description": "Create and manage authentication"
+        },
+        {
+          "name": "Subscriptions",
+          "description": "Subscription management and billing endpoints"
+        },
+        {
+          "name": "Card Issuer",
+          "description": "Create and manage card issuers"
+        }
+      ]
     }
-  },
-  "tags": [
-    {
-      "name": "Merchant Account",
-      "description": "Create and manage merchant accounts"
-    },
-    {
-      "name": "Profile",
-      "description": "Create and manage profiles"
-    },
-    {
-      "name": "Merchant Connector Account",
-      "description": "Create and manage merchant connector accounts"
-    },
-    {
-      "name": "Payments",
-      "description": "Create and manage one-time payments, recurring payments and mandates"
-    },
-    {
-      "name": "Refunds",
-      "description": "Create and manage refunds for successful payments"
-    },
-    {
-      "name": "Mandates",
-      "description": "Manage mandates"
-    },
-    {
-      "name": "Customers",
-      "description": "Create and manage customers"
-    },
-    {
-      "name": "Payment Methods",
-      "description": "Create and manage payment methods of customers"
-    },
-    {
-      "name": "Disputes",
-      "description": "Manage disputes"
-    },
-    {
-      "name": "API Key",
-      "description": "Create and manage API Keys"
-    },
-    {
-      "name": "Payouts",
-      "description": "Create and manage payouts"
-    },
-    {
-      "name": "payment link",
-      "description": "Create payment link"
-    },
-    {
-      "name": "Routing",
-      "description": "Create and manage routing configurations"
-    },
-    {
-      "name": "Event",
-      "description": "Manage events"
-    },
-    {
-      "name": "Authentication",
-      "description": "Create and manage authentication"
-    },
-    {
-      "name": "Subscriptions",
-      "description": "Subscription management and billing endpoints"
-    },
-    {
-      "name": "Card Issuer",
-      "description": "Create and manage card issuers"
-    }
-  ]
-}
