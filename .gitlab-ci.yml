@@ -163,10 +163,14 @@ build-images:
 .release-ecr:
   extends: .dind
   stage: release
+  # Run on amazonlinux, not the .dind default docker:24 (Alpine): Alpine's
+  # aws-cli is broken (pyexpat symbol error). Keep the docker:24-dind service
+  # from .dind and install the docker CLI here to talk to it.
+  image: amazonlinux:2023
   needs:
     - job: build-images
   before_script:
-    - apk add --no-cache aws-cli bash jq
+    - dnf install -y docker awscli jq
     # Log in to the GitLab registry to pull the built images.
     - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - *assume-role-and-ecr-login
