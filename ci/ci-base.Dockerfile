@@ -29,12 +29,12 @@ RUN rustup component add clippy \
     && rustup toolchain install nightly --component rustfmt --profile minimal \
     && cargo install just --locked
 
-# Pre-warm the cargo registry + compiled dependencies for both feature sets,
-# using the repo's own recipes so the features match CI exactly. The lint result
-# is intentionally ignored (|| true) — the goal is a populated target dir and
-# cargo cache, not a gate. CARGO_TARGET_DIR / CARGO_HOME are baked into the image
-# so the checks job reuses these artifacts.
+# Pre-warm the cargo registry + compiled dependencies for the shipped feature
+# set (release + v1 + redis-rs), matching the static-analysis clippy invocation
+# so its artifacts are reused. The lint result is intentionally ignored
+# (|| true) — the goal is a populated target dir and cargo cache, not a gate.
+# CARGO_TARGET_DIR / CARGO_HOME are baked into the image so the checks job reuses
+# these artifacts.
 WORKDIR /warm
 COPY . .
-RUN just clippy "redis-rs" -- -D warnings || true
-RUN just clippy_v2 "redis-rs" || true
+RUN cargo clippy --no-default-features --features release --features v1 --features redis-rs -- -D warnings || true

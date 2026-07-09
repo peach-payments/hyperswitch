@@ -90,8 +90,9 @@ static-analysis:
     - if: $CI_COMMIT_BRANCH == "main"
   script:
     - echo "=== rustfmt ===" && cargo +nightly fmt --all --check
-    # Reuse the repo's own recipes so the feature set matches local/dev clippy.
-    - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
+    # Lint the actual shipped config (release + v1 + redis-rs), matching the
+    # Docker build — not the full union of every workspace feature.
+    - echo "=== clippy (release, v1) ===" && cargo clippy --no-default-features --features release --features v1 --features redis-rs -- -D warnings
 
 # Migration consistency check — DISABLED until a Postgres service is available
 # in CI. These migrations are Postgres-specific (JSONB, CREATE TYPE, SERIAL,
