@@ -16,15 +16,18 @@ ENV CARGO_INCREMENTAL=0 \
     CARGO_TARGET_DIR=/warm/target
 
 # HTTPS apt sources — the build network blocks outbound HTTP (port 80).
+# postgresql-client (psql) is needed by the migration-check job's recipes.
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl \
+    && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# clippy + a nightly toolchain with rustfmt (the repo formats with nightly), + just.
+# clippy + a nightly toolchain with rustfmt (the repo formats with nightly), plus
+# just and the diesel CLI (for the migration-check job).
 RUN rustup component add clippy \
     && rustup toolchain install nightly --component rustfmt --profile minimal \
-    && cargo install just --locked
+    && cargo install just --locked \
+    && cargo install diesel_cli --no-default-features --features postgres --locked
 
 # Pre-warm the cargo registry + compiled dependencies for both feature sets,
 # using the repo's own recipes so the features match CI exactly. The lint result

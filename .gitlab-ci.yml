@@ -93,6 +93,45 @@ static-analysis:
     # Reuse the repo's own recipes so the feature set matches local/dev clippy.
     - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
 
+# Verify migrations apply cleanly and stay consistent with the checked-in
+# schema.rs (v1 and v2), against a throwaway Postgres — mirrors the old GitHub
+# migration-consistency check. Uses the ci-base image (diesel CLI + psql + just).
+migration-check:
+  stage: validate
+  image: $CI_REGISTRY_IMAGE/ci-base:latest
+  tags:
+    - cde-qa
+  services:
+    - name: postgres:alpine
+      alias: postgres
+  variables:
+    POSTGRES_DB: hyperswitch_db
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    PGHOST: postgres
+    PGPORT: "5432"
+    PGUSER: postgres
+    PGPASSWORD: postgres
+    DATABASE_URL: "postgres://postgres:postgres@postgres:5432/hyperswitch_db"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &migration-changes
+        - migrations/**/*
+        - v2_migrations/**/*
+        - crates/diesel_models/src/schema.rs
+        - crates/diesel_models/src/schema_v2.rs
+        - diesel.toml
+        - diesel_v2.toml
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: *migration-changes
+  script:
+    - echo "=== v1 migration run ===" && just resurrect hyperswitch_db && just migrate run --locked-schema
+    - echo "=== v1 migration redo ===" && just migrate redo --locked-schema --all
+    - echo "=== v2 migration run ===" && just resurrect hyperswitch_db && just migrate_v2 run --locked-schema
+    - echo "=== v2 migration redo ===" && just migrate_v2 redo --locked-schema --all
+
 # GitLab-managed secret detection (from the included template), pinned to the
 # validate stage and run on merge requests and main as its own separate job.
 secret_detection:
