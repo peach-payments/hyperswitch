@@ -2535,6 +2535,24 @@ pub enum PaymentMethodType {
     IndonesianBankTransfer,
     OpenBanking,
     NetworkToken,
+    BlinkByEmtel,
+    CapitecPay,
+    Float,
+    HappyPay,
+    Maucas,
+    McbJuice,
+    Mobicred,
+    MoneyBadger,
+    Mpesa,
+    NedbankDirectEft,
+    OneForYou,
+    Payflex,
+    PayShap,
+    PeachEft,
+    Rcs,
+    ScanToPay,
+    ZeroPay,
+    APlus,
 }
 
 /// Indicates whether a wallet token is decrypted .
@@ -2687,6 +2705,24 @@ impl PaymentMethodType {
             Self::IndonesianBankTransfer => "Indonesian Bank Transfer",
             Self::OpenBanking => "Open Banking",
             Self::NetworkToken => "Network Token",
+            Self::BlinkByEmtel => "blink by Emtel",
+            Self::CapitecPay => "Capitec Pay",
+            Self::Float => "Float",
+            Self::HappyPay => "HappyPay",
+            Self::Maucas => "MauCAS",
+            Self::McbJuice => "MCB Juice",
+            Self::Mobicred => "Mobicred",
+            Self::MoneyBadger => "MoneyBadger",
+            Self::Mpesa => "M-PESA",
+            Self::NedbankDirectEft => "Nedbank Direct EFT",
+            Self::OneForYou => "1ForYou",
+            Self::Payflex => "Payflex",
+            Self::PayShap => "PayShap",
+            Self::PeachEft => "Peach EFT",
+            Self::Rcs => "RCS",
+            Self::ScanToPay => "Scan to Pay",
+            Self::ZeroPay => "ZeroPay",
+            Self::APlus => "A+ Store Cards",
         };
         display_name.to_string()
     }
@@ -9949,6 +9985,34 @@ pub enum BankNames {
     Yoursafe,
     N26,
     NationaleNederlanden,
+    FirstNationalBank,
+    DiscoveryBank,
+    Nedbank,
+    TymeBank,
+}
+
+/// The type of identifier used by the shopper's Capitec Pay account
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    PartialEq,
+    serde::Deserialize,
+    serde::Serialize,
+    SmithyModel,
+    strum::Display,
+    strum::EnumString,
+    ToSchema,
+)]
+#[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+#[smithy(namespace = "com.hyperswitch.smithy.types")]
+pub enum CapitecPayAccountType {
+    IdNumber,
+    Cellphone,
+    AccountNumber,
 }
 #[derive(
     Clone,

@@ -670,7 +670,25 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::Breadpay
                         | common_enums::PaymentMethodType::Payjustnow
                         | common_enums::PaymentMethodType::OpenBanking
-                        | common_enums::PaymentMethodType::NetworkToken,
+                        | common_enums::PaymentMethodType::NetworkToken
+                        | common_enums::PaymentMethodType::CapitecPay
+                        | common_enums::PaymentMethodType::PayShap
+                        | common_enums::PaymentMethodType::NedbankDirectEft
+                        | common_enums::PaymentMethodType::PeachEft
+                        | common_enums::PaymentMethodType::Payflex
+                        | common_enums::PaymentMethodType::ZeroPay
+                        | common_enums::PaymentMethodType::Float
+                        | common_enums::PaymentMethodType::HappyPay
+                        | common_enums::PaymentMethodType::Mobicred
+                        | common_enums::PaymentMethodType::Rcs
+                        | common_enums::PaymentMethodType::APlus
+                        | common_enums::PaymentMethodType::Mpesa
+                        | common_enums::PaymentMethodType::BlinkByEmtel
+                        | common_enums::PaymentMethodType::McbJuice
+                        | common_enums::PaymentMethodType::ScanToPay
+                        | common_enums::PaymentMethodType::Maucas
+                        | common_enums::PaymentMethodType::OneForYou
+                        | common_enums::PaymentMethodType::MoneyBadger,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",
@@ -807,7 +825,25 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::Breadpay
                         | common_enums::PaymentMethodType::Payjustnow
                         | common_enums::PaymentMethodType::OpenBanking
-                        | common_enums::PaymentMethodType::NetworkToken,
+                        | common_enums::PaymentMethodType::NetworkToken
+                        | common_enums::PaymentMethodType::CapitecPay
+                        | common_enums::PaymentMethodType::PayShap
+                        | common_enums::PaymentMethodType::NedbankDirectEft
+                        | common_enums::PaymentMethodType::PeachEft
+                        | common_enums::PaymentMethodType::Payflex
+                        | common_enums::PaymentMethodType::ZeroPay
+                        | common_enums::PaymentMethodType::Float
+                        | common_enums::PaymentMethodType::HappyPay
+                        | common_enums::PaymentMethodType::Mobicred
+                        | common_enums::PaymentMethodType::Rcs
+                        | common_enums::PaymentMethodType::APlus
+                        | common_enums::PaymentMethodType::Mpesa
+                        | common_enums::PaymentMethodType::BlinkByEmtel
+                        | common_enums::PaymentMethodType::McbJuice
+                        | common_enums::PaymentMethodType::ScanToPay
+                        | common_enums::PaymentMethodType::Maucas
+                        | common_enums::PaymentMethodType::OneForYou
+                        | common_enums::PaymentMethodType::MoneyBadger,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",
@@ -950,7 +986,25 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::Breadpay
                         | common_enums::PaymentMethodType::Payjustnow
                         | common_enums::PaymentMethodType::OpenBanking
-                        | common_enums::PaymentMethodType::NetworkToken,
+                        | common_enums::PaymentMethodType::NetworkToken
+                        | common_enums::PaymentMethodType::CapitecPay
+                        | common_enums::PaymentMethodType::PayShap
+                        | common_enums::PaymentMethodType::NedbankDirectEft
+                        | common_enums::PaymentMethodType::PeachEft
+                        | common_enums::PaymentMethodType::Payflex
+                        | common_enums::PaymentMethodType::ZeroPay
+                        | common_enums::PaymentMethodType::Float
+                        | common_enums::PaymentMethodType::HappyPay
+                        | common_enums::PaymentMethodType::Mobicred
+                        | common_enums::PaymentMethodType::Rcs
+                        | common_enums::PaymentMethodType::APlus
+                        | common_enums::PaymentMethodType::Mpesa
+                        | common_enums::PaymentMethodType::BlinkByEmtel
+                        | common_enums::PaymentMethodType::McbJuice
+                        | common_enums::PaymentMethodType::ScanToPay
+                        | common_enums::PaymentMethodType::Maucas
+                        | common_enums::PaymentMethodType::OneForYou
+                        | common_enums::PaymentMethodType::MoneyBadger,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",
@@ -1087,7 +1141,25 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                         | common_enums::PaymentMethodType::Skrill
                         | common_enums::PaymentMethodType::Payjustnow
                         | common_enums::PaymentMethodType::OpenBanking
-                        | common_enums::PaymentMethodType::NetworkToken,
+                        | common_enums::PaymentMethodType::NetworkToken
+                        | common_enums::PaymentMethodType::CapitecPay
+                        | common_enums::PaymentMethodType::PayShap
+                        | common_enums::PaymentMethodType::NedbankDirectEft
+                        | common_enums::PaymentMethodType::PeachEft
+                        | common_enums::PaymentMethodType::Payflex
+                        | common_enums::PaymentMethodType::ZeroPay
+                        | common_enums::PaymentMethodType::Float
+                        | common_enums::PaymentMethodType::HappyPay
+                        | common_enums::PaymentMethodType::Mobicred
+                        | common_enums::PaymentMethodType::Rcs
+                        | common_enums::PaymentMethodType::APlus
+                        | common_enums::PaymentMethodType::Mpesa
+                        | common_enums::PaymentMethodType::BlinkByEmtel
+                        | common_enums::PaymentMethodType::McbJuice
+                        | common_enums::PaymentMethodType::ScanToPay
+                        | common_enums::PaymentMethodType::Maucas
+                        | common_enums::PaymentMethodType::OneForYou
+                        | common_enums::PaymentMethodType::MoneyBadger,
                     ) => Err(error_stack::report!(errors::ConnectorError::NotSupported {
                         message: payment_method_type.to_string(),
                         connector: "klarna",

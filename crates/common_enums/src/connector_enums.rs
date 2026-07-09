@@ -160,6 +160,7 @@ pub enum Connector {
     Payconex,
     Payu,
     Peachpayments,
+    Peachpaymentsapm,
     Payjustnow,
     Payjustnowinstore,
     Phonepe,
@@ -388,6 +389,7 @@ impl Connector {
             | Self::Paystack
             | Self::Payu
             | Self::Peachpayments
+            | Self::Peachpaymentsapm
             | Self::Placetopay
             | Self::Powertranz
             | Self::Prophetpay

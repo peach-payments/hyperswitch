@@ -374,6 +374,10 @@ api_key="EOrder Token"
 api_key="API Key"
 key1="Tenant ID"
 
+[peachpaymentsapm]
+api_key="Payments API User ID"
+key1="Payments API Password"
+
 [tesouro]
 api_key="Client ID"
 key1="Client Secret"

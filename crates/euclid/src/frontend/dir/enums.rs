@@ -59,6 +59,13 @@ pub enum PayLaterType {
     Atome,
     Breadpay,
     Payjustnow,
+    Payflex,
+    ZeroPay,
+    Float,
+    HappyPay,
+    Mobicred,
+    Rcs,
+    APlus,
 }
 
 #[derive(
@@ -104,6 +111,11 @@ pub enum WalletType {
     Mifinity,
     Paze,
     RevolutPay,
+    Mpesa,
+    BlinkByEmtel,
+    McbJuice,
+    ScanToPay,
+    Maucas,
 }
 
 #[derive(
@@ -136,6 +148,7 @@ pub enum VoucherType {
     Seicomart,
     PayEasy,
     Oxxo,
+    OneForYou,
 }
 
 #[derive(
@@ -234,6 +247,10 @@ pub enum BankTransferType {
     InstantBankTransferFinland,
     InstantBankTransferPoland,
     IndonesianBankTransfer,
+    CapitecPay,
+    PayShap,
+    NedbankDirectEft,
+    PeachEft,
 }
 
 #[derive(
@@ -334,6 +351,7 @@ pub enum NetworkTokenType {
 #[strum(serialize_all = "snake_case")]
 pub enum CryptoType {
     CryptoCurrency,
+    MoneyBadger,
 }
 
 #[derive(
