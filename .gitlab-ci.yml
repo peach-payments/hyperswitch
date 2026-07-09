@@ -23,6 +23,7 @@ include:
   - template: Security/Secret-Detection.gitlab-ci.yml
 
 stages:
+  - ci-image
   - validate
   - build
   - release
@@ -35,41 +36,62 @@ variables:
   DOCKER_AUTH_CONFIG: '{ "auths": { "https://index.docker.io/v1/": { "auth": "$DOCKER_AUTH" } }}'
 
 # ---------------------------------------------------------------------------
+# ci-image — build the toolchain image (with pre-warmed deps) used by validate
+# ---------------------------------------------------------------------------
+
+# Rebuild + push $CI_REGISTRY_IMAGE/ci-base when the toolchain Dockerfile or the
+# dependencies change; also available manually. When it doesn't run, the
+# static-analysis job just uses the existing :latest.
+build-ci-image:
+  extends: .dind
+  stage: ci-image
+  tags:
+    - cde-qa
+  # A fresh dependency compile — keep well above the default 1h.
+  timeout: 3h
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &ci-base-changes
+        - ci/ci-base.Dockerfile
+        - Cargo.lock
+        - "**/Cargo.toml"
+        - justfile
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes: *ci-base-changes
+    - when: manual
+      allow_failure: true
+  before_script:
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build -f ci/ci-base.Dockerfile -t "$CI_REGISTRY_IMAGE/ci-base:latest" -t "$CI_REGISTRY_IMAGE/ci-base:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/ci-base:latest"
+    - docker push "$CI_REGISTRY_IMAGE/ci-base:$CI_COMMIT_SHORT_SHA"
+
+# ---------------------------------------------------------------------------
 # validate — static analysis + security gates (run on every merge request and main)
 # ---------------------------------------------------------------------------
 
-# rustfmt + clippy in one job so the image, apt deps, toolchain and cargo
-# registry are set up once. Ordered cheap -> expensive: a formatting failure
-# short-circuits the workspace clippy compile (GitLab runs each line under set
-# -e). Secret scanning runs separately via the managed secret_detection job.
-# static-analysis:
-#   stage: validate
-#   image: public.ecr.aws/docker/library/rust:trixie
-#   rules:
-#     - if: $CI_PIPELINE_SOURCE == "schedule"
-#       when: never
-#     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-#     - if: $CI_COMMIT_BRANCH == "main"
-#   variables:
-#     CARGO_INCREMENTAL: "0"
-#     CARGO_NET_RETRY: "10"
-#     CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-#   cache:
-#     key:
-#       files:
-#         - Cargo.lock
-#     paths:
-#       - .cargo/
-#       - target/
-#   before_script:
-#     - apt-get update && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler jq curl
-#     - rustup component add clippy
-#     - rustup toolchain install nightly --component rustfmt --profile minimal
-#     - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-#   script:
-#     - echo "=== rustfmt ===" && cargo +nightly fmt --all --check
-#     # Reuse the repo's own recipes so the feature set matches local/dev clippy.
-#     - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
+# rustfmt + clippy using the prebuilt ci-base image: the toolchain and the
+# compiled dependencies are already baked in (CARGO_TARGET_DIR / cargo registry),
+# so only the workspace crates are recompiled. Ordered cheap -> expensive so a
+# formatting failure short-circuits the clippy run. Secret scanning runs
+# separately via the managed secret_detection job.
+static-analysis:
+  stage: validate
+  image: $CI_REGISTRY_IMAGE/ci-base:latest
+  tags:
+    - cde-qa
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - echo "=== rustfmt ===" && cargo +nightly fmt --all --check
+    # Reuse the repo's own recipes so the feature set matches local/dev clippy.
+    - echo "=== clippy (v1 + v2) ===" && just clippy "redis-rs" -- -D warnings && just clippy_v2 "redis-rs"
 
 # GitLab-managed secret detection (from the included template), pinned to the
 # validate stage and run on merge requests and main as its own separate job.
