@@ -24,7 +24,7 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
 # clippy + a nightly toolchain with rustfmt (the repo formats with nightly), + just.
 RUN rustup component add clippy \
     && rustup toolchain install nightly --component rustfmt --profile minimal \
-    && curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+    && cargo install just --locked
 
 # Pre-warm the cargo registry + compiled dependencies for both feature sets,
 # using the repo's own recipes so the features match CI exactly. The lint result
