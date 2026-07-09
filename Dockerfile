@@ -1,13 +1,16 @@
-FROM public.ecr.aws/docker/library/rust:trixie as builder
+# Base toolchain image shared by the recipe (planner) and build (builder)
+# stages. cargo-chef lets dependency compilation live in its own cached layer
+# that is only rebuilt when Cargo.toml/Cargo.lock change — combined with a
+# buildx registry cache this skips the multi-hundred-crate dependency build on
+# most pipelines.
+FROM public.ecr.aws/docker/library/rust:trixie AS chef
 
-ARG EXTRA_FEATURES=""
-ARG VERSION_FEATURE_SET="v1"
+# Use HTTPS apt sources — the build network blocks outbound HTTP (port 80).
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler \
+    && cargo install cargo-chef --locked
 
-RUN apt-get update \
-    && apt-get install -y libpq-dev libssl-dev pkg-config protobuf-compiler
-
-# Copying codebase from current dir to /router dir
-# and creating a fresh build
 WORKDIR /router
 
 # Disable incremental compilation.
@@ -30,12 +33,34 @@ ENV RUSTUP_MAX_RETRIES=10
 # Don't emit giant backtraces in the CI logs.
 ENV RUST_BACKTRACE="short"
 
+# Compute the dependency recipe — only changes when Cargo.toml/Cargo.lock do.
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Cook dependencies from the recipe (cached until deps change), then build the
+# workspace. The cook args MUST match the final cargo build so the cached deps
+# are reused.
+FROM chef AS builder
+ARG EXTRA_FEATURES=""
+ARG VERSION_FEATURE_SET="v1"
+COPY --from=planner /router/recipe.json recipe.json
+RUN cargo chef cook \
+    --release \
+    --no-default-features \
+    --features release \
+    --features ${VERSION_FEATURE_SET} \
+    --features redis-rs \
+    ${EXTRA_FEATURES} \
+    --recipe-path recipe.json
+
 COPY . .
 RUN cargo build \
     --release \
     --no-default-features \
     --features release \
     --features ${VERSION_FEATURE_SET} \
+    --features redis-rs \
     ${EXTRA_FEATURES}
 
 
@@ -59,7 +84,13 @@ ARG RUN_ENV=sandbox
 ARG BINARY=router
 ARG SCHEDULER_FLOW=consumer
 
-RUN apt-get update \
+# Use HTTPS apt sources (build network blocks outbound HTTP). Bring a CA bundle
+# from the builder and point apt at it explicitly (Acquire::https::CAInfo) so it
+# can verify TLS before ca-certificates is installed on this bare image.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN printf 'Acquire::https::CAInfo "/etc/ssl/certs/ca-certificates.crt";\n' > /etc/apt/apt.conf.d/99-ca-info \
+    && sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y ca-certificates tzdata libpq-dev curl procps
 
 EXPOSE 8080
