@@ -1,0 +1,13 @@
+# Pin the toolchain so local, CI (static-analysis), and Docker builds all use the
+# same Rust — otherwise the rolling `rust:trixie` base images drift (they reached
+# 1.97, whose newly-promoted clippy lints broke the `-D warnings` gate on unchanged
+# code) and local `cargo clippy` disagrees with CI. rustup auto-installs this
+# version. Bump deliberately after confirming `cargo clippy … -- -D warnings`
+# passes workspace-wide. Keep >= the MSRV (package.rust-version in Cargo.toml).
+#
+# Note: the repo formats with nightly rustfmt (`cargo +nightly fmt`), which
+# overrides this channel for that command; `clippy` and builds use the pin.
+[toolchain]
+channel = "1.93.0"
+components = ["clippy"]
+profile = "minimal"

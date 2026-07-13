@@ -7,7 +7,14 @@
 #
 # Built and pushed to $CI_REGISTRY_IMAGE/ci-base by the build-ci-image job.
 # Rebuild it when dependencies (Cargo.lock / Cargo.toml) or this file change.
-FROM public.ecr.aws/docker/library/rust:trixie
+#
+# Pin the Rust version. The `rust:trixie` tag is rolling, so its default toolchain
+# silently advances (it reached 1.97, which promotes several clippy lints to
+# warn-by-default and breaks the `-D warnings` static-analysis gate on unchanged
+# code). Pin to a known-good version and bump deliberately after confirming the
+# workspace still passes `cargo clippy … -- -D warnings`. Keep >= the MSRV in
+# Cargo.toml (package.rust-version).
+FROM public.ecr.aws/docker/library/rust:1.93-trixie
 
 ENV CARGO_INCREMENTAL=0 \
     CARGO_NET_RETRY=10 \

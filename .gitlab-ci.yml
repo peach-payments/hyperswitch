@@ -55,6 +55,7 @@ build-ci-image:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes: &ci-base-changes
         - ci/ci-base.Dockerfile
+        - rust-toolchain.toml
         - Cargo.lock
         - "**/Cargo.toml"
         - justfile
