@@ -6,12 +6,12 @@ use common_enums::{ExecutionMode, ExecutionPath};
 use common_utils::{errors::ReportSwitchExt, ext_traits::Encode};
 use error_stack::ResultExt;
 use external_services::grpc_client::LineageIds;
+use hyperswitch_domain_models::api::WebhookResponse;
 use hyperswitch_interfaces::webhooks::{
     IncomingWebhookRequestDetails, WebhookContext, WebhookResourceData,
 };
 use hyperswitch_masking::{ErasedMaskSerialize, Secret};
 use router_env::{logger, tracing::Instrument};
-use time::OffsetDateTime;
 use unified_connector_service_client::payments as payments_grpc;
 
 #[cfg(feature = "v1")]
@@ -33,7 +33,7 @@ use crate::{
         },
     },
     routes::SessionState,
-    services::{self, connector_integration_interface::ConnectorEnum},
+    services::connector_integration_interface::ConnectorEnum,
     types::{api::IncomingWebhook, domain, transformers::ForeignTryFrom},
     utils as helper_utils,
 };
@@ -67,7 +67,8 @@ pub enum WebhookOutcome {
     Skipped {
         reference: Option<ObjectReferenceId>,
         event_type: IncomingWebhookEvent,
-        ack_response: services::ApplicationResponse<serde_json::Value>,
+        masked_log_payload: common_utils::pii::SecretSerdeValue,
+        ack_response: WebhookResponse<serde_json::Value>,
     },
     Processed {
         reference: ObjectReferenceId,
@@ -85,7 +86,7 @@ pub enum WebhookOutcome {
         webhook_resource_data: Box<Option<WebhookResourceData>>,
         masked_log_payload: common_utils::pii::SecretSerdeValue,
         merchant_connector_account: Box<domain::MerchantConnectorAccount>,
-        ack_response: services::ApplicationResponse<serde_json::Value>,
+        ack_response: WebhookResponse<serde_json::Value>,
     },
 }
 
@@ -178,6 +179,7 @@ pub async fn get_webhook_event_details_from_ucs(
     connector_name: &str,
     merchant_connector_account: Option<&domain::MerchantConnectorAccount>,
     request: &IncomingWebhookRequestDetails<'_>,
+    execution_mode: ExecutionMode,
 ) -> (
     Option<payments_grpc::EventReference>,
     Option<IncomingWebhookEvent>,
@@ -194,7 +196,7 @@ pub async fn get_webhook_event_details_from_ucs(
         connector_name: connector_name.to_string(),
         merchant_connector_account: merchant_connector_account.cloned(),
         execution_path: ExecutionPath::Direct,
-        execution_mode: ExecutionMode::NotApplicable,
+        execution_mode,
         ucs_reference: None,
         ucs_event_type: None,
     };
@@ -214,7 +216,7 @@ pub async fn get_webhook_event_details_from_ucs(
         Err(_) => return (None, None),
     };
 
-    let parse_headers = build_ucs_headers_builder(&ctx, None, ExecutionMode::NotApplicable);
+    let parse_headers = build_ucs_headers_builder(&ctx, None, execution_mode);
 
     let parse_response = match unified_connector_service::ucs_webhook_logging_wrapper(
         state,
@@ -341,11 +343,40 @@ impl IncomingWebhookGateway for DirectIncomingWebhookGateway {
             .attach_printable("Failed to build webhook ack via connector")?;
 
         let outcome = match FilterDecision::evaluate(event_type, ctx).await {
-            FilterDecision::Skip => WebhookOutcome::Skipped {
-                reference,
-                event_type,
-                ack_response,
-            },
+            FilterDecision::Skip => {
+                let masked_log_payload = if matches!(
+                    event_type,
+                    IncomingWebhookEvent::EndpointVerification
+                ) {
+                    match ctx.connector.get_webhook_resource_object(&decoded_request) {
+                            Ok(resource_object) => Secret::new(
+                                resource_object.masked_serialize().unwrap_or_else(|error| {
+                                    logger::warn!(
+                                        ?error,
+                                        "Failed to mask-serialize endpoint-verification webhook resource object for logging"
+                                    );
+                                    serde_json::Value::Null
+                                }),
+                            ),
+                            Err(error) => {
+                                logger::warn!(
+                                    ?error,
+                                    "Failed to extract endpoint-verification webhook resource object for logging"
+                                );
+                                Secret::new(serde_json::Value::Null)
+                            }
+                        }
+                } else {
+                    Secret::new(serde_json::Value::Null)
+                };
+
+                WebhookOutcome::Skipped {
+                    reference,
+                    event_type,
+                    masked_log_payload,
+                    ack_response,
+                }
+            }
             FilterDecision::Proceed => {
                 let reference = reference.ok_or_else(|| {
                     error_stack::report!(errors::ApiErrorResponse::WebhookResourceNotFound)
@@ -432,7 +463,8 @@ impl IncomingWebhookGateway for UcsIncomingWebhookGateway {
             FilterDecision::Skip => WebhookOutcome::Skipped {
                 reference,
                 event_type,
-                ack_response: services::ApplicationResponse::StatusOk,
+                masked_log_payload: Secret::new(serde_json::Value::Null),
+                ack_response: WebhookResponse::StatusOk,
             },
             FilterDecision::Proceed => {
                 let reference = reference.ok_or_else(|| {
@@ -512,8 +544,8 @@ impl IncomingWebhookGateway for UcsIncomingWebhookGateway {
 
                 let ack_response = handle_response
                     .event_ack_response
-                    .map(ucs_ack_to_application_response)
-                    .unwrap_or(services::ApplicationResponse::StatusOk);
+                    .map(ucs_ack_to_webhook_response)
+                    .unwrap_or(WebhookResponse::StatusOk);
 
                 WebhookOutcome::Processed {
                     reference,
@@ -575,11 +607,16 @@ fn spawn_shadow_ucs_run(
                 logger::warn!(?error, "UCS shadow webhook run failed");
             }
             let shadow_snapshot = WebhookShadowSnapshot::from_result(&shadow_result);
+            let merchant_id = inner_ctx
+                .merchant_connector_account
+                .as_ref()
+                .map(|mca| mca.merchant_id.clone());
             report_shadow_diff(
                 &inner_ctx.state,
                 &inner_ctx.connector_name,
                 &primary_snapshot,
                 &shadow_snapshot,
+                merchant_id,
             )
             .await;
         }
@@ -686,6 +723,7 @@ async fn report_shadow_diff(
     connector_name: &str,
     primary: &WebhookShadowSnapshot,
     shadow: &WebhookShadowSnapshot,
+    merchant_id: Option<common_utils::id_type::MerchantId>,
 ) {
     logger::info!(
         primary_event_type = ?primary.event_type,
@@ -700,6 +738,11 @@ async fn report_shadow_diff(
         api_client::ApiClientWrapper, helpers::GetComparisonServiceConfig,
     };
     if let Some(config) = state.get_comparison_service_config() {
+        let webhook_flow_name = primary.event_type.map(|event_type| {
+            let flow: api_models::webhooks::WebhookFlow = event_type.into();
+            format!("webhook_{}", flow.to_string().to_lowercase())
+        });
+
         hyperswitch_interfaces::helpers::serialize_webhook_outcome_and_send_to_comparison_service(
             state,
             primary,
@@ -707,6 +750,8 @@ async fn report_shadow_diff(
             config,
             connector_name.to_string(),
             state.get_request_id_str(),
+            merchant_id.as_ref(),
+            webhook_flow_name,
         )
         .await;
     }
@@ -760,7 +805,7 @@ pub(super) async fn verify_webhook_source_via_connector(
 
     let connector_enum = api_models::enums::Connector::from_str(&ctx.connector_name)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| {
             format!("unable to parse connector name {:?}", ctx.connector_name)
@@ -877,6 +922,8 @@ fn build_ucs_headers_builder(
         .unwrap_or_else(|| consts::PROFILE_ID_UNAVAILABLE.clone());
     ctx.state
         .get_grpc_headers_ucs(mode)
+        .payment_method(None)
+        .payment_method_type(None)
         .lineage_ids(LineageIds::new(merchant_id, profile_id))
         .external_vault_proxy_metadata(None)
         .merchant_reference_id(None)
@@ -892,7 +939,7 @@ fn build_merchant_event_id(ctx: &WebhookGatewayContext) -> String {
             .get_id()
             .get_string_repr(),
         ctx.connector_name,
-        OffsetDateTime::now_utc().unix_timestamp()
+        common_utils::date_time::now_unix_timestamp()
     )
 }
 
@@ -908,33 +955,37 @@ fn event_reference_to_object_ref(
 
     let out = match resource {
         Resource::Payment(payment) => {
-            if let Some(ctx_id) = payment.connector_transaction_id.as_ref() {
+            if let Some(merchant_txn_id) = payment.merchant_transaction_id.as_ref() {
                 Some(ObjectReferenceId::PaymentId(
-                    api_payments::PaymentIdType::ConnectorTransactionId(ctx_id.clone()),
+                    api_payments::PaymentIdType::PaymentAttemptId(merchant_txn_id.clone()),
                 ))
             } else {
-                payment.merchant_transaction_id.as_ref().map(|mref| {
-                    ObjectReferenceId::PaymentId(api_payments::PaymentIdType::PaymentAttemptId(
-                        mref.clone(),
-                    ))
+                payment.connector_transaction_id.as_ref().map(|ctx_id| {
+                    ObjectReferenceId::PaymentId(
+                        api_payments::PaymentIdType::ConnectorTransactionId(ctx_id.clone()),
+                    )
                 })
             }
         }
         Resource::Refund(refund) => {
-            if let Some(cr_id) = refund.connector_refund_id.as_ref() {
+            if let Some(merchant_refund_id) = refund.merchant_refund_id.as_ref() {
                 Some(ObjectReferenceId::RefundId(
-                    api_webhooks::RefundIdType::ConnectorRefundId(cr_id.clone()),
+                    api_webhooks::RefundIdType::RefundId(merchant_refund_id.clone()),
                 ))
             } else {
-                refund.merchant_refund_id.as_ref().map(|mid| {
-                    ObjectReferenceId::RefundId(api_webhooks::RefundIdType::RefundId(mid.clone()))
+                refund.connector_refund_id.as_ref().map(|cr_id| {
+                    ObjectReferenceId::RefundId(api_webhooks::RefundIdType::ConnectorRefundId(
+                        cr_id.clone(),
+                    ))
                 })
             }
         }
+        // The payment attempt is looked up by the payment's connector transaction id; the
+        // dispute id only identifies the payment when no transaction id is given
         Resource::Dispute(dispute) => dispute
-            .connector_dispute_id
+            .connector_transaction_id
             .as_ref()
-            .or(dispute.connector_transaction_id.as_ref())
+            .or(dispute.connector_dispute_id.as_ref())
             .map(|id| {
                 ObjectReferenceId::PaymentId(api_payments::PaymentIdType::ConnectorTransactionId(
                     id.clone(),
@@ -947,14 +998,14 @@ fn event_reference_to_object_ref(
         }),
         #[cfg(feature = "payouts")]
         Resource::Payout(payout) => {
-            if let Some(cid) = payout.connector_payout_id.as_ref() {
+            if let Some(merchant_payout_id) = payout.merchant_payout_id.as_ref() {
                 Some(ObjectReferenceId::PayoutId(
-                    api_webhooks::PayoutIdType::ConnectorPayoutId(cid.clone()),
+                    api_webhooks::PayoutIdType::PayoutAttemptId(merchant_payout_id.clone()),
                 ))
             } else {
-                payout.merchant_payout_id.as_ref().map(|mid| {
-                    ObjectReferenceId::PayoutId(api_webhooks::PayoutIdType::PayoutAttemptId(
-                        mid.clone(),
+                payout.connector_payout_id.as_ref().map(|cid| {
+                    ObjectReferenceId::PayoutId(api_webhooks::PayoutIdType::ConnectorPayoutId(
+                        cid.clone(),
                     ))
                 })
             }
@@ -995,9 +1046,9 @@ async fn build_event_context(
     })
 }
 
-fn ucs_ack_to_application_response(
+fn ucs_ack_to_webhook_response(
     ack: payments_grpc::EventAckResponse,
-) -> services::ApplicationResponse<serde_json::Value> {
+) -> WebhookResponse<serde_json::Value> {
     let payments_grpc::EventAckResponse {
         status_code: _,
         headers,
@@ -1005,7 +1056,7 @@ fn ucs_ack_to_application_response(
     } = ack;
 
     if body.is_empty() {
-        return services::ApplicationResponse::StatusOk;
+        return WebhookResponse::StatusOk;
     }
 
     let masked_headers: Vec<(String, hyperswitch_masking::Maskable<String>)> = headers
@@ -1015,14 +1066,14 @@ fn ucs_ack_to_application_response(
 
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
         return if masked_headers.is_empty() {
-            services::ApplicationResponse::Json(value)
+            WebhookResponse::Json(value)
         } else {
-            services::ApplicationResponse::JsonWithHeaders((value, masked_headers))
+            WebhookResponse::JsonWithHeaders((value, masked_headers))
         };
     }
 
     match String::from_utf8(body.clone()) {
-        Ok(text) => services::ApplicationResponse::TextPlain(text),
-        Err(_) => services::ApplicationResponse::FileData((body, mime::APPLICATION_OCTET_STREAM)),
+        Ok(text) => WebhookResponse::TextPlain(text),
+        Err(_) => WebhookResponse::FileData((body, mime::APPLICATION_OCTET_STREAM)),
     }
 }

@@ -24,12 +24,39 @@ function parseRoute(url) {
     }
   }
 
+  /*
+   * Payment-link pages set `window.__REDIRECTION_LOG_ENDPOINT` from the
+   * backend, so prefer that value. It is authoritative because custom domains
+   * can hide the real router hostname
+   */
   function getEnvRoute(url) {
-    const route = new URL(url).hostname;
-    return route === "api.hyperswitch.io" ? "https://api.hyperswitch.io/logs/redirection" : "https://sandbox.hyperswitch.io/logs/redirection";
-}
+    // If the backend rendered a non-empty log endpoint string, use it unconditionally.
+    const backendEndpoint = window.__REDIRECTION_LOG_ENDPOINT;
+    if (
+      typeof backendEndpoint === "string" &&
+      backendEndpoint.length > 0
+    ) {
+      return backendEndpoint;
+    }
 
-  
+    const route = new URL(url).hostname;
+    return route === "api.hyperswitch.io"
+      ? "https://api.hyperswitch.io/logs/redirection"
+      : "https://app.hyperswitch.io/api/logs/redirection";
+  }
+
+  /*
+   * Payment-link pages set `window.__REDIRECTION_LOG_MESSAGE_ORIGINS` to the
+   * origins of the frames they embed, so a parent or opener page cannot push
+   * messages into our logs. Redirection forms leave it unset because connector
+   * frames post from origins that are not known up front.
+   */
+  function shouldLogMessage(event) {
+    const allowedOrigins = window.__REDIRECTION_LOG_MESSAGE_ORIGINS;
+    return !Array.isArray(allowedOrigins) || allowedOrigins.includes(event.origin);
+  }
+
+
 async function postLog(log, urlToPost) {
 
     try {
@@ -64,18 +91,20 @@ window.addEventListener("error", (event) => {
 });
   
 window.addEventListener("message", (event) => {
-    let url = window.location.href;
-    let { paymentId, merchantId, attemptId, connector } = parseRoute(url);
-    let urlToPost = getEnvRoute(url);
-    let log = {
-        message: event.data,
-        url,
-        paymentId,
-        merchantId,
-        attemptId,
-        connector,
-    };
-    postLog(log, urlToPost);
+    if (shouldLogMessage(event)) {
+        let url = window.location.href;
+        let { paymentId, merchantId, attemptId, connector } = parseRoute(url);
+        let urlToPost = getEnvRoute(url);
+        let log = {
+            message: event.data,
+            url,
+            paymentId,
+            merchantId,
+            attemptId,
+            connector,
+        };
+        postLog(log, urlToPost);
+    }
 });
     
     

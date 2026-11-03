@@ -1,5 +1,5 @@
 use api_models::payments::PollConfig;
-use common_utils::types::StringMajorUnit;
+use common_utils::types::{FloatMajorUnit, StringMajorUnit};
 use hyperswitch_masking::Secret;
 use serde::{Deserialize, Serialize};
 use time::PrimitiveDateTime;
@@ -10,12 +10,19 @@ use crate::connectors::santander::requests;
 #[serde(rename_all = "camelCase")]
 pub struct Payer {
     pub name: Secret<String>,
-    pub document_type: SantanderDocumentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_type: Option<SantanderDocumentKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub document_number: Option<Secret<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<Secret<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub neighborhood: Option<Secret<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<Secret<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<Secret<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub zip_code: Option<Secret<String>>,
 }
 
@@ -390,9 +397,13 @@ pub struct SantanderCalendarResponse {
 #[serde(untagged)]
 pub enum SantanderPaymentsSyncResponse {
     PixQRCode(Box<SantanderPixQRCodeSyncResponse>),
-    Boleto(Box<SantanderBoletoPSyncResponse>),
-    PixAutomaticoConsultAndActivateJourney(Box<SantanderPixAutomaticRecResponse>),
+    PixAutomaticoCobrWebhook(Box<SantanderPixAutomaticoCobrWebhookBody>),
+    PixQrWebhook(Box<SantanderPixQrWebhookResponse>),
+    PixAutomaticoRecWebhook(Box<SantanderPixAutomaticoRecWebhookBody>),
     PixAutomaticoCobrSync(Box<SantanderPixAutomaticoCobrSyncResponse>),
+    Boleto(Box<SantanderBoletoPSyncResponse>),
+    BoletoWebhook(Box<SantanderBoletoWebhookBody>),
+    PixAutomaticoConsultAndActivateJourney(Box<SantanderPixAutomaticRecResponse>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -405,7 +416,8 @@ pub struct SantanderPix {
     // Transaction amount
     pub valor: String,
     // Timestamp when the transaction occurred
-    pub horario: String,
+    #[serde(with = "common_utils::custom_serde::iso8601")]
+    pub horario: PrimitiveDateTime,
     // Optional information provided by the payer
     pub info_pagador: Option<String>,
 }
@@ -458,7 +470,8 @@ pub struct SantanderCobrSyncPix {
     /// Value information
     pub valor: serde_json::Value,
     /// Timestamp when the Pix was processed
-    pub horario: String,
+    #[serde(with = "common_utils::custom_serde::iso8601")]
+    pub horario: PrimitiveDateTime,
     /// Optional payer info
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info_pagador: Option<String>,
@@ -489,6 +502,75 @@ pub struct SantanderCobrSyncTentativa {
     /// Status update history for this attempt
     #[serde(skip_serializing_if = "Option::is_none")]
     pub atualizacao: Option<Vec<SantanderCobrSyncStatusUpdate>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderPixAutomaticoCobrWebhookBody {
+    pub cobsr: Vec<SantanderPixAutomaticoCobrWebhookEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderPixAutomaticoCobrWebhookEntry {
+    pub id_rec: Secret<String>,
+    pub txid: String,
+    pub status: SantanderPixAutomaticoCobrWebhookStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atualizacao: Option<Vec<SantanderCobrWebhookStatusUpdate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pix: Option<Vec<SantanderCobrWebhookPix>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tentativas: Option<Vec<SantanderCobrWebhookAttempt>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encerramento: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SantanderPixAutomaticoCobrWebhookStatus {
+    Criada,
+    Ativa,
+    Concluida,
+    Expirada,
+    Rejeitada,
+    Cancelada,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderCobrWebhookPix {
+    pub end_to_end_id: Secret<String>,
+    pub txid: String,
+    pub valor: SantanderCobrWebhookPixValue,
+    #[serde(with = "common_utils::custom_serde::iso8601")]
+    pub horario: PrimitiveDateTime,
+    pub info_pagador: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SantanderCobrWebhookPixValue {
+    pub original: StringMajorUnit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderCobrWebhookStatusUpdate {
+    pub data: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderCobrWebhookAttempt {
+    pub data_liquidacao: Option<String>,
+    pub tipo: String,
+    pub status: String,
+    pub end_to_end_id: Option<Secret<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atualizacao: Option<Vec<SantanderCobrWebhookStatusUpdate>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -804,7 +886,7 @@ pub struct QrDataUrlSantander {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum SantanderUpdateMetadataResponse {
+pub enum SantanderUpdateResponse {
     Pix(Box<SantanderPixQRCodePaymentsResponse>),
     Boleto(Box<SantanderUpdateBoletoResponse>),
 }
@@ -891,7 +973,8 @@ pub struct SantanderPaymentDetails {
     pub deduction_value: Option<StringMajorUnit>,
     pub rebate_value: Option<StringMajorUnit>,
     pub iof_value: Option<StringMajorUnit>,
-    pub date: Option<String>,
+    #[serde(with = "common_utils::custom_serde::iso8601::option")]
+    pub date: Option<PrimitiveDateTime>,
     #[serde(rename = "type")]
     pub bank_type: Option<String>,
     pub bank_code: Option<String>,
@@ -899,6 +982,104 @@ pub struct SantanderPaymentDetails {
     pub kind: Option<String>,
     pub credit_date: Option<String>,
     pub tx_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderPixQrWebhookBody {
+    pub pix: Vec<SantanderPix>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SantanderPixQrWebhookResponse {
+    pub pix: Vec<SantanderPix>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderPixAutomaticoRecWebhookEntry {
+    /// Recurrence ID (maps to Hyperswitch connector_mandate_id)
+    pub id_rec: String,
+    /// Current status of the recurrence
+    pub status: RecurrenceStatus,
+    /// Status update history
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atualizacao: Option<Vec<SantanderPixAutomaticoAtualizacao>>,
+    /// Activation journey details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ativacao: Option<SantanderPixAutomaticoAtivacao>,
+    /// Closure details (present on cancellation/rejection)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encerramento: Option<SantanderPixAutomaticoEncerramento>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderPixAutomaticoRecWebhookBody {
+    pub recs: Vec<SantanderPixAutomaticoRecWebhookEntry>,
+}
+
+/// Payment notification sent by Santander's Billing API for a paid boleto.
+/// The Billing API does not include a status in this notification
+/// receiving one is itself confirmation that the boleto was paid
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderBoletoWebhookBody {
+    pub message: String,
+    #[serde(rename = "function")]
+    pub function_name: String,
+    pub payment_type: String,
+    pub issue_date: String,
+    pub payment_date: String,
+    pub bank_code: String,
+    pub payment_channel: String,
+    pub payment_kind: String,
+    pub covenant: Secret<String>,
+    pub type_of_person_agreement: String,
+    pub agreement_document: Secret<String>,
+    pub bank_number: String,
+    pub client_number: Secret<String>,
+    pub participant_code: String,
+    pub tx_id: String,
+    pub payer_document_type: String,
+    pub payer_document_number: Secret<String>,
+    pub payer_name: Secret<String>,
+    #[serde(rename = "finalBeneficiaryrDocumentType")]
+    pub final_beneficiary_document_type: String,
+    pub final_beneficiary_document_number: Secret<String>,
+    pub final_beneficiary_name: Secret<String>,
+    pub due_date: String,
+    pub nominal_value: FloatMajorUnit,
+    pub payed_value: FloatMajorUnit,
+    pub interest_value: FloatMajorUnit,
+    pub fine: FloatMajorUnit,
+    pub deduction_value: FloatMajorUnit,
+    pub rebate_value: FloatMajorUnit,
+    pub iof_value: FloatMajorUnit,
+    pub credit_date: String,
+}
+
+/// Santander posts this payload when validating a Billing API webhook URL
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SantanderBoletoWebhookEndpointVerification {
+    pub message: SantanderBoletoWebhookEndpointVerificationMessage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SantanderBoletoWebhookEndpointVerificationMessage {
+    #[serde(rename = "Validação da URL do Webhook")]
+    UrlValidation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SantanderWebhookBody {
+    PixQr(SantanderPixQrWebhookBody),
+    Recurrence(SantanderPixAutomaticoRecWebhookBody),
+    RecurringCharge(SantanderPixAutomaticoCobrWebhookBody),
+    Boleto(Box<SantanderBoletoWebhookBody>),
+    BoletoEndpointVerification(SantanderBoletoWebhookEndpointVerification),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -968,7 +1149,8 @@ pub struct SantanderPixAutomaticoAtualizacao {
     /// Status of the recurrence at the time of update
     pub status: Option<RecurrenceStatus>,
     /// Date when the status update occurred
-    pub data: String,
+    #[serde(with = "common_utils::custom_serde::iso8601")]
+    pub data: PrimitiveDateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1089,6 +1271,8 @@ pub struct SantanderPixAutomaticoLoc {
 pub struct SantanderPixAutomaticoEncerramento {
     /// Rejection information if the recurrence was closed due to rejection
     pub rejeicao: Option<SantanderPixAutomaticoRejeicao>,
+    /// Cancellation information if the recurrence was cancelled
+    pub cancelamento: Option<SantanderPixAutomaticoCancelamento>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1102,9 +1286,20 @@ pub struct SantanderPixAutomaticoRejeicao {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SantanderPixAutomaticoCancelamento {
+    /// Who requested the cancellation (e.g. "USUARIO_PAGADOR")
+    pub solicitante: Option<String>,
+    /// Cancellation code
+    pub codigo: Option<String>,
+    /// Description of the cancellation reason
+    pub descricao: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SantanderPixAutomaticoAtivacao {
     /// Type of journey/flow used to activate the recurrence
-    pub tipo_jornada: Option<String>,
+    pub tipo_jornada: Option<SantanderJourneyType>,
     /// Data associated with the activation journey
     pub dados_jornada: Option<SantanderPixAutomaticoDadosJornada>,
 }
@@ -1284,5 +1479,39 @@ pub struct RecurrenceStatusUpdate {
     /// Status of the recurrence
     pub status: Option<RecurrenceStatus>,
     /// Date/time of this status update
-    pub data: String,
+    #[serde(with = "common_utils::custom_serde::iso8601")]
+    pub data: PrimitiveDateTime,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderPixWebhookRegisterResponse {
+    pub chave: String,
+    pub webhook_url: String,
+    pub criacao: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SantanderBoletoCovenantResponse {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SantanderBoletoWebhookRegisterResponse {
+    pub id: String,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub workspace_type: String,
+    pub description: String,
+    pub covenants: Vec<SantanderBoletoCovenantResponse>,
+    #[serde(rename = "webhookURL")]
+    pub webhook_url: String,
+    #[serde(rename = "bankSlipBillingWebhookActive")]
+    pub bank_slip_billing_webhook_active: bool,
+    #[serde(rename = "pixBillingWebhookActive")]
+    pub pix_billing_webhook_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SantanderEmptyResponse {}

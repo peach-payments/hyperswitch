@@ -3,9 +3,10 @@ use common_enums::enums::PaymentConnectorTransmission;
 #[cfg(feature = "v2")]
 use common_utils::id_type;
 use common_utils::{
+    consts::DISCOUNT_PERCENTAGE_PRECISION_LENGTH,
     hashing::HashedString,
     pii,
-    types::{MinorUnit, StringMajorUnit},
+    types::{MinorUnit, Percentage, StringMajorUnit},
 };
 use diesel::{
     sql_types::{Json, Jsonb},
@@ -55,13 +56,32 @@ pub struct OrderDetailsWithAmount {
     pub unit_of_measure: Option<String>,
     /// total amount of the product
     pub total_amount: Option<MinorUnit>,
+    /// discount name on the unit
+    pub discount_name: Option<String>,
     /// discount amount on the unit
     pub unit_discount_amount: Option<MinorUnit>,
+    /// discount percentage on the unit
+    pub discount_percentage: Option<Percentage<DISCOUNT_PERCENTAGE_PRECISION_LENGTH>>,
+    /// discount type on the unit
+    pub discount_type: Option<String>,
 }
 
 impl hyperswitch_masking::SerializableSecret for OrderDetailsWithAmount {}
 
 common_utils::impl_to_sql_from_sql_json!(OrderDetailsWithAmount);
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct MultiCurrencyProcessingData {
+    pub currency: common_enums::Currency,
+    pub amount: MinorUnit,
+    pub conversion_rate: Option<f64>,
+    #[serde(default, with = "common_utils::custom_serde::iso8601::option")]
+    pub date: Option<time::PrimitiveDateTime>,
+    pub processing_reference_id: Option<String>,
+    pub user_id: Option<String>,
+    pub conversion_provider: Option<String>,
+    pub conversion_reason_code: Option<String>,
+}
 
 #[cfg(feature = "v2")]
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize, FromSqlRow, AsExpression)]
@@ -83,6 +103,8 @@ pub struct FeatureMetadata {
     pub pix_automatico_additional_details: Option<PixAutomaticoAdditionalDetails>,
     /// Extra information for Finix connector for fraud checks and risk evaluation
     pub finix_additional_details: Option<FinixAdditionalDetails>,
+    /// Merchant settlement amount, currency and conversion details.
+    pub multi_currency_processing: Option<MultiCurrencyProcessingData>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize, FromSqlRow, AsExpression)]
@@ -283,21 +305,31 @@ impl FeatureMetadata {
 #[diesel(sql_type = Json)]
 pub struct FeatureMetadata {
     /// Redirection response coming in request as metadata field only for redirection scenarios
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub redirect_response: Option<RedirectResponse>,
     /// Additional tags to be used for global search
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub search_tags: Option<Vec<HashedString<WithType>>>,
     /// Recurring payment details required for apple pay Merchant Token
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub apple_pay_recurring_details: Option<ApplePayRecurringDetails>,
     /// The system that the gateway is integrated with, e.g., `Direct`(through hyperswitch), `UnifiedConnectorService`(through ucs), etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gateway_system: Option<common_enums::GatewaySystem>,
     /// Additional information related to pix like expiry time etc for QR Code payments
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pix_additional_details: Option<PixAdditionalDetails>,
     /// Extra information like fine percentage, interest percentage etc required for Pix payment method
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub boleto_additional_details: Option<BoletoAdditionalDetails>,
     /// Pix Automatico additional details for Push and QR flows
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pix_automatico_additional_details: Option<PixAutomaticoAdditionalDetails>,
     /// Extra information for Finix connector for fraud checks and risk evaluation
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finix_additional_details: Option<FinixAdditionalDetails>,
+    /// Merchant settlement amount, currency and conversion details.
+    pub multi_currency_processing: Option<MultiCurrencyProcessingData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, FromSqlRow, AsExpression)]
@@ -490,6 +522,9 @@ pub struct PaymentRevenueRecoveryMetadata {
     pub first_payment_attempt_network_decline_code: Option<String>,
     /// First Payment Attempt Network Advice Code
     pub first_payment_attempt_network_advice_code: Option<String>,
+    /// Revenue Recovery A/B routing: the algorithm this invoice was assigned to.
+    #[serde(default)]
+    pub revenue_recovery_ab_routing: Option<common_enums::RevenueRecoveryABAlgorithm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -515,4 +550,11 @@ pub struct BillingConnectorAdditionalCardInfo {
     pub card_network: Option<common_enums::enums::CardNetwork>,
     /// Card Issuer
     pub card_issuer: Option<String>,
+    /// Funding type of the card, `credit` or `debit`, enriched from the card bin
+    pub card_type: Option<String>,
+    /// Country in which the card was issued, enriched from the card bin
+    pub card_issuing_country: Option<String>,
+    /// Issuer identification number of the card, retained so that any further card details can
+    /// be looked up from it later
+    pub card_isin: Option<String>,
 }

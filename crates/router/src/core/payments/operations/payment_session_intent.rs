@@ -128,7 +128,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, payments::PaymentIntentData<F>, Payme
         header_payload: &hyperswitch_domain_models::payments::HeaderPayload,
     ) -> RouterResult<operations::GetTrackerResponse<payments::PaymentIntentData<F>>> {
         let db = &*state.store;
-        let storage_scheme = platform.get_processor().get_account().storage_scheme;
+        let storage_scheme = platform.get_processor().get_storage_scheme();
 
         let payment_intent = db
             .find_payment_intent_by_id(
@@ -179,7 +179,7 @@ impl<F: Clone + Sync> UpdateTracker<F, payments::PaymentIntentData<F>, PaymentsS
     where
         F: 'b + Send,
     {
-        let storage_scheme = processor.get_account().storage_scheme;
+        let storage_scheme = processor.get_storage_scheme();
         let key_store = processor.get_key_store();
         let prerouting_algorithm = payment_data.payment_intent.prerouting_algorithm.clone();
         payment_data.payment_intent = match prerouting_algorithm {
@@ -189,7 +189,7 @@ impl<F: Clone + Sync> UpdateTracker<F, payments::PaymentIntentData<F>, PaymentsS
                     payment_data.payment_intent,
                     storage::PaymentIntentUpdate::SessionIntentUpdate {
                         prerouting_algorithm,
-                        updated_by: storage_scheme.to_string(),
+                        updated_by: storage_scheme.inner().to_string(),
                     },
                     key_store,
                     storage_scheme,
@@ -275,21 +275,17 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsSessionRequest, payments::Payment
         payment_data: &mut payments::PaymentIntentData<F>,
     ) -> CustomResult<api::ConnectorCallType, errors::ApiErrorResponse> {
         let db = &state.store;
+        let profile_id = business_profile.get_id();
         let all_connector_accounts = db
-            .find_merchant_connector_account_by_merchant_id_and_disabled_list(
+            .list_enabled_merchant_connector_accounts_without_encrypted_by_merchant_id_profile_id(
                 platform.get_processor().get_account().get_id(),
-                false,
-                platform.get_processor().get_key_store(),
+                profile_id,
             )
             .await
             .change_context(errors::ApiErrorResponse::InternalServerError)
             .attach_printable("Database error when querying for merchant connector accounts")?;
-        let profile_id = business_profile.get_id();
         let filtered_connector_accounts = all_connector_accounts
-            .filter_based_on_profile_and_connector_type(
-                profile_id,
-                common_enums::ConnectorType::PaymentProcessor,
-            );
+            .filter_by_connector_type(common_enums::ConnectorType::PaymentProcessor);
         let connector_and_supporting_payment_method_type = filtered_connector_accounts
             .get_connector_and_supporting_payment_method_type_for_session_call();
 

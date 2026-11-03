@@ -44,17 +44,18 @@ pub async fn construct_relay_refund_router_data<F>(
     let connector_enum = api_models::enums::Connector::from_str(connector_name)
         .change_context(errors::ConnectorError::InvalidConnectorName)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| format!("unable to parse connector name {connector_name:?}"))?;
 
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_name}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_name}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -91,6 +92,8 @@ pub async fn construct_relay_refund_router_data<F>(
         minor_amount_captured: None,
         request: hyperswitch_domain_models::router_request_types::RefundsData {
             refund_id: relay_id_string.clone(),
+            payment_feature_metadata: None,
+            feature_metadata: None,
             connector_transaction_id: relay_record.connector_resource_id.clone(),
             refund_amount: relay_refund_data.amount.get_amount_as_i64(),
             minor_refund_amount: relay_refund_data.amount,
@@ -110,6 +113,11 @@ pub async fn construct_relay_refund_router_data<F>(
             merchant_config_currency: None,
             capture_method: None,
             additional_payment_method_data: None,
+            payment_method_data: None,
+            mandate_id: None,
+            // Relay refunds have no locally recorded payment attempt, so the original payment's
+            // connector request reference is not known here.
+            payment_connector_request_reference_id: None,
         },
 
         response: Err(ErrorResponse::default()),
@@ -137,6 +145,7 @@ pub async fn construct_relay_refund_router_data<F>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -150,6 +159,8 @@ pub async fn construct_relay_refund_router_data<F>(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
@@ -182,17 +193,18 @@ pub async fn construct_relay_capture_router_data(
     let connector_enum = api_models::enums::Connector::from_str(connector_name)
         .change_context(errors::ConnectorError::InvalidConnectorName)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| format!("unable to parse connector name {connector_name:?}"))?;
 
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_name}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_name}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -228,6 +240,9 @@ pub async fn construct_relay_capture_router_data(
         payment_method_status: None,
         minor_amount_captured: None,
         request: hyperswitch_domain_models::router_request_types::PaymentsCaptureData {
+            // Relay captures do not carry payment-intent or operation feature metadata.
+            feature_metadata: None,
+            payment_feature_metadata: None,
             amount_to_capture: relay_capture_data.amount_to_capture.get_amount_as_i64(),
             currency: relay_capture_data.currency,
             connector_transaction_id: relay_record.connector_resource_id.clone(),
@@ -240,15 +255,20 @@ pub async fn construct_relay_capture_router_data(
                 },
             ),
             connector_meta: None,
+            connector_intent_metadata: None,
             browser_info: None,
             metadata: None,
             capture_method: None,
             split_payments: None,
             minor_payment_amount: relay_capture_data.authorized_amount,
             minor_amount_to_capture: relay_capture_data.amount_to_capture,
+            order_tax_amount: None,
             integrity_object: None,
             webhook_url,
             merchant_order_reference_id: None,
+            is_overcapture_enabled: None,
+            payment_method_data: None,
+            mandate_id: None,
         },
 
         response: Err(ErrorResponse::default()),
@@ -276,6 +296,7 @@ pub async fn construct_relay_capture_router_data(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -289,6 +310,8 @@ pub async fn construct_relay_capture_router_data(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
@@ -315,17 +338,18 @@ pub async fn construct_relay_incremental_authorization_router_data(
     let connector_enum = api_models::enums::Connector::from_str(connector_name)
         .change_context(errors::ConnectorError::InvalidConnectorName)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| format!("unable to parse connector name {connector_name:?}"))?;
 
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_name}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_name}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -374,6 +398,8 @@ pub async fn construct_relay_incremental_authorization_router_data(
                 reason: None,
                 connector_transaction_id: relay_record.connector_resource_id.clone(),
                 connector_meta: None,
+                payment_method_data: None,
+                mandate_id: None,
             },
         response: Err(ErrorResponse::default()),
         access_token: None,
@@ -400,6 +426,7 @@ pub async fn construct_relay_incremental_authorization_router_data(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -413,6 +440,8 @@ pub async fn construct_relay_incremental_authorization_router_data(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
@@ -445,17 +474,18 @@ pub async fn construct_relay_void_router_data(
     let connector_enum = api_models::enums::Connector::from_str(connector_name)
         .change_context(errors::ConnectorError::InvalidConnectorName)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| format!("unable to parse connector name {connector_name:?}"))?;
 
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_name}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_name}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -507,6 +537,8 @@ pub async fn construct_relay_void_router_data(
             merchant_order_reference_id: None,
             feature_metadata: None,
             payment_method_type: None,
+            payment_method_data: None,
+            mandate_id: None,
         },
         response: Err(ErrorResponse::default()),
         access_token: None,
@@ -533,6 +565,7 @@ pub async fn construct_relay_void_router_data(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -546,6 +579,8 @@ pub async fn construct_relay_void_router_data(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
@@ -573,17 +608,18 @@ pub async fn construct_relay_payments_retrieve_router_data(
     let connector_enum = api_models::enums::Connector::from_str(connector_name)
         .change_context(errors::ConnectorError::InvalidConnectorName)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| format!("unable to parse connector name {connector_name:?}"))?;
 
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_name}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_name}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -653,6 +689,8 @@ pub async fn construct_relay_payments_retrieve_router_data(
             setup_future_usage: None,
             feature_metadata: None,
             connector_mandate_id: None,
+            enable_partial_authorization: None,
+            is_overcapture_enabled: None,
         },
 
         response: Err(ErrorResponse::default()),
@@ -680,6 +718,7 @@ pub async fn construct_relay_payments_retrieve_router_data(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -693,6 +732,8 @@ pub async fn construct_relay_payments_retrieve_router_data(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)

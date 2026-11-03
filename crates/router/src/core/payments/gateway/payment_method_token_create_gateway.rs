@@ -70,11 +70,11 @@ where
         RouterData<Self, types::PaymentMethodTokenizationData, types::PaymentsResponseData>,
         ConnectorError,
     > {
+        let rollout_settings = context.rollout_settings();
         let merchant_connector_account = context.merchant_connector_account;
         let processor = &context.processor;
         let lineage_ids = context.lineage_ids;
         let header_payload = context.header_payload;
-        let unified_connector_service_execution_mode = context.execution_mode;
         let client = state
             .grpc_client
             .unified_connector_service_client
@@ -110,7 +110,9 @@ where
             .map(ucs_types::UcsResourceId::PaymentAttempt);
 
         let header_payload = state
-            .get_grpc_headers_ucs(unified_connector_service_execution_mode)
+            .get_grpc_headers_ucs(rollout_settings.execution_mode)
+            .payment_method(Some(router_data.payment_method))
+            .payment_method_type(router_data.payment_method_type)
             .external_vault_proxy_metadata(None)
             .merchant_reference_id(merchant_reference_id)
             .resource_id(resource_id)
@@ -120,15 +122,21 @@ where
             state,
             payment_method_tokenize_request,
             header_payload,
-            unified_connector_service_execution_mode,
+            rollout_settings,
             |mut router_data, payment_method_tokenize_request, grpc_headers| async move {
-                let response = Box::pin(client.payment_method_tokenize(
+                let response = match Box::pin(client.payment_method_tokenize(
                     payment_method_tokenize_request,
                     connector_auth_metadata,
                     grpc_headers,
                 ))
                 .await
-                .attach_printable("Failed to Tokenize payment method")?;
+                {
+                    Ok(response) => response,
+                    // UCS connector errors are handled by the wrapper — see `ucs_logging_wrapper_granular`.
+                    Err(report) => {
+                        return Err(report.attach_printable("Failed to Tokenize payment method"));
+                    }
+                };
 
                 let payment_method_tokenize_response = response.into_inner();
 
@@ -157,7 +165,7 @@ where
         ))
         .await
         .map(|(router_data, _)| router_data)
-        .change_context(ConnectorError::ResponseHandlingFailed)
+        .map_err(payment_gateway::convert_ucs_error_to_connector_error)
     }
 }
 

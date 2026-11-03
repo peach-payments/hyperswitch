@@ -13,6 +13,8 @@ pub struct BlocklistNew {
     pub created_at: time::PrimitiveDateTime,
     pub processor_merchant_id: Option<common_utils::id_type::MerchantId>,
     pub created_by: Option<String>,
+    pub profile_id: Option<common_utils::id_type::ProfileId>,
+    pub transaction_type: common_enums::BlocklistTransactionType,
 }
 
 #[derive(
@@ -27,4 +29,6 @@ pub struct Blocklist {
     pub created_at: time::PrimitiveDateTime,
     pub processor_merchant_id: Option<common_utils::id_type::MerchantId>,
     pub created_by: Option<String>,
+    pub profile_id: Option<common_utils::id_type::ProfileId>,
+    pub transaction_type: Option<common_enums::BlocklistTransactionType>,
 }

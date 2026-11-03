@@ -23,6 +23,7 @@ impl
         state: &SessionState,
         connector_id: &str,
         processor: &domain::Processor,
+        business_profile: &domain::Profile,
         merchant_connector_account: &helpers::MerchantConnectorAccountType,
         merchant_recipient_data: Option<types::MerchantRecipientData>,
         header_payload: Option<hyperswitch_domain_models::payments::HeaderPayload>,
@@ -37,6 +38,7 @@ impl
             self.clone(),
             connector_id,
             processor,
+            business_profile,
             merchant_connector_account,
             merchant_recipient_data,
             header_payload,
@@ -94,22 +96,31 @@ impl Feature<api::Capture, types::PaymentsCaptureData>
         return_raw_connector_response: Option<bool>,
         gateway_context: payments::gateway::context::RouterGatewayContext,
     ) -> RouterResult<Self> {
-        let mut new_router_data =
-            payments::gateway::handle_gateway_call::<_, _, _, PaymentFlowData, _>(
-                state,
-                self,
-                connector,
-                &gateway_context,
-                call_connector_action,
-                connector_request,
-                return_raw_connector_response,
-            )
-            .await?;
+        // Read before the connector call: connectors on the V2 interface rebuild the returned
+        // router data from `PaymentFlowData`, which does not carry this flag.
+        let accept_amount_mismatch = self.accept_amount_mismatch;
+        let mut new_router_data = Box::pin(payments::gateway::handle_gateway_call::<
+            _,
+            _,
+            _,
+            PaymentFlowData,
+            _,
+        >(
+            state,
+            self,
+            connector,
+            &gateway_context,
+            call_connector_action,
+            connector_request,
+            return_raw_connector_response,
+        ))
+        .await?;
 
         // Initiating Integrity check
         let integrity_result = helpers::check_integrity_based_on_flow(
             &new_router_data.request,
             &new_router_data.response,
+            accept_amount_mismatch,
         );
         new_router_data.integrity_check = integrity_result;
 

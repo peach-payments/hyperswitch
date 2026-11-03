@@ -1,4 +1,3 @@
-pub mod chat;
 pub mod customers_error_response;
 pub mod error_handlers;
 #[cfg(feature = "olap")]
@@ -93,7 +92,8 @@ macro_rules! unimplemented_payment_method {
 
 macro_rules! impl_error_type {
     ($name: ident, $arg: tt) => {
-        #[derive(Debug)]
+        // Serializable so `ResultCodec` can replay a recorded failure as itself.
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
         pub struct $name;
 
         impl_error_display!($name, $arg);
@@ -121,18 +121,6 @@ pub fn http_not_implemented() -> actix_web::HttpResponse<BoxBody> {
 pub enum HealthCheckOutGoing {
     #[error("Outgoing call failed with error: {message}")]
     OutGoingFailed { message: String },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AwsKmsError {
-    #[error("Failed to base64 decode input data")]
-    Base64DecodingFailed,
-    #[error("Failed to AWS KMS decrypt input data")]
-    DecryptionFailed,
-    #[error("Missing plaintext AWS KMS decryption output")]
-    MissingPlaintextDecryptionOutput,
-    #[error("Failed to UTF-8 decode decryption output")]
-    Utf8DecodingFailed,
 }
 
 #[derive(Debug, thiserror::Error, serde::Serialize)]
@@ -271,9 +259,13 @@ pub enum GooglePayDecryptionError {
     DecryptedTokenExpired,
     #[error("Failed to parse the given value")]
     ParsingFailed,
+    #[error("Gateway merchant id in the token does not match the merchant being paid")]
+    InvalidGatewayMerchantId,
 }
 
+// Serializable under `deja` so a recorded error replays as the same variant.
 #[derive(Debug, Clone, thiserror::Error)]
+#[cfg_attr(feature = "deja", derive(serde::Serialize, serde::Deserialize))]
 pub enum RoutingError {
     #[error("Merchant routing algorithm not found in cache")]
     CacheMiss,
@@ -301,6 +293,8 @@ pub enum RoutingError {
     KgraphCacheFailure,
     #[error("failed to refresh the kgraph cache")]
     KgraphCacheRefreshFailed,
+    #[error("failed to fetch merchant connector accounts")]
+    MerchantConnectorAccountsFetchFailed,
     #[error("there was an error during the kgraph analysis phase")]
     KgraphAnalysisError,
     #[error("'profile_id' was not provided")]
@@ -454,10 +448,16 @@ pub enum RevenueRecoveryError {
     TransactionWebhookProcessingFailed,
     #[error("Failed to create payment intent")]
     PaymentIntentCreateFailed,
+    #[error("Failed to update payment intent")]
+    PaymentIntentUpdateFailed,
     #[error("Source verification failed for billing connector")]
     WebhookAuthenticationFailed,
-    #[error("Payment merchant connector account not found using account reference id")]
-    PaymentMerchantConnectorAccountNotFound,
+    #[error("Payment merchant connector account {id} not found using account reference id")]
+    PaymentMerchantConnectorAccountNotFound { id: String },
+    #[error("Payment attempt cannot be recorded while the invoice is in {status} state")]
+    PaymentAttemptRecordNotAllowed { status: String },
+    #[error("The transaction is already recorded against the invoice")]
+    PaymentAttemptAlreadyRecorded,
     #[error("Failed to fetch primitive date_time")]
     ScheduleTimeFetchFailed,
     #[error("Failed to create process tracker")]
@@ -482,4 +482,55 @@ pub enum RevenueRecoveryError {
     RevenueRecoveryAttemptDataCreateFailed,
     #[error("Failed to insert the revenue recovery payment method data in redis")]
     RevenueRecoveryRedisInsertFailed,
+}
+
+#[cfg(all(feature = "revenue_recovery", feature = "v2"))]
+impl common_utils::errors::ErrorSwitch<ApiErrorResponse> for RevenueRecoveryError {
+    fn switch(&self) -> ApiErrorResponse {
+        match self {
+            Self::WebhookAuthenticationFailed => ApiErrorResponse::WebhookAuthenticationFailed,
+            Self::InvoiceWebhookProcessingFailed
+            | Self::TransactionWebhookProcessingFailed
+            | Self::RevenueRecoveryAttemptDataCreateFailed
+            | Self::CustomerIdNotFound => ApiErrorResponse::WebhookUnprocessableEntity,
+
+            Self::PaymentMerchantConnectorAccountNotFound { id } => {
+                ApiErrorResponse::MerchantConnectorAccountNotFound { id: id.clone() }
+            }
+            Self::PaymentAttemptRecordNotAllowed { status } => {
+                ApiErrorResponse::PreconditionFailed {
+                    message: format!(
+                        "payment attempt cannot be recorded because the invoice is already in \
+                         {status} state"
+                    ),
+                }
+            }
+
+            Self::PaymentAttemptAlreadyRecorded => ApiErrorResponse::GenericDuplicateError {
+                message: "The transaction is already recorded against this invoice".to_string(),
+            },
+
+            Self::BillingThresholdRetryCountFetchFailed => {
+                ApiErrorResponse::InvalidConnectorConfiguration {
+                    config: "revenue_recovery.billing_connector_retry_threshold".to_string(),
+                }
+            }
+
+            Self::PaymentAttemptIdNotFound | Self::RetryAlgorithmTypeNotFound => {
+                ApiErrorResponse::WebhookResourceNotFound
+            }
+            Self::PaymentIntentUpdateFailed
+            | Self::PaymentIntentFetchFailed
+            | Self::PaymentAttemptFetchFailed
+            | Self::PaymentIntentCreateFailed
+            | Self::ScheduleTimeFetchFailed
+            | Self::ProcessTrackerCreationError
+            | Self::ProcessTrackerResponseError
+            | Self::BillingConnectorPaymentsSyncFailed
+            | Self::BillingConnectorInvoiceSyncFailed
+            | Self::RetryCountFetchFailed
+            | Self::RetryAlgorithmUpdationFailed
+            | Self::RevenueRecoveryRedisInsertFailed => ApiErrorResponse::WebhookProcessingFailure,
+        }
+    }
 }

@@ -25,7 +25,11 @@ mod business_profile {
 }
 
 mod platform {
-    pub use hyperswitch_domain_models::platform::{Initiator, Platform, Processor, Provider};
+    pub use hyperswitch_domain_models::platform::{
+        Initiator, Platform, Processor, ProcessorKeyStore, ProcessorMerchantAccount,
+        ProcessorMerchantId, ProcessorStorageScheme, Provider, ProviderKeyStore,
+        ProviderMerchantAccount, ProviderMerchantId, ProviderStorageScheme,
+    };
 }
 mod customers {
     pub use hyperswitch_domain_models::customer::*;
@@ -48,6 +52,11 @@ mod event;
 mod merchant_connector_account;
 mod merchant_key_store {
     pub use hyperswitch_domain_models::merchant_key_store::MerchantKeyStore;
+}
+mod hierarchical_resource {
+    pub use hyperswitch_domain_models::hierarchical_resource::{
+        HierarchicalResource, HierarchicalResourceDataUpdate,
+    };
 }
 pub use hyperswitch_domain_models::bulk_tokenization::*;
 pub mod payment_methods {
@@ -94,6 +103,7 @@ pub use business_profile::*;
 pub use callback_mapper::*;
 pub use consts::*;
 pub use event::*;
+pub use hierarchical_resource::*;
 pub use merchant_connector_account::*;
 pub use merchant_connector_webhook_management::*;
 pub use merchant_key_store::*;

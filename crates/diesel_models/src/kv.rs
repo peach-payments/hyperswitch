@@ -2,7 +2,6 @@ mod bind_params;
 mod entity_type;
 mod pg_type_metadata;
 
-use async_bb8_diesel::AsyncConnection;
 use common_utils::pii;
 use diesel::{
     associations::HasTable,
@@ -14,7 +13,7 @@ use diesel::{
         InsertStatement, IntoUpdateTarget, MoveableBindCollector, QueryBuilder, QueryFragment,
         UpdateStatement,
     },
-    query_dsl::methods::{ExecuteDsl, FilterDsl, FindDsl},
+    query_dsl::methods::{FilterDsl, FindDsl},
     query_source::Table,
     Insertable,
 };
@@ -55,6 +54,7 @@ pub struct SerializableQuery {
 #[strum(serialize_all = "snake_case")]
 pub enum DatabaseOperation {
     Insert,
+    Delete,
     Update,
 }
 
@@ -68,7 +68,7 @@ impl SerializableQuery {
     }
 
     async fn from_query<Q>(
-        conn: &mut crate::PgPooledConn,
+        conn: &mut crate::DatabaseConnectionWithContext<'_>,
         query: Q,
         entity_type: String,
         operation: DatabaseOperation,
@@ -93,11 +93,7 @@ impl SerializableQuery {
             )?;
 
         let bind_collector = conn
-            .run(move |c| {
-                let mut bc = RawBytesBindCollector::<Pg>::new();
-                query.collect_binds(&mut bc, c, &Pg)?;
-                Ok::<RawBytesBindCollector<Pg>, diesel::result::Error>(bc)
-            })
+            .collect_query_binds(query)
             .await
             .change_context(errors::DatabaseError::QueryGenerationFailed)
             .attach_printable("Failed to construct bind parameters")?;
@@ -137,14 +133,17 @@ impl SerializableQuery {
         )
     }
 
-    pub async fn execute(self, conn: &mut crate::PgPooledConn) -> crate::StorageResult<usize> {
+    pub async fn execute(
+        self,
+        conn: &mut crate::DatabaseConnectionWithContext<'_>,
+    ) -> crate::StorageResult<usize> {
         use common_utils::errors::ReportSwitchExt;
 
         let query = self.to_collected_query();
 
         logger::debug!(query = %debug_query::<Pg, _>(&query).to_string());
 
-        conn.run(move |c| ExecuteDsl::execute(query, c))
+        conn.execute_collected(query)
             .await
             .attach_printable("Failed to execute drainer query")
             .switch()
@@ -171,7 +170,7 @@ impl SerializableQuery {
 }
 
 pub(crate) async fn generate_insert_query<T, N>(
-    conn: &mut crate::PgPooledConn,
+    conn: &mut crate::DatabaseConnectionWithContext<'_>,
     new: N,
 ) -> crate::StorageResult<SerializableQuery>
 where
@@ -188,7 +187,7 @@ where
 }
 
 pub(crate) async fn generate_update_query_by_id<T, V, Pk>(
-    conn: &mut crate::PgPooledConn,
+    conn: &mut crate::DatabaseConnectionWithContext<'_>,
     id: Pk,
     values: V,
 ) -> crate::StorageResult<SerializableQuery>
@@ -211,7 +210,7 @@ where
 }
 
 pub(crate) async fn generate_update_query_with_predicate<T, V, P>(
-    conn: &mut crate::PgPooledConn,
+    conn: &mut crate::DatabaseConnectionWithContext<'_>,
     predicate: P,
     values: V,
 ) -> crate::StorageResult<SerializableQuery>

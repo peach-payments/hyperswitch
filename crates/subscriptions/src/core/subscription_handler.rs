@@ -100,6 +100,7 @@ impl<'a> SubscriptionHandler<'a> {
                 merchant_id,
                 merchant_key_store,
                 platform.get_processor().get_account().storage_scheme,
+                false,
             )
             .await
             .change_context(errors::ApiErrorResponse::CustomerNotFound)
@@ -170,10 +171,15 @@ impl<'a> SubscriptionHandler<'a> {
         profile_id: &common_utils::id_type::ProfileId,
     ) -> errors::SubscriptionResult<hyperswitch_domain_models::business_profile::Profile> {
         let merchant_key_store = platform.get_processor().get_key_store();
+        let merchant_id = platform.get_processor().get_account().get_id();
 
         state
             .store
-            .find_business_profile_by_profile_id(merchant_key_store, profile_id)
+            .find_business_profile_by_merchant_id_profile_id(
+                merchant_key_store,
+                merchant_id,
+                profile_id,
+            )
             .await
             .change_context(errors::ApiErrorResponse::ProfileNotFound {
                 id: profile_id.get_string_repr().to_string(),
@@ -216,7 +222,7 @@ impl<'a> SubscriptionHandler<'a> {
             .clone()
             .get_required_value("client_secret")
             .change_context(errors::ApiErrorResponse::MissingRequiredField {
-                field_name: "client_secret",
+                field_name: "client_secret".into(),
             })
             .attach_printable("client secret not found in db")?;
 
@@ -377,6 +383,7 @@ impl SubscriptionWithHandler<'_> {
                 .platform
                 .get_processor()
                 .get_key_store()
+                .inner()
                 .clone(),
         }
     }
@@ -446,13 +453,13 @@ impl ForeignTryFrom<&hyperswitch_domain_models::invoice::Invoice> for subscripti
             amount: invoice.amount,
             currency: api_enums::Currency::from_str(invoice.currency.as_str())
                 .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                    field_name: "currency",
+                    field_name: "currency".into(),
                 })
                 .attach_printable(format!(
                     "unable to parse currency name {currency:?}",
                     currency = invoice.currency
                 ))?,
-            status: invoice.status.clone(),
+            status: invoice.status,
             billing_processor_invoice_id: invoice
                 .connector_invoice_id
                 .as_ref()

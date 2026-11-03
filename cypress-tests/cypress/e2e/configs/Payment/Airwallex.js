@@ -50,6 +50,9 @@ const payment_method_data_3ds = {
   card: {
     last4: "0062",
     card_type: "DEBIT",
+    card_subtype: "CLASSIC",
+    card_segment_type: null,
+    funding_source: null,
     card_network: "Visa",
     card_issuer: "VISA PRODUCTION SUPPORT CLIENT BID 1",
     card_issuing_country: "UNITEDSTATES",
@@ -69,8 +72,11 @@ const payment_method_data_no3ds = {
   card: {
     last4: "1111",
     card_type: "DEBIT",
+    card_subtype: "VISA CLASSIC",
+    card_segment_type: "consumer",
+    funding_source: "DEBIT",
     card_network: "Visa",
-    card_issuer: "Conotoxia Sp Z Oo",
+    card_issuer: "CONOTOXIA SP Z OO",
     card_issuing_country: "POLAND",
     card_isin: "411111",
     card_extended_bin: null,
@@ -380,6 +386,7 @@ export const connectorDetails = {
     },
     ZeroAuthConfirmPayment: {
       Request: {
+        amount: 0,
         payment_method: "card",
         payment_method_type: "credit",
         payment_method_data: {
@@ -472,6 +479,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -491,6 +499,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -510,6 +519,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -530,6 +540,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -581,6 +592,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -697,6 +709,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -714,6 +727,7 @@ export const connectorDetails = {
     },
     PaymentMethodIdMandate3DSAutoCapture: {
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulThreeDSTestCardDetails,
@@ -732,6 +746,7 @@ export const connectorDetails = {
     },
     PaymentMethodIdMandate3DSManualCapture: {
       Request: {
+        amount: 6000,
         payment_method: "card",
         payment_method_data: {
           card: successfulThreeDSTestCardDetails,
@@ -748,7 +763,42 @@ export const connectorDetails = {
       },
     },
     MITAutoCapture: {
-      Request: {},
+      Request: { amount: 6000 },
+      Response: {
+        status: 200,
+        body: {
+          status: "succeeded",
+        },
+      },
+      // Airwallex's sandbox declines a recurring MIT non-deterministically —
+      // the exact same request sometimes succeeds, sometimes comes back
+      // "failed", with nothing in the request explaining the difference.
+      // mitUsingPMId falls back to this block whenever the actual status
+      // comes back "failed", so both outcomes are treated as valid.
+      ResponseCustom: {
+        status: 200,
+        body: {
+          status: "failed",
+          error_message:
+            "The frequency limit of PaymentConsent is reached for operation confirmIntent.",
+        },
+      },
+      Configs: {
+        skipPaymentMethodStatusAssertion: true,
+      },
+    },
+    MITAutoCaptureWithCustomerAcceptance: {
+      Request: {
+        amount: 6000,
+        customer_acceptance: {
+          acceptance_type: "offline",
+          accepted_at: "1963-05-03T04:07:52.723Z",
+          online: {
+            ip_address: "127.0.0.1",
+            user_agent: "amet irure esse",
+          },
+        },
+      },
       Response: {
         status: 200,
         body: {
@@ -757,7 +807,7 @@ export const connectorDetails = {
       },
     },
     MITManualCapture: {
-      Request: {},
+      Request: { amount: 6000 },
       Response: {
         status: 200,
         body: {
@@ -770,6 +820,7 @@ export const connectorDetails = {
         TRIGGER_SKIP: true,
       },
       Request: {
+        amount: 0,
         payment_method: "card",
         payment_method_data: {
           card: successfulNo3DSCardDetails,
@@ -1129,6 +1180,26 @@ export const connectorDetails = {
         },
       },
     }),
+    ConfirmWithoutPmData: getCustomExchange({
+      Request: {
+        payment_method: undefined,
+        payment_method_type: undefined,
+        payment_experience: undefined,
+        payment_method_data: undefined,
+        order_details: undefined,
+      },
+      Response: {
+        status: 422,
+        body: {
+          error: {
+            type: "invalid_request",
+            code: "IR_06",
+            message:
+              "A payment token or payment method data or ctp service details is required",
+          },
+        },
+      },
+    }),
   },
   wallet_pm: {
     PaymentIntent: (paymentMethodType) =>
@@ -1184,6 +1255,9 @@ export const connectorDetails = {
         body: {
           status: "requires_customer_action",
         },
+      },
+      Configs: {
+        skipPaymentMethodStatusAssertion: true,
       },
     }),
     AutoCapture: getCustomExchange({

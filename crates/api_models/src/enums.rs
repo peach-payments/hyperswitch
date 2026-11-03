@@ -49,9 +49,12 @@ pub enum PayoutConnectors {
     Adyen,
     Adyenplatform,
     Cybersource,
+    Deutschebank,
     Ebanx,
     Gigadat,
+    GotymeSanlam,
     Loonio,
+    Mifinity,
     Nomupay,
     Nuvei,
     Payone,
@@ -64,10 +67,11 @@ pub enum PayoutConnectors {
     Worldpayxml,
     Envoy,
     Itaubank,
+    Santander,
 }
 
 #[cfg(feature = "v2")]
-/// Whether active attempt is to be set/unset
+/// Whether active attempt is to be set/unset/left alone
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ToSchema)]
 pub enum UpdateActiveAttempt {
     /// Request to set the active attempt id
@@ -75,6 +79,8 @@ pub enum UpdateActiveAttempt {
     Set(common_utils::id_type::GlobalAttemptId),
     /// To unset the active attempt id
     Unset,
+    /// Leave the active attempt id as it is.
+    NoAction,
 }
 
 /// Generic enum to handle updating or clearing a field
@@ -94,9 +100,12 @@ impl From<PayoutConnectors> for RoutableConnectors {
             PayoutConnectors::Adyen => Self::Adyen,
             PayoutConnectors::Adyenplatform => Self::Adyenplatform,
             PayoutConnectors::Cybersource => Self::Cybersource,
+            PayoutConnectors::Deutschebank => Self::Deutschebank,
             PayoutConnectors::Ebanx => Self::Ebanx,
             PayoutConnectors::Gigadat => Self::Gigadat,
+            PayoutConnectors::GotymeSanlam => Self::GotymeSanlam,
             PayoutConnectors::Loonio => Self::Loonio,
+            PayoutConnectors::Mifinity => Self::Mifinity,
             PayoutConnectors::Nomupay => Self::Nomupay,
             PayoutConnectors::Nuvei => Self::Nuvei,
             PayoutConnectors::Payone => Self::Payone,
@@ -109,6 +118,7 @@ impl From<PayoutConnectors> for RoutableConnectors {
             PayoutConnectors::Worldpayxml => Self::Worldpayxml,
             PayoutConnectors::Envoy => Self::Envoy,
             PayoutConnectors::Itaubank => Self::Itaubank,
+            PayoutConnectors::Santander => Self::Santander,
         }
     }
 }
@@ -120,9 +130,12 @@ impl From<PayoutConnectors> for Connector {
             PayoutConnectors::Adyen => Self::Adyen,
             PayoutConnectors::Adyenplatform => Self::Adyenplatform,
             PayoutConnectors::Cybersource => Self::Cybersource,
+            PayoutConnectors::Deutschebank => Self::Deutschebank,
             PayoutConnectors::Ebanx => Self::Ebanx,
             PayoutConnectors::Gigadat => Self::Gigadat,
+            PayoutConnectors::GotymeSanlam => Self::GotymeSanlam,
             PayoutConnectors::Loonio => Self::Loonio,
+            PayoutConnectors::Mifinity => Self::Mifinity,
             PayoutConnectors::Nomupay => Self::Nomupay,
             PayoutConnectors::Nuvei => Self::Nuvei,
             PayoutConnectors::Payone => Self::Payone,
@@ -135,6 +148,7 @@ impl From<PayoutConnectors> for Connector {
             PayoutConnectors::Worldpayxml => Self::Worldpayxml,
             PayoutConnectors::Envoy => Self::Envoy,
             PayoutConnectors::Itaubank => Self::Itaubank,
+            PayoutConnectors::Santander => Self::Santander,
         }
     }
 }
@@ -147,9 +161,12 @@ impl TryFrom<Connector> for PayoutConnectors {
             Connector::Adyen => Ok(Self::Adyen),
             Connector::Adyenplatform => Ok(Self::Adyenplatform),
             Connector::Cybersource => Ok(Self::Cybersource),
+            Connector::Deutschebank => Ok(Self::Deutschebank),
             Connector::Ebanx => Ok(Self::Ebanx),
             Connector::Gigadat => Ok(Self::Gigadat),
+            Connector::GotymeSanlam => Ok(Self::GotymeSanlam),
             Connector::Loonio => Ok(Self::Loonio),
+            Connector::Mifinity => Ok(Self::Mifinity),
             Connector::Nuvei => Ok(Self::Nuvei),
             Connector::Nomupay => Ok(Self::Nomupay),
             Connector::Payone => Ok(Self::Payone),
@@ -162,6 +179,7 @@ impl TryFrom<Connector> for PayoutConnectors {
             Connector::Worldpayxml => Ok(Self::Worldpayxml),
             Connector::Envoy => Ok(Self::Envoy),
             Connector::Itaubank => Ok(Self::Itaubank),
+            Connector::Santander => Ok(Self::Santander),
             _ => Err(format!("Invalid payout connector {value}")),
         }
     }
@@ -188,6 +206,10 @@ pub enum FrmConnectors {
     Signifyd,
     Riskified,
     Cybersourcedecisionmanager,
+    SanlamPayshield,
+    /// nSure.ai. Executed via the Unified Connector Service, not in-process.
+    /// Official docs: https://docs.nsure.ai/
+    Nsure,
 }
 
 #[derive(
@@ -636,21 +658,43 @@ pub enum TokenStatus {
 
 /// Enum representing the allowed intent statuses for manual status update
 /// Only Succeeded and Failed are valid transitions from Review state
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, ToSchema)]
+#[derive(
+    Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Hash, ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ManualUpdateIntentStatus {
     /// Transition the payment to succeeded state
     Succeeded,
     /// Transition the payment to failed state
     Failed,
+    /// Transition the payment to partially captured state
+    PartiallyCaptured,
+    /// Transition the payment to requires capture state
+    RequiresCapture,
+    /// Transition the payment to partially authorized, requires capture state
+    PartiallyAuthorizedAndRequiresCapture,
+    /// Transition the payment to partially captured and still capturable state
+    PartiallyCapturedAndCapturable,
 }
 
 impl ManualUpdateIntentStatus {
-    /// Convert ManualUpdateIntentStatus to the corresponding IntentStatus
-    pub fn to_intent_status(&self) -> IntentStatus {
+    /// Convert ManualUpdateIntentStatus to the corresponding IntentStatus.
+    /// Goes via `to_attempt_status()` and the existing `AttemptStatus -> IntentStatus`
+    /// conversion, rather than hand-maintaining a second, independent mapping that could
+    /// drift out of sync with it.
+    pub fn to_intent_status(self) -> IntentStatus {
+        self.to_attempt_status().into()
+    }
+
+    /// Convert ManualUpdateIntentStatus to the corresponding AttemptStatus
+    pub fn to_attempt_status(self) -> AttemptStatus {
         match self {
-            Self::Succeeded => IntentStatus::Succeeded,
-            Self::Failed => IntentStatus::Failed,
+            Self::Succeeded => AttemptStatus::Charged,
+            Self::Failed => AttemptStatus::Failure,
+            Self::PartiallyCaptured => AttemptStatus::PartialCharged,
+            Self::RequiresCapture => AttemptStatus::Authorized,
+            Self::PartiallyAuthorizedAndRequiresCapture => AttemptStatus::PartiallyAuthorized,
+            Self::PartiallyCapturedAndCapturable => AttemptStatus::PartialChargedAndChargeable,
         }
     }
 }

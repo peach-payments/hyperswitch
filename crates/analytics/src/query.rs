@@ -14,8 +14,8 @@ use api_models::{
         Granularity,
     },
     enums::{
-        AttemptStatus, AuthenticationType, Connector, Currency, DisputeStage, IntentStatus,
-        PaymentMethod, PaymentMethodType, RoutingApproach,
+        AttemptStatus, AuthenticationType, Connector, Currency, DisputeStage, FutureUsage,
+        IntentStatus, PaymentMethod, PaymentMethodType, RoutingApproach,
     },
     refunds::RefundStatus,
 };
@@ -521,7 +521,8 @@ impl_to_sql_for_to_string!(
     &u64,
     u64,
     Order,
-    RoutingApproach
+    RoutingApproach,
+    FutureUsage
 );
 
 impl_to_sql_for_to_string!(
@@ -552,13 +553,10 @@ pub enum FilterTypes {
     IsNotNull,
 }
 
-/// Strips whitespace and escapes SQL string metacharacters so the value is
-/// safe inside a single-quoted SQL literal: `'<sanitized>'`.
+/// Escapes `\` and `'` so the value stays inside a single-quoted SQL literal.
+/// Spaces are kept so values match as stored.
 pub fn sanitize_sql_string_literal(raw: &str) -> String {
-    let sanitized = raw
-        .replace(' ', "")
-        .replace('\\', "\\\\")
-        .replace('\'', "''");
+    let sanitized = raw.replace('\\', "\\\\").replace('\'', "''");
     format!("'{sanitized}'")
 }
 
@@ -912,7 +910,7 @@ where
         if !self.outer_select.is_empty() {
             query.insert_str(
                 0,
-                format!("SELECT {} FROM (", &self.get_outer_select_clause()).as_str(),
+                format!("SELECT {} FROM (", self.get_outer_select_clause()).as_str(),
             );
             query.push_str(") _");
         }

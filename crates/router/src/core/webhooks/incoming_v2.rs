@@ -1,20 +1,24 @@
-use std::{marker::PhantomData, str::FromStr, time::Instant};
+use std::{marker::PhantomData, str::FromStr};
 
-use actix_web::FromRequest;
 use api_models::webhooks::{self, WebhookResponseTracker};
 use common_utils::{
     errors::ReportSwitchExt, events::ApiEventsType, types::keymanager::KeyManagerState,
 };
 use error_stack::ResultExt;
 use hyperswitch_domain_models::{
+    api::{IncomingWebhookEventMetadata, WebhookResponse},
     payments::{HeaderPayload, PaymentStatusData},
     router_request_types::VerifyWebhookSourceRequestData,
     router_response_types::{VerifyWebhookSourceResponseData, VerifyWebhookStatus},
 };
-use hyperswitch_interfaces::webhooks::{IncomingWebhookRequestDetails, WebhookResourceData};
-use router_env::{instrument, tracing, RequestId};
+use hyperswitch_interfaces::{
+    api::ConnectorCommon,
+    webhooks::{IncomingWebhookRequestDetails, WebhookResourceData},
+};
+use hyperswitch_masking::Secret;
+use router_env::{instrument, tracing};
 
-use super::{types, utils, MERCHANT_ID};
+use super::{source_verification::IncomingWebhookVerifier, types, utils, MERCHANT_ID};
 #[cfg(feature = "revenue_recovery")]
 use crate::core::webhooks::recovery_incoming;
 use crate::{
@@ -28,20 +32,14 @@ use crate::{
             transformers::{GenerateResponse, ToResponse},
         },
         webhooks::{
-            create_event_and_trigger_outgoing_webhook, utils::construct_webhook_router_data,
+            create_event_and_trigger_outgoing_webhook, unverified_rate_limit,
+            utils::construct_webhook_router_data,
         },
     },
     db::StorageInterface,
-    events::api_logs::ApiEvent,
     logger,
-    routes::{
-        app::{ReqState, SessionStateInfo},
-        lock_utils, SessionState,
-    },
-    services::{
-        self, authentication as auth, connector_integration_interface::ConnectorEnum,
-        ConnectorValidation,
-    },
+    routes::{app::ReqState, lock_utils, SessionState},
+    services::{self, connector_integration_interface::ConnectorEnum, ConnectorValidation},
     types::{
         api::{self, ConnectorData, GetToken, IncomingWebhook},
         domain,
@@ -52,7 +50,6 @@ use crate::{
 
 #[allow(clippy::too_many_arguments)]
 pub async fn incoming_webhooks_wrapper<W: types::OutgoingWebhookType>(
-    flow: &impl router_env::types::FlowMetric,
     state: SessionState,
     req_state: ReqState,
     req: &actix_web::HttpRequest,
@@ -66,8 +63,7 @@ pub async fn incoming_webhooks_wrapper<W: types::OutgoingWebhookType>(
         .with_provider_merchant_id(platform.get_provider().get_provider_merchant_id())
         .with_processor_merchant_id(platform.get_processor().get_processor_merchant_id());
 
-    let start_instant = Instant::now();
-    let (application_response, webhooks_response_tracker, serialized_req) =
+    let (webhook_response, webhooks_response_tracker, serialized_req) =
         Box::pin(incoming_webhooks_core::<W>(
             state.clone(),
             req_state,
@@ -82,48 +78,24 @@ pub async fn incoming_webhooks_wrapper<W: types::OutgoingWebhookType>(
 
     logger::info!(incoming_webhook_payload = ?serialized_req);
 
-    let request_duration = Instant::now()
-        .saturating_duration_since(start_instant)
-        .as_millis();
-
-    let request_id = RequestId::extract(req)
-        .await
-        .attach_printable("Unable to extract request id from request")
-        .change_context(errors::ApiErrorResponse::InternalServerError)?;
-    let auth_type = auth::AuthenticationType::WebhookAuth {
-        merchant_id: platform.get_processor().get_account().get_id().clone(),
+    let metadata = IncomingWebhookEventMetadata {
+        event_type: ApiEventsType::Webhooks {
+            connector: connector_id.clone(),
+            payment_id: webhooks_response_tracker.get_payment_id(),
+            refund_id: webhooks_response_tracker.get_refund_id(),
+        },
+        serialized_request: Secret::new(serialized_req),
+        webhook_tracker_data: serde_json::to_value(&webhooks_response_tracker)
+            .inspect_err(
+                |err| logger::error!(error = ?err, "Could not convert webhook effect to string"),
+            )
+            .ok(),
     };
-    let status_code = 200;
-    let api_event = ApiEventsType::Webhooks {
-        connector: connector_id.clone(),
-        payment_id: webhooks_response_tracker.get_payment_id(),
-        refund_id: webhooks_response_tracker.get_refund_id(),
-    };
-    let response_value = serde_json::to_value(&webhooks_response_tracker)
-        .change_context(errors::ApiErrorResponse::InternalServerError)
-        .attach_printable("Could not convert webhook effect to string")?;
 
-    let infra = state.infra_components.clone();
-
-    let api_event = ApiEvent::new(
-        state.tenant.tenant_id.clone(),
-        Some(platform.get_processor().get_account().get_id().clone()),
-        flow,
-        &request_id,
-        request_duration,
-        status_code,
-        serialized_req,
-        Some(response_value),
-        None,
-        auth_type,
-        None,
-        api_event,
-        req,
-        req.method(),
-        infra,
-    );
-    state.event_handler().log_event(&api_event);
-    Ok(application_response)
+    Ok(services::ApplicationResponse::IncomingWebhookEvent {
+        response: Box::new(webhook_response),
+        metadata,
+    })
 }
 
 #[instrument(skip_all)]
@@ -138,7 +110,7 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
     body: actix_web::web::Bytes,
     _is_relay_webhook: bool,
 ) -> errors::RouterResult<(
-    services::ApplicationResponse<serde_json::Value>,
+    WebhookResponse<serde_json::Value>,
     WebhookResponseTracker,
     serde_json::Value,
 )> {
@@ -170,6 +142,10 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
             connector_id,
             platform.get_processor().get_key_store(),
         )
+        .await?;
+
+    let network_verification = IncomingWebhookVerifier::new(&state.conf.incoming_webhooks)
+        .verify(&state, &connector, &connector_name, request_details.headers)
         .await?;
 
     let decoded_body = connector
@@ -239,7 +215,7 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
     // if it is a setup webhook event, return ok status
     if event_type == webhooks::IncomingWebhookEvent::SetupWebhook {
         return Ok((
-            services::ApplicationResponse::StatusOk,
+            WebhookResponse::StatusOk,
             WebhookResponseTracker::NoEffect,
             serde_json::Value::default(),
         ));
@@ -313,6 +289,7 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
                 .attach_printable("There was an issue in incoming webhook source verification")?
         };
 
+        let source_verified = network_verification.resolve_source_verified(source_verified);
         logger::info!(source_verified=?source_verified);
 
         if source_verified {
@@ -331,8 +308,26 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
             connector.is_webhook_source_verification_mandatory(),
             source_verified,
         ) {
-            (true, false) => Err(errors::ApiErrorResponse::WebhookAuthenticationFailed)?,
+            (true, false) => {
+                logger::warn!(
+                    connector = %connector.id(),
+                    merchant_id = ?platform.get_processor().get_account().get_id(),
+                    "Incoming webhook blocked: source verification failed and verification is mandatory for this connector"
+                );
+                Err(errors::ApiErrorResponse::WebhookAuthenticationFailed)?
+            }
             _ => {
+                // Unverified webhooks fall back to syncing with the connector, so cap how many of
+                // them each merchant, profile and merchant connector account can push through
+                if !source_verified {
+                    unverified_rate_limit::check_unverified_webhook_rate_limit(
+                        &state,
+                        &platform,
+                        &merchant_connector_account,
+                    )
+                    .await?;
+                }
+
                 event_object = connector
                     .get_webhook_resource_object(&request_details)
                     .switch()
@@ -371,6 +366,8 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
 
                     api::WebhookFlow::Mandate => todo!(),
 
+                    api::WebhookFlow::AssociatedDataUpdate => todo!(),
+
                     api::WebhookFlow::ExternalAuthentication => todo!(),
                     api::WebhookFlow::FraudCheck => todo!(),
                     api::WebhookFlow::Setup => WebhookResponseTracker::NoEffect,
@@ -395,7 +392,7 @@ async fn incoming_webhooks_core<W: types::OutgoingWebhookType>(
                             &object_ref_id,
                         ))
                         .await
-                        .change_context(errors::ApiErrorResponse::WebhookProcessingFailure)
+                        .switch()
                         .attach_printable("Failed to process recovery incoming webhook")?
                     }
                 }
@@ -454,7 +451,7 @@ async fn payments_incoming_webhook_flow(
                 profile.get_id(),
                 key_manager_state,
                 platform.get_processor().get_key_store(),
-                platform.get_processor().get_account().storage_scheme,
+                platform.get_processor().get_storage_scheme(),
             )
             .await?;
 
@@ -605,8 +602,8 @@ async fn get_trackers_response_for_payment_get_operation<F>(
     payment_id: &api::PaymentIdType,
     profile_id: &common_utils::id_type::ProfileId,
     key_manager_state: &KeyManagerState,
-    merchant_key_store: &domain::MerchantKeyStore,
-    storage_scheme: enums::MerchantStorageScheme,
+    merchant_key_store: &domain::ProcessorKeyStore,
+    storage_scheme: domain::ProcessorStorageScheme,
 ) -> errors::RouterResult<payments::operations::GetTrackerResponse<PaymentStatusData<F>>>
 where
     F: Clone,
@@ -671,7 +668,6 @@ where
                 .to_not_found_response(errors::ApiErrorResponse::PaymentNotFound)?;
             (payment_intent, payment_attempt)
         }
-        api_models::payments::PaymentIdType::PreprocessingId(ref _id) => todo!(),
     };
 
     // We need the address here to send it in the response

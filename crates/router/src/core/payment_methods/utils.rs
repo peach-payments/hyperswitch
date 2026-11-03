@@ -17,9 +17,12 @@ use hyperswitch_masking::ExposeInterface;
 use kgraph_utils::{error::KgraphError, transformers::IntoDirValue};
 #[cfg(feature = "v1")]
 use router_env::logger;
-use storage_impl::redis::cache::{CacheKey, PM_FILTERS_CGRAPH_CACHE};
+use storage_impl::redis::cache::CacheKey;
 
-use crate::{configs::settings, core::configs::dimension_state, routes::SessionState};
+use crate::{
+    configs::settings, core::configs::dimension_state, routes::SessionState,
+    types::payment_methods as pm_types,
+};
 #[cfg(feature = "v2")]
 use crate::{
     db::{
@@ -61,7 +64,10 @@ pub async fn get_merchant_pm_filter_graph(
     state: &SessionState,
     key: &str,
 ) -> Option<Arc<hyperswitch_constraint_graph::ConstraintGraph<dir::DirValue>>> {
-    PM_FILTERS_CGRAPH_CACHE
+    state
+        .store
+        .caches()
+        .pm_filters_cgraph
         .get_val::<Arc<hyperswitch_constraint_graph::ConstraintGraph<dir::DirValue>>>(CacheKey {
             key: key.to_string(),
             prefix: state.tenant.redis_key_prefix.clone(),
@@ -75,7 +81,10 @@ pub async fn refresh_pm_filters_cache(
     graph: cgraph::ConstraintGraph<dir::DirValue>,
 ) -> Arc<hyperswitch_constraint_graph::ConstraintGraph<dir::DirValue>> {
     let pm_filter_graph = Arc::new(graph);
-    PM_FILTERS_CGRAPH_CACHE
+    state
+        .store
+        .caches()
+        .pm_filters_cgraph
         .push(
             CacheKey {
                 key: key.to_string(),
@@ -815,15 +824,45 @@ fn compile_accepted_currency_for_mca(
     ))
 }
 
-pub async fn get_organization_eligibility_config_for_pm_modular_service(
+pub async fn get_should_call_pm_modular_service(
     state: &SessionState,
-    dimensions: &dimension_state::DimensionsWithOrgId,
+    dimensions: &dimension_state::DimensionsWithProviderMerchantIdAndOrgId,
+    customer_id: Option<&common_utils::id_type::CustomerId>,
 ) -> bool {
     dimensions
         .get_should_call_pm_modular_service(
             state.store.as_ref(),
             state.superposition_service.as_ref(),
-            None,
+            customer_id,
+        )
+        .await
+}
+
+/// Resolves when the payment method is written to durable storage.
+pub async fn get_payment_method_integration_type(
+    state: &SessionState,
+    dimensions: &dimension_state::DimensionsWithProviderMerchantIdAndOrgId,
+    customer_id: Option<&common_utils::id_type::CustomerId>,
+) -> pm_types::PaymentMethodIntegrationType {
+    dimensions
+        .get_payment_method_integration_type(
+            state.store.as_ref(),
+            state.superposition_service.as_ref(),
+            customer_id,
+        )
+        .await
+}
+
+pub async fn get_should_generate_merchant_scoped_payment_method_fingerprint(
+    state: &SessionState,
+    dimensions: &dimension_state::DimensionsWithProviderMerchantIdAndOrgId,
+    customer_id: Option<&common_utils::id_type::CustomerId>,
+) -> bool {
+    dimensions
+        .get_should_generate_merchant_scoped_payment_method_fingerprint(
+            state.store.as_ref(),
+            state.superposition_service.as_ref(),
+            customer_id,
         )
         .await
 }
@@ -843,7 +882,7 @@ pub async fn get_should_perform_sdk_vaulting(
 
 pub async fn get_should_schedule_modular_forward_compat(
     state: &SessionState,
-    dimensions: &dimension_state::DimensionsWithProviderMerchantId,
+    dimensions: &dimension_state::DimensionsWithProviderMerchantIdAndOrgId,
     customer_id: Option<&common_utils::id_type::CustomerId>,
 ) -> bool {
     dimensions
@@ -857,7 +896,7 @@ pub async fn get_should_schedule_modular_forward_compat(
 
 pub async fn get_should_schedule_modular_backward_compat(
     state: &SessionState,
-    dimensions: &dimension_state::DimensionsWithProviderMerchantId,
+    dimensions: &dimension_state::DimensionsWithProviderMerchantIdAndOrgId,
     customer_id: Option<&common_utils::id_type::CustomerId>,
 ) -> bool {
     dimensions
@@ -871,7 +910,7 @@ pub async fn get_should_schedule_modular_backward_compat(
 
 pub async fn get_should_trigger_backwards_compatibility_inline(
     state: &SessionState,
-    dimensions: &dimension_state::DimensionsWithProviderMerchantId,
+    dimensions: &dimension_state::DimensionsWithProviderMerchantIdAndOrgId,
     customer_id: Option<&common_utils::id_type::CustomerId>,
 ) -> bool {
     dimensions
@@ -881,6 +920,23 @@ pub async fn get_should_trigger_backwards_compatibility_inline(
             customer_id,
         )
         .await
+}
+
+/// Timeout (in seconds) for fetching a network token from the tokenization service during a
+/// payment, resolved from superposition with database fallback (global key
+/// `network_token_fetch_timeout_in_secs`, default 4).
+pub async fn get_network_token_fetch_timeout_in_secs(state: &SessionState) -> u64 {
+    let dimensions = dimension_state::Dimensions::new();
+
+    let timeout_in_secs = dimensions
+        .get_network_token_fetch_timeout_in_secs(
+            state.store.as_ref(),
+            state.superposition_service.as_ref(),
+            None,
+        )
+        .await;
+
+    u64::from(timeout_in_secs)
 }
 
 pub async fn get_should_trigger_fingerprint_migration(
@@ -912,6 +968,7 @@ pub async fn get_sdk_next_action_for_payment_method_list(
     dimensions: &dimension_state::DimensionsWithProcessorAndProviderMerchantIdAndProfileId,
     customer_id: Option<&common_utils::id_type::CustomerId>,
     has_surcharge_processor: bool,
+    offers_enabled: bool,
 ) -> api_models::payments::SdkNextAction {
     let should_perform_eligibility = dimensions
         .get_should_perform_eligibility(
@@ -924,7 +981,7 @@ pub async fn get_sdk_next_action_for_payment_method_list(
     if should_perform_eligibility {
         api_models::payments::SdkNextAction {
             next_action: api_models::payments::NextActionCall::EligibilityCheck,
-            should_block_confirm: Some(has_surcharge_processor),
+            should_block_confirm: Some(has_surcharge_processor || offers_enabled),
         }
     } else {
         api_models::payments::SdkNextAction {

@@ -68,11 +68,11 @@ where
         let connector_name = router_data.connector.clone();
         let _connector_enum = common_enums::connector_enums::Connector::from_str(&connector_name)
             .change_context(ConnectorError::InvalidConnectorName)?;
+        let rollout_settings = context.rollout_settings();
         let merchant_connector_account = context.merchant_connector_account;
         let processor = &context.processor;
         let lineage_ids = context.lineage_ids;
         let header_payload = context.header_payload;
-        let unified_connector_service_execution_mode = context.execution_mode;
 
         let client = state
             .grpc_client
@@ -113,7 +113,9 @@ where
             .map(ucs_types::UcsResourceId::PaymentAttempt);
 
         let grpc_headers = state
-            .get_grpc_headers_ucs(unified_connector_service_execution_mode)
+            .get_grpc_headers_ucs(rollout_settings.execution_mode)
+            .payment_method(Some(router_data.payment_method))
+            .payment_method_type(router_data.payment_method_type)
             .external_vault_proxy_metadata(None)
             .merchant_reference_id(merchant_reference_id)
             .resource_id(resource_id)
@@ -123,15 +125,21 @@ where
             state,
             create_connector_customer_request,
             grpc_headers,
-            unified_connector_service_execution_mode,
+            rollout_settings,
             |mut router_data, create_connector_customer_request, grpc_headers| async move {
-                let response = Box::pin(client.create_connector_customer(
+                let response = match Box::pin(client.create_connector_customer(
                     create_connector_customer_request,
                     connector_auth_metadata,
                     grpc_headers,
                 ))
                 .await
-                .attach_printable("Failed to create connector customer")?;
+                {
+                    Ok(response) => response,
+                    // UCS connector errors are handled by the wrapper — see `ucs_logging_wrapper_granular`.
+                    Err(report) => {
+                        return Err(report.attach_printable("Failed to create connector customer"));
+                    }
+                };
 
                 let create_connector_customer_response = response.into_inner();
 
@@ -160,7 +168,7 @@ where
         ))
         .await
         .map(|(router_data, _)| router_data)
-        .change_context(ConnectorError::ResponseHandlingFailed)
+        .map_err(payment_gateway::convert_ucs_error_to_connector_error)
     }
 }
 

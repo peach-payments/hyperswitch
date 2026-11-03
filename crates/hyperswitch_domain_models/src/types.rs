@@ -8,7 +8,7 @@ use crate::{
         merchant_connector_webhook_management::{
             ConnectorWebhookGenerateSecret, ConnectorWebhookRegister,
         },
-        revenue_recovery::InvoiceRecordBack,
+        revenue_recovery::{DisputeRecordBack, InvoiceRecordBack},
         subscriptions::{
             GetSubscriptionEstimate, GetSubscriptionItemPrices, GetSubscriptionItems,
             SubscriptionCancel, SubscriptionCreate, SubscriptionPause, SubscriptionResume,
@@ -19,9 +19,10 @@ use crate::{
         CompleteRefundSurchrge, CompleteSurcharge, CreateConnectorCustomer, CreateOrder, Execute,
         ExtendAuthorization, ExternalVaultProxy, GenerateQr, GiftCardBalanceCheck,
         IncrementalAuthorization, PSync, PaymentMethodToken, PostAuthenticate, PostCaptureVoid,
-        PostCaptureVoidSync, PostSessionTokens, PreAuthenticate, PreAuthorizeVoid, PreProcessing,
+        PostCaptureVoidSync, PostSessionTokens, PreAuthenticate, PreAuthorizeVoid,
         ProcessIncomingWebhook, PushNotification, RSync, SdkSessionUpdate, Session,
-        SettlementSplitCreate, SetupMandate, UpdateMetadata, VerifyWebhookSource, Void,
+        SettlementSplitCreate, SetupMandate, UpdateMetadata, UpdatePostConfirm,
+        VerifyWebhookSource, Void,
     },
     router_request_types::{
         merchant_connector_webhook_management::{
@@ -29,7 +30,7 @@ use crate::{
         },
         revenue_recovery::{
             BillingConnectorInvoiceSyncRequest, BillingConnectorPaymentsSyncRequest,
-            InvoiceRecordBackRequest,
+            DisputeRecordBackRequest, InvoiceRecordBackRequest,
         },
         subscriptions::{
             GetSubscriptionEstimateRequest, GetSubscriptionItemPricesRequest,
@@ -50,8 +51,8 @@ use crate::{
         PaymentsCompleteSurchargeData, PaymentsExtendAuthorizationData,
         PaymentsIncrementalAuthorizationData, PaymentsPostAuthenticateData,
         PaymentsPostSessionTokensData, PaymentsPreAuthenticateData, PaymentsPreAuthorizeCancelData,
-        PaymentsPreProcessingData, PaymentsSessionData, PaymentsSurchargeCalculationData,
-        PaymentsSyncData, PaymentsTaxCalculationData, PaymentsUpdateMetadataData,
+        PaymentsSessionData, PaymentsSurchargeCalculationData, PaymentsSyncData,
+        PaymentsTaxCalculationData, PaymentsUpdateMetadataData, PaymentsUpdatePostConfirmData,
         PushNotificationRequestData, RefundsData, SdkPaymentsSessionUpdateData,
         SettlementSplitRequestData, SetupMandateRequestData, VaultRequestData,
         VerifyWebhookSourceRequestData,
@@ -62,7 +63,7 @@ use crate::{
         },
         revenue_recovery::{
             BillingConnectorInvoiceSyncResponse, BillingConnectorPaymentsSyncResponse,
-            InvoiceRecordBackResponse,
+            DisputeRecordBackResponse, InvoiceRecordBackResponse,
         },
         subscriptions::{
             GetSubscriptionEstimateResponse, GetSubscriptionItemPricesResponse,
@@ -84,8 +85,6 @@ pub type ExternalVaultProxyPaymentsRouterData =
     RouterData<ExternalVaultProxy, ExternalVaultProxyPaymentsData, PaymentsResponseData>;
 pub type PaymentsAuthorizeSessionTokenRouterData =
     RouterData<AuthorizeSessionToken, AuthorizeSessionTokenData, PaymentsResponseData>;
-pub type PaymentsPreProcessingRouterData =
-    RouterData<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>;
 pub type PaymentsPushNotificationRouterData =
     RouterData<PushNotification, PushNotificationRequestData, PaymentsResponseData>;
 pub type PaymentsGenerateQrRouterData =
@@ -148,7 +147,8 @@ pub type PaymentsPostSessionTokensRouterData =
 pub type PaymentsSessionRouterData = RouterData<Session, PaymentsSessionData, PaymentsResponseData>;
 pub type PaymentsUpdateMetadataRouterData =
     RouterData<UpdateMetadata, PaymentsUpdateMetadataData, PaymentsResponseData>;
-
+pub type PaymentsUpdatePostConfirmRouterData =
+    RouterData<UpdatePostConfirm, PaymentsUpdatePostConfirmData, PaymentsResponseData>;
 pub type CreateOrderRouterData =
     RouterData<CreateOrder, CreateOrderRequestData, PaymentsResponseData>;
 pub type UasPostAuthenticationRouterData =
@@ -188,6 +188,9 @@ pub type PayoutsRouterData<F> = RouterData<F, PayoutsData, PayoutsResponseData>;
 
 pub type InvoiceRecordBackRouterData =
     RouterData<InvoiceRecordBack, InvoiceRecordBackRequest, InvoiceRecordBackResponse>;
+
+pub type DisputeRecordBackRouterData =
+    RouterData<DisputeRecordBack, DisputeRecordBackRequest, DisputeRecordBackResponse>;
 
 pub type GetSubscriptionItemsRouterData =
     RouterData<GetSubscriptionItems, GetSubscriptionItemsRequest, GetSubscriptionItemsResponse>;
@@ -241,6 +244,13 @@ pub type InvoiceRecordBackRouterDataV2 = RouterDataV2<
     router_data_v2::flow_common_types::InvoiceRecordBackData,
     InvoiceRecordBackRequest,
     InvoiceRecordBackResponse,
+>;
+
+pub type DisputeRecordBackRouterDataV2 = RouterDataV2<
+    DisputeRecordBack,
+    router_data_v2::flow_common_types::DisputeRecordBackData,
+    DisputeRecordBackRequest,
+    DisputeRecordBackResponse,
 >;
 
 pub type GetSubscriptionPlanPricesRouterData = RouterData<

@@ -32,6 +32,15 @@ use crate::{
     types::{self, api, domain, storage, transformers::ForeignFrom},
 };
 
+/// Sums the outbound-call time of two attempts, keeping whichever side is present.
+#[cfg(feature = "v1")]
+fn accumulate_external_latency(total: Option<u128>, attempt: Option<u128>) -> Option<u128> {
+    match (total, attempt) {
+        (Some(total), Some(attempt)) => Some(total + attempt),
+        (total, attempt) => total.or(attempt),
+    }
+}
+
 #[instrument(skip_all)]
 #[allow(clippy::too_many_arguments)]
 #[cfg(feature = "v1")]
@@ -44,14 +53,18 @@ pub async fn do_gsm_actions<'a, F, ApiRequest, FData, D>(
     mut router_data: types::RouterData<F, FData, types::PaymentsResponseData>,
     platform: &domain::Platform,
     operation: &operations::BoxedOperation<'_, F, ApiRequest, D>,
-    customer: &Option<domain::Customer>,
+    mut customer: Option<domain::Customer>,
     validate_result: &operations::ValidateResult,
     schedule_time: Option<time::PrimitiveDateTime>,
     frm_suggestion: Option<storage_enums::FrmSuggestion>,
     business_profile: &domain::Profile,
     feature_config: &core_utils::FeatureConfig,
     _dimensions: &dimension_state::DimensionsWithProcessorAndProviderMerchantIdAndProfileId,
-) -> RouterResult<types::RouterData<F, FData, types::PaymentsResponseData>>
+    post_frm_capture_hold: bool,
+) -> RouterResult<(
+    types::RouterData<F, FData, types::PaymentsResponseData>,
+    Option<domain::Customer>,
+)>
 where
     F: Clone + Send + Sync + std::fmt::Debug + 'static,
     FData: Send + Sync + types::Capturable + Clone + 'static + serde::Serialize,
@@ -102,8 +115,12 @@ where
         false
     };
 
+    // Each retry builds a fresh `RouterData` starting at `None`, so accumulate here to keep
+    // earlier attempts' connector time from being billed to Hyperswitch as `latency - hs_latency`.
+    let mut external_latency_total = router_data.external_latency;
+
     if should_step_up {
-        router_data = Box::pin(do_retry(
+        (router_data, customer) = Box::pin(do_retry(
             &state.clone(),
             req_state.clone(),
             original_connector_data,
@@ -121,8 +138,12 @@ where
             None,
             initial_gsm.clone(),
             feature_config,
+            post_frm_capture_hold,
         ))
         .await?;
+
+        external_latency_total =
+            accumulate_external_latency(external_latency_total, router_data.external_latency);
     }
     // Step up is not applicable so proceed with auto retries flow
     else {
@@ -209,7 +230,7 @@ where
                         (connector_routing_data.connector_data, routing_decision)
                     };
 
-                    router_data = Box::pin(do_retry(
+                    (router_data, customer) = Box::pin(do_retry(
                         &state.clone(),
                         req_state.clone(),
                         &connector,
@@ -228,8 +249,14 @@ where
                         routing_decision,
                         gsm.clone(),
                         feature_config,
+                        post_frm_capture_hold,
                     ))
                     .await?;
+
+                    external_latency_total = accumulate_external_latency(
+                        external_latency_total,
+                        router_data.external_latency,
+                    );
 
                     retries = retries.map(|i| i - 1);
                 }
@@ -238,7 +265,11 @@ where
             initial_gsm = None;
         }
     }
-    Ok(router_data)
+
+    // Report the whole payment's connector time, not just the last attempt's.
+    router_data.external_latency = external_latency_total;
+
+    Ok((router_data, customer))
 }
 
 #[instrument(skip_all)]
@@ -249,7 +280,7 @@ pub async fn is_step_up_enabled_for_merchant_connector(
 ) -> bool {
     let key = merchant_id.get_step_up_enabled_key();
     let db = &*state.store;
-    db.find_config_by_key_unwrap_or(key.as_str(), Some("[]".to_string()))
+    db.find_config_by_key_unwrap_or(key.as_str(), "[]".to_string())
         .await
         .change_context(errors::ApiErrorResponse::InternalServerError)
         .and_then(|step_up_config| {
@@ -272,8 +303,13 @@ pub async fn get_merchant_max_auto_retries_enabled(
 ) -> Option<i32> {
     let key = merchant_id.get_max_auto_retries_enabled();
 
-    db.find_config_by_key(key.as_str())
+    db.find_config_by_key_optional(key.as_str())
         .await
+        .and_then(|config_optional| {
+            config_optional.ok_or_else(|| {
+                error_stack::Report::new(errors::StorageError::ValueNotFound(key.clone()))
+            })
+        })
         .change_context(errors::ApiErrorResponse::InternalServerError)
         .and_then(|retries_config| {
             retries_config
@@ -364,7 +400,7 @@ pub async fn do_retry<'a, F, ApiRequest, FData, D>(
     req_state: ReqState,
     connector: &'a api::ConnectorData,
     operation: &'a operations::BoxedOperation<'a, F, ApiRequest, D>,
-    customer: &'a Option<domain::Customer>,
+    customer: Option<domain::Customer>,
     platform: &domain::Platform,
     payment_data: &'a mut D,
     router_data: types::RouterData<F, FData, types::PaymentsResponseData>,
@@ -377,7 +413,11 @@ pub async fn do_retry<'a, F, ApiRequest, FData, D>(
     routing_decision: Option<routing_helpers::RoutingDecisionData>,
     initial_gsm: Option<hyperswitch_domain_models::gsm::GatewayStatusMap>,
     feature_config: &core_utils::FeatureConfig,
-) -> RouterResult<types::RouterData<F, FData, types::PaymentsResponseData>>
+    post_frm_capture_hold: bool,
+) -> RouterResult<(
+    types::RouterData<F, FData, types::PaymentsResponseData>,
+    Option<domain::Customer>,
+)>
 where
     F: Clone + Send + Sync + std::fmt::Debug + 'static,
     FData: Send + Sync + types::Capturable + Clone + 'static + serde::Serialize,
@@ -402,7 +442,7 @@ where
         connector.connector_name.to_string(),
         payment_data,
         platform.get_processor().get_key_store(),
-        platform.get_processor().get_account().storage_scheme,
+        platform.get_processor().get_storage_scheme(),
         router_data,
         is_step_up,
         initial_gsm,
@@ -410,7 +450,7 @@ where
     .await?;
 
     let (merchant_connector_account, router_data, tokenization_action) =
-        payments::call_connector_service_prerequisites(
+        Box::pin(payments::call_connector_service_prerequisites(
             state,
             platform,
             connector.clone(),
@@ -421,14 +461,15 @@ where
             should_retry_with_pan,
             routing_decision,
             feature_config,
-        )
+            post_frm_capture_hold,
+        ))
         .await?;
 
     let connector_customer_map = customer
         .as_ref()
         .and_then(|customer| customer.connector_customer.as_ref());
 
-    let (updated_customer, call_connector_service_response, updated_state) =
+    let (customer_update, call_connector_service_response, updated_state) =
         payments::decide_unified_connector_service_call(
             state,
             platform.get_processor(),
@@ -449,14 +490,13 @@ where
             tokenization_action,
         )
         .await?;
-    // Update customer at provider level after connector operations complete
-    operation
+    let customer = operation
         .to_domain()?
         .update_customer(
             &updated_state,
             platform.get_provider(),
-            customer.clone(),
-            updated_customer,
+            customer,
+            customer_update,
         )
         .await?;
 
@@ -477,7 +517,7 @@ where
         &dimensions,
     )
     .await?;
-    Ok(router_data)
+    Ok((router_data, customer))
 }
 
 #[cfg(feature = "v2")]
@@ -508,8 +548,8 @@ pub async fn modify_trackers<F, FData, D>(
     state: &routes::SessionState,
     connector: String,
     payment_data: &mut D,
-    key_store: &domain::MerchantKeyStore,
-    storage_scheme: storage_enums::MerchantStorageScheme,
+    key_store: &domain::ProcessorKeyStore,
+    storage_scheme: domain::ProcessorStorageScheme,
     router_data: types::RouterData<F, FData, types::PaymentsResponseData>,
     is_step_up: bool,
     initial_gsm: Option<hyperswitch_domain_models::gsm::GatewayStatusMap>,
@@ -603,7 +643,7 @@ where
                 } else {
                     None
                 },
-                updated_by: storage_scheme.to_string(),
+                updated_by: storage_scheme.inner().to_string(),
                 authentication_data,
                 encoded_data,
                 unified_code: None,
@@ -641,6 +681,10 @@ where
                 sender_payment_instrument_id: payment_data
                     .get_payment_attempt()
                     .sender_payment_instrument_id
+                    .clone(),
+                payment_account_reference: payment_data
+                    .get_payment_attempt()
+                    .payment_account_reference
                     .clone(),
             };
 
@@ -694,7 +738,7 @@ where
                 status: storage_enums::AttemptStatus::Failure,
                 error_reason: Some(error_response.reason.clone()),
                 amount_capturable: Some(MinorUnit::new(0)),
-                updated_by: storage_scheme.to_string(),
+                updated_by: storage_scheme.inner().to_string(),
                 unified_code: initial_gsm.clone().map(|gsm| gsm.unified_code),
                 unified_message: initial_gsm.clone().map(|gsm| gsm.unified_message),
                 standardised_code: Some(initial_gsm.as_ref().and_then(|gsm| gsm.standardised_code)),
@@ -762,7 +806,7 @@ where
             storage::PaymentIntentUpdate::PaymentAttemptAndAttemptCountUpdate {
                 active_attempt_id: payment_data.get_payment_attempt().get_id().to_owned(),
                 attempt_count: new_attempt_count,
-                updated_by: storage_scheme.to_string(),
+                updated_by: storage_scheme.inner().to_string(),
             },
             key_store,
             storage_scheme,
@@ -834,19 +878,22 @@ pub fn make_new_auto_retry_payment_attempt(
         multiple_capture_count: Default::default(),
         amount_capturable: Default::default(),
         updated_by: Default::default(),
-        authentication_data: Default::default(),
+        authentication_data: old_payment_attempt.authentication_data,
         encoded_data: Default::default(),
         merchant_connector_id: Default::default(),
         unified_code: Default::default(),
         unified_message: Default::default(),
-        external_three_ds_authentication_attempted: Default::default(),
-        external_threeds_authentication_type: Default::default(),
-        authentication_connector: Default::default(),
-        authentication_id: Default::default(),
+        external_three_ds_authentication_attempted: old_payment_attempt
+            .external_three_ds_authentication_attempted,
+        external_threeds_authentication_type: old_payment_attempt
+            .external_threeds_authentication_type,
+        authentication_connector: old_payment_attempt.authentication_connector,
+        authentication_id: old_payment_attempt.authentication_id,
         mandate_data: Default::default(),
         payment_method_billing_address_id: Default::default(),
         fingerprint_id: Default::default(),
-        customer_acceptance: Default::default(),
+        fingerprint_type: Default::default(),
+        customer_acceptance: old_payment_attempt.customer_acceptance,
         connector_mandate_detail: Default::default(),
         request_extended_authorization: Default::default(),
         extended_authorization_applied: Default::default(),
@@ -876,7 +923,13 @@ pub fn make_new_auto_retry_payment_attempt(
         retry_type: Some(storage_enums::RetryType::AutoRetry),
         installment_data: Default::default(),
         external_surcharge_details: Default::default(),
+        // Carry the offer forward so the auto-retry keeps the same offer-reduced amount.
+        applied_offer_details: old_payment_attempt.applied_offer_details,
+        // Recomputed for the connector this retry is routed to.
+        applied_overrides: None,
         sender_payment_instrument_id: Default::default(),
+        payment_account_reference: Default::default(),
+        active_frm_id: old_payment_attempt.active_frm_id,
     }
 }
 

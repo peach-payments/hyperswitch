@@ -40,7 +40,7 @@ pub mod auth_headers {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct MifinityConnectorMetadataObject {
-    pub brand_id: Secret<String>,
+    pub brand_id: Option<Secret<String>>,
     pub destination_account_number: Secret<String>,
 }
 
@@ -137,12 +137,17 @@ impl TryFrom<&MifinityRouterData<&types::PaymentsAuthorizeRouterData>> for Mifin
                     );
                     let client_reference = item.router_data.customer_id.clone().ok_or(
                         errors::ConnectorError::MissingRequiredField {
-                            field_name: "client_reference",
+                            field_name: "client_reference".into(),
                         },
                     )?;
                     let destination_account_number = metadata.destination_account_number;
                     let trace_id = item.router_data.connector_request_reference_id.clone();
-                    let brand_id = metadata.brand_id;
+                    let brand_id =
+                        metadata
+                            .brand_id
+                            .ok_or(errors::ConnectorError::MissingRequiredField {
+                                field_name: "brand_id".into(),
+                            })?;
                     let language_preference = data.language_preference;
                     Ok(Self {
                         money,
@@ -165,6 +170,7 @@ impl TryFrom<&MifinityRouterData<&types::PaymentsAuthorizeRouterData>> for Mifin
                 | WalletData::AmazonPayRedirect(_)
                 | WalletData::Paysera(_)
                 | WalletData::Skrill(_)
+                | WalletData::Neteller(_)
                 | WalletData::BluecodeRedirect {}
                 | WalletData::MomoRedirect(_)
                 | WalletData::KakaoPayRedirect(_)
@@ -185,6 +191,7 @@ impl TryFrom<&MifinityRouterData<&types::PaymentsAuthorizeRouterData>> for Mifin
                 | WalletData::SamsungPay(_)
                 | WalletData::TwintRedirect {}
                 | WalletData::VippsRedirect {}
+                | WalletData::WeroRedirect {}
                 | WalletData::TouchNGoRedirect(_)
                 | WalletData::WeChatPayRedirect(_)
                 | WalletData::WeChatPayQr(_)
@@ -283,6 +290,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, MifinityPaymentsResponse, T, PaymentsRe
                         incremental_authorization_allowed: None,
                         authentication_data: None,
                         charges: None,
+                        payment_account_reference: None,
                     }),
                     ..item.data
                 })
@@ -300,6 +308,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, MifinityPaymentsResponse, T, PaymentsRe
                     incremental_authorization_allowed: None,
                     authentication_data: None,
                     charges: None,
+                    payment_account_reference: None,
                 }),
                 ..item.data
             }),
@@ -370,6 +379,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, MifinityPsyncResponse, T, PaymentsRespo
                                 incremental_authorization_allowed: None,
                                 authentication_data: None,
                                 charges: None,
+                                payment_account_reference: None,
                             }),
                             ..item.data
                         })
@@ -387,6 +397,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, MifinityPsyncResponse, T, PaymentsRespo
                             incremental_authorization_allowed: None,
                             authentication_data: None,
                             charges: None,
+                            payment_account_reference: None,
                         }),
                         ..item.data
                     }),
@@ -405,6 +416,7 @@ impl<F, T> TryFrom<ResponseRouterData<F, MifinityPsyncResponse, T, PaymentsRespo
                     incremental_authorization_allowed: None,
                     authentication_data: None,
                     charges: None,
+                    payment_account_reference: None,
                 }),
                 ..item.data
             }),

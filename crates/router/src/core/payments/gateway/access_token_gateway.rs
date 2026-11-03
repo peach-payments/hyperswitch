@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use common_enums::{CallConnectorAction, ExecutionPath};
+use common_enums::{CallConnectorAction, ConnectorType, ExecutionPath};
 use common_utils::{errors::CustomResult, id_type, request::Request, ucs_types};
 use error_stack::ResultExt;
 use hyperswitch_domain_models::{
@@ -74,11 +74,11 @@ where
         >,
         ConnectorError,
     > {
+        let rollout_settings = context.rollout_settings();
         let merchant_connector_account = context.merchant_connector_account;
         let processor = &context.processor;
         let lineage_ids = context.lineage_ids;
         let header_payload = context.header_payload;
-        let unified_connector_service_execution_mode = context.execution_mode;
 
         let client = state
             .grpc_client
@@ -102,23 +102,95 @@ where
             )
             .change_context(ConnectorError::RequestEncodingFailed)
             .attach_printable("Failed to construct request metadata")?;
-        let merchant_reference_id = unified_connector_service::parse_merchant_reference_id(
-            header_payload
-                .x_reference_id
-                .as_deref()
-                .unwrap_or(router_data.payment_id.as_str()),
-        )
-        .map(ucs_types::UcsReferenceId::Payment);
+        // A merchant-authentication (access-token) call can originate from a
+        // payment, a payout, or an FRM pre-risk check. The connector type selects
+        // the UCS connector header namespace, while the ids below carry the
+        // payment/payout reference context.
+        //
+        // The merchant declared the type when the connector account was created,
+        // so read it from there rather than inferring it from the connector name.
+        // Cached credentials carry no type; fall back to the name only then.
+        let connector_type = if router_data.payout_id.is_some() {
+            ConnectorType::PayoutProcessor
+        } else {
+            let declared = {
+                #[cfg(feature = "v1")]
+                {
+                    match &merchant_connector_account {
+                        crate::core::payments::helpers::MerchantConnectorAccountType::DbVal(
+                            mca,
+                        ) => Some(mca.connector_type),
+                        crate::core::payments::helpers::MerchantConnectorAccountType::CacheVal(
+                            _,
+                        ) => None,
+                    }
+                }
+                #[cfg(feature = "v2")]
+                {
+                    match &merchant_connector_account {
+                        hyperswitch_domain_models::merchant_connector_account::MerchantConnectorAccountTypeDetails::MerchantConnectorAccount(mca) => {
+                            Some(mca.connector_type)
+                        }
+                        hyperswitch_domain_models::merchant_connector_account::MerchantConnectorAccountTypeDetails::MerchantConnectorDetails(_) => None,
+                    }
+                }
+            };
+            match declared {
+                Some(ConnectorType::PaymentVas) => ConnectorType::PaymentVas,
+                Some(_) => ConnectorType::PaymentProcessor,
+                None if api_models::enums::FrmConnectors::from_str(&router_data.connector)
+                    .is_ok() =>
+                {
+                    ConnectorType::PaymentVas
+                }
+                None => ConnectorType::PaymentProcessor,
+            }
+        };
 
-        let resource_id = id_type::PaymentResourceId::from_str(router_data.attempt_id.as_str())
-            .inspect_err(
-                |err| logger::warn!(error=?err, "Invalid Payment AttemptId for UCS resource id"),
+        let (merchant_reference_id, resource_id) = if let Some(payout_id) =
+            router_data.payout_id.as_deref()
+        {
+            let merchant_reference_id =
+                unified_connector_service::parse_merchant_payout_reference_id(
+                    header_payload
+                        .x_reference_id
+                        .as_deref()
+                        .unwrap_or(payout_id),
+                )
+                .map(ucs_types::UcsReferenceId::Payout);
+
+            let resource_id = id_type::PayoutResourceId::from_str(router_data.attempt_id.as_str())
+                .inspect_err(
+                    |err| logger::warn!(error=?err, "Invalid Payout AttemptId for UCS resource id"),
+                )
+                .ok()
+                .map(ucs_types::UcsResourceId::PayoutAttempt);
+
+            (merchant_reference_id, resource_id)
+        } else {
+            let merchant_reference_id = unified_connector_service::parse_merchant_reference_id(
+                header_payload
+                    .x_reference_id
+                    .as_deref()
+                    .unwrap_or(router_data.payment_id.as_str()),
             )
-            .ok()
-            .map(ucs_types::UcsResourceId::PaymentAttempt);
+            .map(ucs_types::UcsReferenceId::Payment);
+
+            let resource_id =
+                    id_type::PaymentResourceId::from_str(router_data.attempt_id.as_str())
+                        .inspect_err(|err| {
+                            logger::warn!(error=?err, "Invalid Payment AttemptId for UCS resource id")
+                        })
+                        .ok()
+                        .map(ucs_types::UcsResourceId::PaymentAttempt);
+
+            (merchant_reference_id, resource_id)
+        };
 
         let header_payload = state
-            .get_grpc_headers_ucs(unified_connector_service_execution_mode)
+            .get_grpc_headers_ucs(rollout_settings.execution_mode)
+            .payment_method(Some(router_data.payment_method))
+            .payment_method_type(router_data.payment_method_type)
             .external_vault_proxy_metadata(None)
             .merchant_reference_id(merchant_reference_id)
             .resource_id(resource_id)
@@ -129,16 +201,23 @@ where
             state,
             create_access_token_request,
             header_payload,
-            unified_connector_service_execution_mode,
+            rollout_settings,
             |mut router_data, create_access_token_request, grpc_headers| async move {
-                let response = client
+                let response = match client
                     .create_access_token(
                         create_access_token_request,
                         connector_auth_metadata,
                         grpc_headers,
+                        connector_type,
                     )
                     .await
-                    .attach_printable("Failed to create access token")?;
+                {
+                    Ok(response) => response,
+                    // UCS connector errors are handled by the wrapper — see `ucs_logging_wrapper_granular`.
+                    Err(report) => {
+                        return Err(report.attach_printable("Failed to create access token"));
+                    }
+                };
 
                 let create_access_token_response = response.into_inner();
 
@@ -167,7 +246,7 @@ where
         ))
         .await
         .map(|(router_data, _)| router_data)
-        .change_context(ConnectorError::ResponseHandlingFailed)
+        .map_err(payment_gateway::convert_ucs_error_to_connector_error)
     }
 }
 

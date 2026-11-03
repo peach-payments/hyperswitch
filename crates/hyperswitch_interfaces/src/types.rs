@@ -16,11 +16,11 @@ use hyperswitch_domain_models::{
             CompleteAuthorize, CompleteRefundSurchrge, CompleteSurcharge, CreateConnectorCustomer,
             CreateOrder, ExtendAuthorization, GenerateQr, IncrementalAuthorization, InitPayment,
             PSync, PaymentMethodToken, PostCaptureVoid, PostCaptureVoidSync, PostProcessing,
-            PostSessionTokens, PreAuthorizeVoid, PreProcessing, PushNotification, SdkSessionUpdate,
-            Session, SettlementSplitCreate, SetupMandate, UpdateMetadata, Void,
+            PostSessionTokens, PreAuthorizeVoid, PushNotification, SdkSessionUpdate, Session,
+            SettlementSplitCreate, SetupMandate, UpdateMetadata, UpdatePostConfirm, Void,
         },
         refunds::{Execute, RSync},
-        revenue_recovery::{BillingConnectorPaymentsSync, InvoiceRecordBack},
+        revenue_recovery::{BillingConnectorPaymentsSync, DisputeRecordBack, InvoiceRecordBack},
         subscriptions::{
             GetSubscriptionEstimate, GetSubscriptionItemPrices, GetSubscriptionItems,
             SubscriptionCancel, SubscriptionCreate, SubscriptionPause, SubscriptionResume,
@@ -42,7 +42,7 @@ use hyperswitch_domain_models::{
         },
         revenue_recovery::{
             BillingConnectorInvoiceSyncRequest, BillingConnectorPaymentsSyncRequest,
-            InvoiceRecordBackRequest,
+            DisputeRecordBackRequest, InvoiceRecordBackRequest,
         },
         subscriptions::{
             GetSubscriptionEstimateRequest, GetSubscriptionItemPricesRequest,
@@ -64,9 +64,9 @@ use hyperswitch_domain_models::{
         PaymentsCompleteSurchargeData, PaymentsExtendAuthorizationData,
         PaymentsIncrementalAuthorizationData, PaymentsPostAuthenticateData,
         PaymentsPostProcessingData, PaymentsPostSessionTokensData, PaymentsPreAuthenticateData,
-        PaymentsPreAuthorizeCancelData, PaymentsPreProcessingData, PaymentsSessionData,
-        PaymentsSurchargeCalculationData, PaymentsSyncData, PaymentsTaxCalculationData,
-        PaymentsUpdateMetadataData, PushNotificationRequestData, RefundsData,
+        PaymentsPreAuthorizeCancelData, PaymentsSessionData, PaymentsSurchargeCalculationData,
+        PaymentsSyncData, PaymentsTaxCalculationData, PaymentsUpdateMetadataData,
+        PaymentsUpdatePostConfirmData, PushNotificationRequestData, RefundsData,
         RetrieveFileRequestData, SdkPaymentsSessionUpdateData, SettlementSplitRequestData,
         SetupMandateRequestData, SubmitEvidenceRequestData, UploadFileRequestData,
         VaultRequestData, VerifyWebhookSourceRequestData,
@@ -77,7 +77,7 @@ use hyperswitch_domain_models::{
         },
         revenue_recovery::{
             BillingConnectorInvoiceSyncResponse, BillingConnectorPaymentsSyncResponse,
-            InvoiceRecordBackResponse,
+            DisputeRecordBackResponse, InvoiceRecordBackResponse,
         },
         subscriptions::{
             GetSubscriptionEstimateResponse, GetSubscriptionItemPricesResponse,
@@ -162,6 +162,12 @@ pub type PaymentsPostSessionTokensType = dyn ConnectorIntegration<
 /// Type alias for `ConnectorIntegration<UpdateMetadata, PaymentsUpdateMetadataData, PaymentsResponseData>`
 pub type PaymentsUpdateMetadataType =
     dyn ConnectorIntegration<UpdateMetadata, PaymentsUpdateMetadataData, PaymentsResponseData>;
+/// Type alias for `ConnectorIntegration<UpdatePostConfirm, PaymentsUpdatePostConfirmData, PaymentsResponseData>`
+pub type PaymentsUpdatePostConfirmType = dyn ConnectorIntegration<
+    UpdatePostConfirm,
+    PaymentsUpdatePostConfirmData,
+    PaymentsResponseData,
+>;
 /// Type alias for `ConnectorIntegration<SdkSessionUpdate, SdkPaymentsSessionUpdateData, PaymentsResponseData>`
 pub type SdkSessionUpdateType =
     dyn ConnectorIntegration<SdkSessionUpdate, SdkPaymentsSessionUpdateData, PaymentsResponseData>;
@@ -174,10 +180,6 @@ pub type MandateRevokeType =
 /// Type alias for `ConnectorIntegration<CreateOrder, CreateOrderRequestData, PaymentsResponseData>`
 pub type CreateOrderType =
     dyn ConnectorIntegration<CreateOrder, CreateOrderRequestData, PaymentsResponseData>;
-/// Type alias for `ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>`
-pub type PaymentsPreProcessingType =
-    dyn ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>;
-
 /// Type alias for `ConnectorIntegration<PreAuthenticate, PaymentsPreAuthenticateData, PaymentsResponseData>`
 pub type PaymentsPreAuthenticateType =
     dyn ConnectorIntegration<PreAuthenticate, PaymentsPreAuthenticateData, PaymentsResponseData>;
@@ -410,6 +412,13 @@ pub type UasProcessWebhookType = dyn ConnectorIntegration<
 >;
 
 /// Type alias for `ConnectorIntegration<InvoiceRecordBack, InvoiceRecordBackRequest, InvoiceRecordBackResponse>`
+pub type DisputeRecordBackType = dyn ConnectorIntegration<
+    DisputeRecordBack,
+    DisputeRecordBackRequest,
+    DisputeRecordBackResponse,
+>;
+
+/// Type alias for `ConnectorIntegration<InvoiceRecordBack, InvoiceRecordBackRequest, InvoiceRecordBackResponse>`
 pub type InvoiceRecordBackType = dyn ConnectorIntegration<
     InvoiceRecordBack,
     InvoiceRecordBackRequest,
@@ -435,6 +444,14 @@ pub type BillingConnectorInvoiceSyncType = dyn ConnectorIntegration<
     BillingConnectorInvoiceSync,
     BillingConnectorInvoiceSyncRequest,
     BillingConnectorInvoiceSyncResponse,
+>;
+
+/// Type alias for `ConnectorIntegrationV2<InvoiceRecordBack, InvoiceRecordBackData, InvoiceRecordBackRequest, InvoiceRecordBackResponse>`
+pub type DisputeRecordBackTypeV2 = dyn ConnectorIntegrationV2<
+    DisputeRecordBack,
+    flow_common_types::DisputeRecordBackData,
+    DisputeRecordBackRequest,
+    DisputeRecordBackResponse,
 >;
 
 /// Type alias for `ConnectorIntegrationV2<InvoiceRecordBack, InvoiceRecordBackData, InvoiceRecordBackRequest, InvoiceRecordBackResponse>`
@@ -580,4 +597,15 @@ pub struct ComparisonServiceConfig {
     pub enabled: bool,
     /// Timeout in seconds for comparison service requests
     pub timeout_secs: Option<u64>,
+    /// Override HTTP proxy URL used for UCS rollout proxy switching
+    pub http_url: String,
+    /// Override HTTPS proxy URL used for UCS rollout proxy switching
+    pub https_url: String,
+    /// Shared shadow request-failure threshold; override with ROUTER__COMPARISON_SERVICE__SHADOW_KILL_SWITCH_THRESHOLD.
+    #[serde(default = "default_shadow_kill_switch_threshold")]
+    pub shadow_kill_switch_threshold: u64,
+}
+
+fn default_shadow_kill_switch_threshold() -> u64 {
+    1
 }

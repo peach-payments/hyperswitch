@@ -1,24 +1,15 @@
+#[cfg(feature = "diesel")]
 use common_utils::impl_to_sql_from_sql_json;
+#[cfg(feature = "diesel")]
 use diesel::{sql_types::Jsonb, AsExpression, FromSqlRow};
 use euclid::frontend::dir::{DirKeyKind, EuclidDirFilter};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Enum representing the possible outcomes of the 3DS Decision Rule Engine.
-#[derive(
-    Serialize,
-    Deserialize,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    FromSqlRow,
-    AsExpression,
-    ToSchema,
-    Default,
-)]
-#[diesel(sql_type = Jsonb)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, ToSchema, Default)]
+#[cfg_attr(feature = "diesel", derive(FromSqlRow, AsExpression))]
+#[cfg_attr(feature = "diesel", diesel(sql_type = Jsonb))]
 #[serde(rename_all = "snake_case")]
 pub enum ThreeDSDecision {
     /// No 3DS authentication required
@@ -28,6 +19,8 @@ pub enum ThreeDSDecision {
     ChallengeRequested,
     /// Prefer 3DS Challenge
     ChallengePreferred,
+    /// Perform 3DS authentication without expressing a challenge preference
+    NoPreference,
     /// Request 3DS Exemption, Type: Transaction Risk Analysis (TRA)
     ThreeDsExemptionRequestedTra,
     /// Request 3DS Exemption, Type: Low Value Transaction
@@ -35,6 +28,7 @@ pub enum ThreeDSDecision {
     /// No challenge requested by merchant (e.g., delegated authentication)
     IssuerThreeDsExemptionRequested,
 }
+#[cfg(feature = "diesel")]
 impl_to_sql_from_sql_json!(ThreeDSDecision);
 
 impl ThreeDSDecision {
@@ -45,10 +39,9 @@ impl ThreeDSDecision {
 }
 
 /// Struct representing the output configuration for the 3DS Decision Rule Engine.
-#[derive(
-    Serialize, Default, Deserialize, Debug, Clone, PartialEq, Eq, FromSqlRow, AsExpression, ToSchema,
-)]
-#[diesel(sql_type = Jsonb)]
+#[derive(Serialize, Default, Deserialize, Debug, Clone, PartialEq, Eq, ToSchema)]
+#[cfg_attr(feature = "diesel", derive(FromSqlRow, AsExpression))]
+#[cfg_attr(feature = "diesel", diesel(sql_type = Jsonb))]
 pub struct ThreeDSDecisionRule {
     /// The decided 3DS action based on the rules
     pub decision: ThreeDSDecision,
@@ -61,10 +54,13 @@ impl ThreeDSDecisionRule {
     }
 }
 
+#[cfg(feature = "diesel")]
 impl_to_sql_from_sql_json!(ThreeDSDecisionRule);
 
 impl EuclidDirFilter for ThreeDSDecisionRule {
     const ALLOWED: &'static [DirKeyKind] = &[
+        DirKeyKind::CardBin,
+        DirKeyKind::ExtendedCardBin,
         DirKeyKind::CardNetwork,
         DirKeyKind::PaymentAmount,
         DirKeyKind::PaymentCurrency,
@@ -76,5 +72,29 @@ impl EuclidDirFilter for ThreeDSDecisionRule {
         DirKeyKind::AcquirerCountry,
         DirKeyKind::AcquirerFraudRate,
         DirKeyKind::CardDiscovery,
+        DirKeyKind::BusinessCountry,
+        DirKeyKind::MetaData,
     ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_preference_does_not_force_a_challenge() {
+        assert!(!ThreeDSDecision::NoPreference.should_force_3ds_challenge());
+        assert_eq!(
+            serde_json::to_value(ThreeDSDecision::NoPreference).expect("serialize decision"),
+            serde_json::json!("no_preference")
+        );
+    }
+
+    #[test]
+    fn bin_keys_are_allowed_for_three_ds_decision_rules() {
+        let allowed = <ThreeDSDecisionRule as EuclidDirFilter>::ALLOWED;
+
+        assert!(allowed.contains(&DirKeyKind::CardBin));
+        assert!(allowed.contains(&DirKeyKind::ExtendedCardBin));
+    }
 }

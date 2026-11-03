@@ -49,6 +49,53 @@ use crate::{
     workflows::outgoing_webhook_retry,
 };
 
+trait OutgoingWebhookContentStatusExt {
+    const DEFAULT_STATUS_ENABLED: bool = true;
+
+    fn is_status_enabled(&self, profile: &domain::Profile) -> bool;
+}
+
+impl OutgoingWebhookContentStatusExt for api::OutgoingWebhookContent {
+    fn is_status_enabled(&self, profile: &domain::Profile) -> bool {
+        match self {
+            Self::PaymentDetails(response) => profile
+                .get_configured_payment_webhook_statuses()
+                .map(|statuses| statuses.contains(&response.status))
+                .unwrap_or(Self::DEFAULT_STATUS_ENABLED),
+            Self::RefundDetails(response) => {
+                let status = common_enums::RefundStatus::from(response.status);
+                profile
+                    .get_configured_refund_webhook_statuses()
+                    .map(|statuses| statuses.contains(&status))
+                    .unwrap_or(Self::DEFAULT_STATUS_ENABLED)
+            }
+            Self::DisputeDetails(response) => profile
+                .get_configured_dispute_webhook_statuses()
+                .map(|statuses| statuses.contains(&response.dispute_status))
+                .unwrap_or(Self::DEFAULT_STATUS_ENABLED),
+            Self::MandateDetails(response) => profile
+                .get_configured_mandate_webhook_statuses()
+                .map(|statuses| statuses.contains(&response.status))
+                .unwrap_or(Self::DEFAULT_STATUS_ENABLED),
+            #[cfg(feature = "payouts")]
+            Self::PayoutDetails(response) => profile
+                .get_configured_payout_webhook_statuses()
+                .map(|statuses| statuses.contains(&response.status))
+                .unwrap_or(Self::DEFAULT_STATUS_ENABLED),
+            Self::SubscriptionDetails(response) => response
+                .invoice
+                .as_ref()
+                .map(|invoice| {
+                    profile
+                        .get_configured_invoice_webhook_statuses()
+                        .map(|statuses| statuses.contains(&invoice.status))
+                        .unwrap_or(Self::DEFAULT_STATUS_ENABLED)
+                })
+                .unwrap_or(Self::DEFAULT_STATUS_ENABLED),
+        }
+    }
+}
+
 pub(crate) async fn get_webhook_events(
     state: &SessionState,
     platform: domain::Platform,
@@ -66,7 +113,6 @@ pub(crate) async fn get_webhook_events(
         },
     }];
 
-    #[cfg(feature = "v1")]
     if let Some(surcharge_connector_id) = provider_profile
         .surcharge_connector_details
         .as_ref()
@@ -101,7 +147,6 @@ pub(crate) async fn get_webhook_events(
 }
 
 /// Fetches surcharge connector and builds surcharge webhook event if applicable.
-#[cfg(feature = "v1")]
 async fn get_surcharge_webhook_event(
     state: &SessionState,
     platform: domain::Platform,
@@ -126,7 +171,7 @@ async fn get_surcharge_webhook_event(
     let connector_name =
         api::enums::SurchargeConnectors::from_str(&merchant_surcharge_connector.connector_name)
             .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                field_name: "connector",
+                field_name: "connector".into(),
             })?;
 
     let surcharge_event = match primary_event_type.to_surcharge_event() {
@@ -172,45 +217,51 @@ pub(crate) async fn create_event_and_trigger_outgoing_webhook(
             business_profile_id=?webhook_recipient.profile.get_id(),
             "Outgoing webhooks are disabled in application configuration"
         );
-        return Ok(());
-    };
-
-    let events_to_trigger = get_webhook_events(
-        &state,
-        platform.clone(),
-        primary_event_type,
-        &primary_content,
-        webhook_resource_data,
-        &provider_profile,
-        &webhook_recipient,
-    )
-    .await?;
-
-    let provider_merchant_id = platform.get_provider().get_account().get_id().clone();
-    let processor_merchant_id = platform.get_processor().get_account().get_id().clone();
-
-    for event_data in events_to_trigger {
-        let event_type = event_data.event_type;
-        let _ = insert_event_and_spawn_webhook_delivery(
-            state.clone(),
-            &platform,
-            event_data,
+    } else if !primary_content.is_status_enabled(&provider_profile) {
+        logger::debug!(
+            business_profile_id = ?provider_profile.get_id(),
+            %event_class,
+            %primary_event_type,
+            "Outgoing webhook is disabled for the current resource status"
+        );
+    } else {
+        let events_to_trigger = get_webhook_events(
+            &state,
+            platform.clone(),
+            primary_event_type,
+            &primary_content,
+            webhook_resource_data,
+            &provider_profile,
             &webhook_recipient,
-            provider_merchant_id.clone(),
-            processor_merchant_id.clone(),
-            primary_object_id.clone(),
-            primary_object_type,
-            primary_object_created_at,
-            event_class,
         )
-        .await
-        .inspect_err(|error| {
-            logger::error!(
-                ?error,
-                "Failed to insert event and spawn webhook delivery for event type {}",
-                event_type
-            );
-        });
+        .await?;
+
+        let provider_merchant_id = platform.get_provider().get_account().get_id().clone();
+        let processor_merchant_id = platform.get_processor().get_processor_merchant_id();
+
+        for event_data in events_to_trigger {
+            let event_type = event_data.event_type;
+            let _ = insert_event_and_spawn_webhook_delivery(
+                state.clone(),
+                &platform,
+                event_data,
+                &webhook_recipient,
+                provider_merchant_id.clone(),
+                processor_merchant_id.inner().clone(),
+                primary_object_id.clone(),
+                primary_object_type,
+                primary_object_created_at,
+                event_class,
+            )
+            .await
+            .inspect_err(|error| {
+                logger::error!(
+                    ?error,
+                    "Failed to insert event and spawn webhook delivery for event type {}",
+                    event_type
+                );
+            });
+        }
     }
 
     Ok(())
@@ -715,25 +766,33 @@ async fn trigger_webhook_to_connector(
     }
 }
 
+/// Outgoing webhooks run at provider or processor level depending on who triggered them, so
+/// the merchant id and key store both come from that merchant and are tagged here.
 async fn update_payment_attempt_from_webhook_response(
     state: &SessionState,
     event: &domain::Event,
-    processor_merchant_id: &common_utils::id_type::MerchantId,
+    merchant_id: &common_utils::id_type::MerchantId,
     merchant_key_store: &domain::MerchantKeyStore,
 ) {
     if event.event_type == enums::EventType::SurchargePaymentSucceeded {
         let merchant_account = state
             .store
-            .find_merchant_account_by_merchant_id(processor_merchant_id, merchant_key_store)
+            .find_merchant_account_by_merchant_id(merchant_id, merchant_key_store)
             .await;
 
         let storage_scheme = match &merchant_account {
-            Ok(ma) => ma.storage_scheme,
+            Ok(merchant_account) => {
+                domain::ProcessorMerchantAccount::from_untagged(merchant_account.clone())
+                    .get_storage_scheme()
+            }
             Err(err) => {
                 logger::warn!(?err, "Using default PostgresOnly storage scheme");
-                enums::MerchantStorageScheme::PostgresOnly
+                domain::ProcessorStorageScheme::postgres_only()
             }
         };
+        let processor_merchant_id = domain::ProcessorMerchantId::from(merchant_id.clone());
+        let merchant_key_store =
+            domain::ProcessorKeyStore::from_untagged(merchant_key_store.clone());
 
         let attempt_id = match &event.metadata {
             Some(diesel_models::EventMetadata::Surcharge {
@@ -753,9 +812,9 @@ async fn update_payment_attempt_from_webhook_response(
             .store
             .find_payment_attempt_by_attempt_id_processor_merchant_id(
                 attempt_id,
-                processor_merchant_id,
+                &processor_merchant_id,
                 storage_scheme,
-                merchant_key_store,
+                &merchant_key_store,
             )
             .await;
         let payment_attempt = match payment_attempt_result {
@@ -770,8 +829,8 @@ async fn update_payment_attempt_from_webhook_response(
             }
         };
         let existing_details = match payment_attempt.external_surcharge_details.clone() {
-            Some(details) => details,
-            None => {
+            Some(details) if details.usable_connector_id().is_some() => details,
+            Some(_) | None => {
                 logger::debug!(
                     attempt_id = %attempt_id,
                     "No external_surcharge_details found; nothing to update"
@@ -782,11 +841,13 @@ async fn update_payment_attempt_from_webhook_response(
         let updated_details = common_types::payments::ExternalSurchargeDetails {
             external_surcharge_id: existing_details.external_surcharge_id,
             external_surcharge_amount: existing_details.external_surcharge_amount,
+            surcharge_percentage: existing_details.surcharge_percentage,
             sale_notified: true,
+            error_details: existing_details.error_details,
         };
         let update = hyperswitch_domain_models::payments::payment_attempt::PaymentAttemptUpdate::ExternalSurchargeUpdate {
         external_surcharge_details: updated_details,
-        updated_by: storage_scheme.to_string(),
+        updated_by: storage_scheme.inner().to_string(),
     };
         let _ = state
             .store
@@ -794,7 +855,7 @@ async fn update_payment_attempt_from_webhook_response(
                 payment_attempt,
                 update,
                 storage_scheme,
-                merchant_key_store,
+                &merchant_key_store,
             )
             .await
             .inspect_err(|err| {
@@ -982,10 +1043,10 @@ pub(crate) async fn add_outgoing_webhook_retry_task_to_process_tracker(
     application_source: common_enums::ApplicationSource,
     webhook_recipient_data: types::WebhookRecipientData,
 ) -> CustomResult<storage::ProcessTracker, errors::StorageError> {
-    let processor_merchant_id = platform.get_processor().get_account().get_id().clone();
+    let processor_merchant_id = platform.get_processor().get_processor_merchant_id();
     let provider_merchant_id = platform.get_provider().get_account().get_id().clone();
     let dimensions = crate::core::configs::dimension_state::Dimensions::new()
-        .with_processor_merchant_id(processor_merchant_id.clone().into());
+        .with_processor_merchant_id(processor_merchant_id.clone());
     let schedule_time = outgoing_webhook_retry::get_webhook_delivery_retry_schedule_time(
         db,
         superposition_client,
@@ -1001,7 +1062,7 @@ pub(crate) async fn add_outgoing_webhook_retry_task_to_process_tracker(
     let tracking_data = types::OutgoingWebhookTrackingData {
         merchant_id: provider_merchant_id,
         business_profile_id: webhook_recipient.profile.get_id().to_owned(),
-        processor_merchant_id: Some(processor_merchant_id),
+        processor_merchant_id: Some(processor_merchant_id.inner().clone()),
         initiator_merchant_id: Some(webhook_recipient.key_store.merchant_id.clone()),
         event_type: event.event_type,
         event_class: event.event_class,
@@ -1480,7 +1541,6 @@ async fn handle_successful_delivery(
     .await
 }
 
-#[cfg(feature = "v1")]
 trait OutgoingWebhookResponseHandlerV1 {
     #[allow(clippy::too_many_arguments)]
     async fn handle_success_response<R: WebhookDeliveryResponse>(
@@ -1513,7 +1573,6 @@ trait OutgoingWebhookResponseHandlerV1 {
     >;
 }
 
-#[cfg(feature = "v1")]
 impl OutgoingWebhookResponseHandlerV1 for enums::WebhookDeliveryAttempt {
     async fn handle_success_response<R: WebhookDeliveryResponse>(
         &self,
@@ -1603,7 +1662,6 @@ impl OutgoingWebhookResponseHandlerV1 for enums::WebhookDeliveryAttempt {
     }
 }
 
-#[cfg(feature = "v1")]
 #[async_trait::async_trait]
 trait WebhookNotificationHandlerV1: Send + Sync {
     async fn notified_action(
@@ -1625,7 +1683,6 @@ trait WebhookNotificationHandlerV1: Send + Sync {
     ) -> Option<Report<errors::WebhooksFlowError>>;
 }
 
-#[cfg(feature = "v1")]
 #[async_trait::async_trait]
 impl WebhookNotificationHandlerV1 for types::InitialAttempt {
     async fn notified_action(
@@ -1671,7 +1728,6 @@ impl WebhookNotificationHandlerV1 for types::InitialAttempt {
     }
 }
 
-#[cfg(feature = "v1")]
 #[async_trait::async_trait]
 impl WebhookNotificationHandlerV1 for types::AutomaticRetry {
     async fn notified_action(
@@ -1726,7 +1782,6 @@ impl WebhookNotificationHandlerV1 for types::AutomaticRetry {
     }
 }
 
-#[cfg(feature = "v1")]
 #[async_trait::async_trait]
 impl WebhookNotificationHandlerV1 for types::ManualRetry {
     async fn notified_action(

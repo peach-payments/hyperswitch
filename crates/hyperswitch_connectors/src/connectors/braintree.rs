@@ -18,7 +18,7 @@ use common_utils::{
 };
 use error_stack::{report, Report, ResultExt};
 use hyperswitch_domain_models::{
-    api::ApplicationResponse,
+    api::WebhookResponse,
     router_data::{AccessToken, ConnectorAuthType, ErrorResponse, RouterData},
     router_flow_types::{
         access_token_auth::AccessTokenAuth,
@@ -1119,8 +1119,8 @@ impl IncomingWebhook for Braintree {
         _request: &IncomingWebhookRequestDetails<'_>,
         _error_kind: Option<IncomingWebhookFlowError>,
         _connector_authentication_type: Option<crypto::Encryptable<Secret<serde_json::Value>>>,
-    ) -> CustomResult<ApplicationResponse<serde_json::Value>, errors::ConnectorError> {
-        Ok(ApplicationResponse::TextPlain("[accepted]".to_string()))
+    ) -> CustomResult<WebhookResponse<serde_json::Value>, errors::ConnectorError> {
+        Ok(WebhookResponse::TextPlain("[accepted]".to_string()))
     }
 
     fn get_dispute_details(
@@ -1148,6 +1148,7 @@ impl IncomingWebhook for Braintree {
                 connector_status: dispute_data.status,
                 created_at: dispute_data.created_at,
                 updated_at: dispute_data.updated_at,
+                additional_details: None,
             }),
             None => Err(errors::ConnectorError::WebhookResourceObjectNotFound)?,
         }
@@ -1201,7 +1202,7 @@ impl ConnectorRedirectResponse for Braintree {
                     let redirection_response: transformers::BraintreeRedirectionResponse =
                         serde_json::from_value(payload).change_context(
                             errors::ConnectorError::MissingConnectorRedirectionPayload {
-                                field_name: "redirection_response",
+                                field_name: "redirection_response".into(),
                             },
                         )?;
                     let braintree_payload =

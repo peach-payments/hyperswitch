@@ -3,13 +3,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use common_enums::ApiClientError;
+use common_enums::{ApiClientError, PaymentMethod, PaymentMethodType};
+#[cfg(feature = "ext_services_latency")]
+use common_utils::consts::EXTERNAL_CALL_TAG;
 use common_utils::{
-    consts::{X_CONNECTOR_NAME, X_FLOW_NAME, X_REQUEST_ID},
+    consts::{
+        X_CONNECTOR_NAME, X_FLOW_NAME, X_PAYMENT_METHOD, X_PAYMENT_METHOD_TYPE, X_REQUEST_ID,
+    },
     errors::CustomResult,
-    request::{Request, RequestContent},
+    request::{Headers, Request, RequestContent},
+    transformers::ForeignTryFrom,
 };
 use error_stack::{report, ResultExt};
+use futures::FutureExt;
 use http::Method;
 use hyperswitch_domain_models::{
     errors::api_error_response,
@@ -267,6 +273,11 @@ where
                         X_CONNECTOR_NAME.to_string(),
                         Maskable::Masked(hyperswitch_masking::Secret::new(connector_name.clone().to_string())),
                     ));
+                    add_payment_method_headers(
+                        &mut request.headers,
+                        req.payment_method,
+                        req.payment_method_type,
+                    );
                     state.get_request_id().as_ref().map(|id| {
                         let request_id = id.to_string();
                         request.headers.insert((
@@ -278,10 +289,14 @@ where
                     let request_url = request.url.clone();
                     let request_method = request.method;
                     let current_time = Instant::now();
-                    let response =
-                        call_connector_api(state, request, "execute_connector_processing_step")
-                            .await;
-                    let external_latency = current_time.elapsed().as_millis();
+                    let response = call_connector_api(
+                        state,
+                        request,
+                        "execute_connector_processing_step",
+                        None,
+                    )
+                    .await;
+                    let external_latency = common_utils::elapsed::millis_since(current_time);
                     logger::info!(raw_connector_request=?masked_request_body);
                     let status_code = response
                         .as_ref()
@@ -369,6 +384,9 @@ where
                                     }?
                                 }
                                 Err(body) => {
+                                    // Preserve the HTTP status if connector-specific parsing fails.
+                                    let http_status = http::StatusCode::from_u16(body.status_code)
+                                        .unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR);
                                     router_data.connector_http_status_code = Some(body.status_code);
                                     router_data.external_latency = Some(
                                         router_data
@@ -395,7 +413,8 @@ where
                                                 .get_5xx_error_response(
                                                     body,
                                                     Some(&mut connector_event),
-                                                )?;
+                                                )
+                                                .attach(http_status)?;
                                             state
                                                 .event_handler()
                                                 .log_connector_event(&connector_event);
@@ -406,7 +425,8 @@ where
                                                 .get_error_response(
                                                     body,
                                                     Some(&mut connector_event),
-                                                )?;
+                                                )
+                                                .attach(http_status)?;
                                             if let Some(status) = error_res.attempt_status {
                                                 router_data.status = status;
                                             };
@@ -462,41 +482,85 @@ where
     }
 }
 
+fn add_payment_method_headers(
+    headers: &mut Headers,
+    payment_method: PaymentMethod,
+    payment_method_type: Option<PaymentMethodType>,
+) {
+    headers.insert((
+        X_PAYMENT_METHOD.to_string(),
+        Maskable::Normal(payment_method.to_string()),
+    ));
+
+    if let Some(payment_method_type) = payment_method_type {
+        headers.insert((
+            X_PAYMENT_METHOD_TYPE.to_string(),
+            Maskable::Normal(payment_method_type.to_string()),
+        ));
+    }
+}
+
 /// Calls the connector API and handles the response
 #[instrument(skip_all)]
 pub async fn call_connector_api(
     state: &dyn ApiClientWrapper,
     request: Request,
     flow_name: &str,
+    option_timeout_secs: Option<u64>,
 ) -> CustomResult<Result<types::Response, types::Response>, ApiClientError> {
-    let current_time = Instant::now();
-    let headers = request.headers.clone();
-    let url = request.url.clone();
-    let response = state
-        .get_api_client()
-        .send_request(state, request, None, true)
-        .await;
+    // The `reqwest::Response` held across awaits nests decompression internals deeply
+    // enough to overflow the compiler's trait recursion limit when this future's type
+    // is composed into callers' futures, so it is erased behind a boxed trait object
+    async move {
+        let current_time = Instant::now();
+        let headers = request.headers.clone();
+        let url = request.url.clone();
+        #[cfg(feature = "ext_services_latency")]
+        let method = request.method.to_string();
+        let response = state
+            .get_api_client()
+            .send_request(state, request, option_timeout_secs, true)
+            .await;
 
-    match response.as_ref() {
-        Ok(resp) => {
-            let status_code = resp.status().as_u16();
-            let elapsed_time = current_time.elapsed();
+        #[cfg(feature = "ext_services_latency")]
+        if let Ok(resp) = response.as_ref() {
+            let downstream_request_id = resp
+                .headers()
+                .get(X_REQUEST_ID)
+                .and_then(|value| value.to_str().ok());
             logger::info!(
-                ?headers,
-                url,
-                status_code,
-                flow=?flow_name,
-                ?elapsed_time
+                tag = EXTERNAL_CALL_TAG,
+                operation = flow_name,
+                method,
+                status_code = resp.status().as_u16(),
+                latency_ms = current_time.elapsed().as_secs_f64() * 1000.0,
+                downstream_request_id,
             );
         }
-        Err(err) => {
-            logger::info!(
-                call_connector_api_error=?err
-            );
+
+        match response.as_ref() {
+            Ok(resp) => {
+                let status_code = resp.status().as_u16();
+                let elapsed_time = current_time.elapsed();
+                logger::info!(
+                    ?headers,
+                    url,
+                    status_code,
+                    flow=?flow_name,
+                    ?elapsed_time
+                );
+            }
+            Err(err) => {
+                logger::info!(
+                    call_connector_api_error=?err
+                );
+            }
         }
+
+        handle_response(response).await
     }
-
-    handle_response(response).await
+    .boxed()
+    .await
 }
 
 /// Handle the response from the API call
@@ -508,7 +572,7 @@ pub async fn handle_response(
         .map(|response| async {
             logger::info!(?response);
             let status_code = response.status().as_u16();
-            let headers = Some(response.headers().to_owned());
+            let headers = Some(http::HeaderMap::foreign_try_from(response.headers())?);
             match status_code {
                 200..=202 | 302 | 204 => {
                     // If needed add log line

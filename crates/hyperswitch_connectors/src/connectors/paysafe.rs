@@ -21,13 +21,12 @@ use hyperswitch_domain_models::{
             PaymentMethodToken, Session, SetupMandate, Void,
         },
         refunds::{Execute, RSync},
-        PreProcessing,
     },
     router_request_types::{
         AccessTokenRequestData, CompleteAuthorizeData, ConnectorCustomerData,
         PaymentMethodTokenizationData, PaymentsAuthorizeData, PaymentsCancelData,
-        PaymentsCaptureData, PaymentsPreProcessingData, PaymentsSessionData, PaymentsSyncData,
-        RefundsData, SetupMandateRequestData,
+        PaymentsCaptureData, PaymentsSessionData, PaymentsSyncData, RefundsData,
+        SetupMandateRequestData,
     },
     router_response_types::{
         ConnectorInfo, PaymentMethodDetails, PaymentsResponseData, RefundsResponseData,
@@ -35,9 +34,8 @@ use hyperswitch_domain_models::{
     },
     types::{
         ConnectorCustomerRouterData, PaymentsAuthorizeRouterData, PaymentsCancelRouterData,
-        PaymentsCaptureRouterData, PaymentsCompleteAuthorizeRouterData,
-        PaymentsPreProcessingRouterData, PaymentsSyncRouterData, RefundSyncRouterData,
-        RefundsRouterData, TokenizationRouterData,
+        PaymentsCaptureRouterData, PaymentsCompleteAuthorizeRouterData, PaymentsSyncRouterData,
+        RefundSyncRouterData, RefundsRouterData, TokenizationRouterData,
     },
 };
 use hyperswitch_interfaces::{
@@ -59,8 +57,7 @@ use crate::{
     types::ResponseRouterData,
     utils::{
         self, PaymentMethodTokenizationRequestData, PaymentsAuthorizeRequestData,
-        PaymentsPreProcessingRequestData, PaymentsSyncRequestData,
-        RefundsRequestData as OtherRefundsRequestData, RouterData as _,
+        PaymentsSyncRequestData, RefundsRequestData as OtherRefundsRequestData, RouterData as _,
     },
 };
 
@@ -74,6 +71,20 @@ impl Paysafe {
         &Self {
             amount_converter: &MinorUnitForConnector,
         }
+    }
+
+    /// Whether a PreAuthenticate (3DS setup) leg must run before Authorize.
+    pub fn is_3ds_setup_required(
+        &self,
+        request: &PaymentsAuthorizeData,
+        auth_type: common_enums::AuthenticationType,
+    ) -> bool {
+        router_env::logger::info!(router_data_request=?request, auth_type=?auth_type, "Checking if 3DS setup is required for Paysafe");
+        auth_type.is_three_ds()
+            && request.is_card()
+            && (request.connector_mandate_id().is_none()
+                && request.get_optional_network_transaction_id().is_none())
+            && request.authentication_data.is_none()
     }
 }
 
@@ -90,110 +101,6 @@ impl api::RefundExecute for Paysafe {}
 impl api::RefundSync for Paysafe {}
 impl api::PaymentToken for Paysafe {}
 impl api::ConnectorCustomer for Paysafe {}
-impl api::PaymentsPreProcessing for Paysafe {}
-
-impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>
-    for Paysafe
-{
-    fn get_headers(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<Vec<(String, hyperswitch_masking::Maskable<String>)>, errors::ConnectorError>
-    {
-        self.build_headers(req, connectors)
-    }
-
-    fn get_content_type(&self) -> &'static str {
-        self.common_get_content_type()
-    }
-
-    fn get_url(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<String, errors::ConnectorError> {
-        let base_url = self.base_url(connectors);
-        if req.request.is_customer_initiated_mandate_payment() {
-            let customer_id = req.get_connector_customer_id()?.to_string();
-            Ok(format!(
-                "{base_url}v1/customers/{customer_id}/paymenthandles"
-            ))
-        } else {
-            Ok(format!("{}v1/paymenthandles", self.base_url(connectors)))
-        }
-    }
-
-    fn get_request_body(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        _connectors: &Connectors,
-    ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        let minor_amount = req.request.minor_amount;
-        let currency =
-            req.request
-                .currency
-                .ok_or(errors::ConnectorError::MissingRequiredField {
-                    field_name: "currency",
-                })?;
-        let amount = utils::convert_amount(self.amount_converter, minor_amount, currency)?;
-
-        let connector_router_data = paysafe::PaysafeRouterData::from((amount, req));
-        let connector_req = paysafe::PaysafePaymentHandleRequest::try_from(&connector_router_data)?;
-        Ok(RequestContent::Json(Box::new(connector_req)))
-    }
-
-    fn build_request(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<Option<Request>, errors::ConnectorError> {
-        Ok(Some(
-            RequestBuilder::new()
-                .method(Method::Post)
-                .url(&types::PaymentsPreProcessingType::get_url(
-                    self, req, connectors,
-                )?)
-                .attach_default_headers()
-                .headers(types::PaymentsPreProcessingType::get_headers(
-                    self, req, connectors,
-                )?)
-                .set_body(types::PaymentsPreProcessingType::get_request_body(
-                    self, req, connectors,
-                )?)
-                .build(),
-        ))
-    }
-
-    fn handle_response(
-        &self,
-        data: &PaymentsPreProcessingRouterData,
-        event_builder: Option<&mut ConnectorEvent>,
-        res: Response,
-    ) -> CustomResult<PaymentsPreProcessingRouterData, errors::ConnectorError> {
-        let response: paysafe::PaysafePaymentHandleResponse = res
-            .response
-            .parse_struct("PaysafePaymentHandleResponse")
-            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
-
-        event_builder.map(|i| i.set_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
-
-        RouterData::try_from(ResponseRouterData {
-            response,
-            data: data.clone(),
-            http_code: res.status_code,
-        })
-    }
-
-    fn get_error_response(
-        &self,
-        res: Response,
-        event_builder: Option<&mut ConnectorEvent>,
-    ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
-        self.build_error_response(res, event_builder)
-    }
-}
 
 impl ConnectorIntegration<PaymentMethodToken, PaymentMethodTokenizationData, PaymentsResponseData>
     for Paysafe
@@ -236,7 +143,7 @@ impl ConnectorIntegration<PaymentMethodToken, PaymentMethodTokenizationData, Pay
             req.request
                 .amount
                 .ok_or(errors::ConnectorError::MissingRequiredField {
-                    field_name: "amount",
+                    field_name: "amount".into(),
                 })?;
 
         let amount = MinorUnit::new(amount_value);
@@ -949,13 +856,13 @@ impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Pa
             req.request
                 .minor_amount
                 .ok_or(errors::ConnectorError::MissingRequiredField {
-                    field_name: "minor_amount",
+                    field_name: "minor_amount".into(),
                 })?;
         let currency =
             req.request
                 .currency
                 .ok_or(errors::ConnectorError::MissingRequiredField {
-                    field_name: "currency",
+                    field_name: "currency".into(),
                 })?;
         let amount = utils::convert_amount(self.amount_converter, minor_amount, currency)?;
 
@@ -1281,6 +1188,17 @@ static PAYSAFE_SUPPORTED_PAYMENT_METHODS: LazyLock<SupportedPaymentMethods> = La
     );
 
     paysafe_supported_payment_methods.add(
+        enums::PaymentMethod::Wallet,
+        enums::PaymentMethodType::Neteller,
+        PaymentMethodDetails {
+            mandates: enums::FeatureStatus::NotSupported,
+            refunds: enums::FeatureStatus::Supported,
+            supported_capture_methods: supported_capture_methods2.clone(),
+            specific_features: None,
+        },
+    );
+
+    paysafe_supported_payment_methods.add(
         enums::PaymentMethod::BankRedirect,
         enums::PaymentMethodType::Interac,
         PaymentMethodDetails {
@@ -1317,6 +1235,67 @@ static PAYSAFE_SUPPORTED_WEBHOOK_FLOWS: [enums::EventClass; 0] = [];
 impl ConnectorSpecifications for Paysafe {
     fn get_connector_about(&self) -> Option<&'static ConnectorInfo> {
         Some(&PAYSAFE_CONNECTOR_INFO)
+    }
+
+    fn get_alternate_flow_if_needed(
+        &self,
+        current_flow: api::CurrentFlowInfo,
+    ) -> Option<api::AlternateFlow> {
+        match current_flow {
+            api::CurrentFlowInfo::Authorize {
+                request_data,
+                auth_type,
+                connector_meta_data: _,
+            } => {
+                if self.is_3ds_setup_required(&request_data, auth_type) {
+                    Some(api::AlternateFlow::PreAuthenticate)
+                } else {
+                    None
+                }
+            }
+            api::CurrentFlowInfo::CompleteAuthorize { .. }
+            | api::CurrentFlowInfo::SetupMandate { .. }
+            | api::CurrentFlowInfo::Psync { .. }
+            | api::CurrentFlowInfo::UpdatePostConfirm { .. }
+            | api::CurrentFlowInfo::ConnectorWebhookRegister { .. } => None,
+        }
+    }
+
+    fn is_pre_authentication_flow_required(&self, current_flow: api::CurrentFlowInfo) -> bool {
+        match current_flow {
+            api::CurrentFlowInfo::Authorize {
+                request_data,
+                auth_type,
+                connector_meta_data: _,
+            } => self.is_3ds_setup_required(&request_data, auth_type),
+            api::CurrentFlowInfo::CompleteAuthorize { .. }
+            | api::CurrentFlowInfo::SetupMandate { .. }
+            | api::CurrentFlowInfo::Psync { .. }
+            | api::CurrentFlowInfo::UpdatePostConfirm { .. }
+            | api::CurrentFlowInfo::ConnectorWebhookRegister { .. } => false,
+        }
+    }
+
+    /// Run the Authenticate step on the post-redirect CompleteAuthorize to recover the handle token.
+    fn is_authentication_flow_required(&self, current_flow: api::CurrentFlowInfo) -> bool {
+        match current_flow {
+            api::CurrentFlowInfo::CompleteAuthorize {
+                auth_type,
+                request_data,
+                payment_method,
+            } => {
+                // Paysafe's card ACS returns on a param-less GET, so gate on redirect_response.
+                let is_post_redirect = request_data.redirect_response.is_some();
+                auth_type.is_three_ds()
+                    && matches!(payment_method, Some(enums::PaymentMethod::Card))
+                    && is_post_redirect
+            }
+            api::CurrentFlowInfo::Authorize { .. }
+            | api::CurrentFlowInfo::SetupMandate { .. }
+            | api::CurrentFlowInfo::Psync { .. }
+            | api::CurrentFlowInfo::UpdatePostConfirm { .. }
+            | api::CurrentFlowInfo::ConnectorWebhookRegister { .. } => false,
+        }
     }
 
     fn get_supported_payment_methods(&self) -> Option<&'static SupportedPaymentMethods> {

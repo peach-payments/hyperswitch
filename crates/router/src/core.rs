@@ -1,4 +1,8 @@
+#[cfg(feature = "v2")]
+pub mod account_updater;
 pub mod admin;
+#[cfg(feature = "olap")]
+pub mod analytics_report;
 pub mod api_keys;
 pub mod api_locking;
 #[cfg(feature = "v1")]
@@ -12,7 +16,6 @@ pub mod cache;
 pub mod card_issuer;
 pub mod card_testing_guard;
 pub mod cards_info;
-pub mod chat;
 pub mod conditional_config;
 pub mod configs;
 #[cfg(feature = "olap")]
@@ -35,6 +38,7 @@ pub mod health_check;
 pub mod mandate;
 pub mod merchant_connector_webhook_management;
 pub mod metrics;
+pub mod offer_engine;
 pub mod payment_link;
 #[cfg(feature = "v2")]
 pub mod payment_method_balance;
@@ -44,6 +48,7 @@ pub mod payments;
 #[cfg(feature = "v2")]
 pub mod split_payments;
 
+pub mod hierarchical_resources;
 #[cfg(feature = "payouts")]
 pub mod payout_link;
 #[cfg(feature = "payouts")]
@@ -67,6 +72,8 @@ pub mod superposition_proxy;
 #[cfg(feature = "v1")]
 pub mod superposition_sdk_config;
 pub mod surcharge_decision_config;
+#[cfg(feature = "v1")]
+pub mod telephone_order;
 pub mod three_ds_decision_rule;
 pub mod tokenization;
 pub mod unified_authentication_service;

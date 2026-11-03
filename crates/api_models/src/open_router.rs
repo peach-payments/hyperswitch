@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt::Debug};
 
-use common_utils::{errors, id_type, types::MinorUnit};
+use common_utils::{errors, id_type, pii::EmailStrategy, types::MinorUnit};
 pub use euclid::{
     dssa::types::EuclidAnalysable,
     frontend::{
@@ -8,6 +8,7 @@ pub use euclid::{
         dir::{DirKeyKind, EuclidDirFilter},
     },
 };
+use hyperswitch_masking::Secret;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -34,10 +35,6 @@ pub struct OpenRouterDecideGatewayRequest {
     /// Algorithm to use for ranking and selecting gateways
     #[schema(value_type = Option<RankingAlgorithm>, example = "SR_BASED_ROUTING")]
     pub ranking_algorithm: Option<RankingAlgorithm>,
-
-    /// Whether elimination logic is enabled for filtering gateways
-    #[schema(value_type = Option<bool>, example = true)]
-    pub elimination_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -160,7 +157,9 @@ pub struct PaymentInfo {
     #[schema(value_type = String, example = "USD")]
     pub currency: Currency,
     // customerId: Option<ETCu::CustomerId>,
-    // preferredGateway: Option<ETG::Gateway>,
+    /// Ordered preferred connector account identities in `connector:mca_id` format.
+    #[schema(value_type = Option<Vec<String>>, example = json!(["adyen:mca_5678"]))]
+    pub preferred_connectors: Option<Vec<String>>,
     /// Type of payment transaction being processed
     #[schema(value_type = String, example = "ORDER_PAYMENT")]
     pub payment_type: String,
@@ -539,6 +538,99 @@ pub struct MerchantAccount {
     pub gateway_success_rate_based_decider_input: Option<String>,
 }
 
+/// How much of the account tree a handed-over Decision Engine session may move within. Mirrors
+/// the Hyperswitch role that opened it, so the session is never broader than its origin.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantLevel {
+    Profile,
+    Merchant,
+    Org,
+}
+
+/// Request for a one-time Decision Engine SSO handoff code. Carries the profile to land on plus
+/// the user's grant and permissions, both omitted for an API key — which falls back to one profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MerchantTokenRequest {
+    /// The profile the session lands on. A Decision Engine routing scope *is* a Hyperswitch
+    /// profile, which is why this field is named for a merchant but carries a profile id.
+    pub merchant_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant_level: Option<GrantLevel>,
+    /// The org or merchant id `grant_level` names. Unused for a profile grant, whose node is
+    /// `merchant_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    /// What the user may do, as Decision Engine spells it (`routing:read`, `routing:write`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<String>>,
+    /// Display only, so the dashboard can name the user rather than show a profile id.
+    /// Authorization comes from the grant and permissions, never from this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<Secret<String, EmailStrategy>>,
+}
+
+/// Account hierarchy pushed to the Decision Engine. A DE scope is a Hyperswitch profile; the
+/// levels above are ancestry, used to group profiles, resolve merchant-level config, and scope
+/// API keys. Hyperswitch is the only side that knows the tree. Upserted, so safe to resend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HierarchySyncRequest {
+    pub orgs: Vec<HierarchyOrg>,
+    /// Detecting merchant-id-keyed scopes makes DE read every merchant account, so it is off for
+    /// per-profile calls and on for the bulk backfill.
+    pub report_stranded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HierarchyOrg {
+    pub org_id: String,
+    pub org_name: Option<String>,
+    pub merchants: Vec<HierarchyMerchant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HierarchyMerchant {
+    /// The HS merchant account id — ancestry, never a DE routing scope.
+    pub merchant_id: String,
+    pub merchant_name: Option<String>,
+    pub profiles: Vec<HierarchyProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HierarchyProfile {
+    /// The HS profile id — this *is* the DE routing scope.
+    pub profile_id: String,
+    pub profile_name: Option<String>,
+}
+
+impl HierarchySyncRequest {
+    /// Tree carrying exactly one profile, for provisioning a single scope.
+    pub fn single_profile(
+        org_id: String,
+        org_name: Option<String>,
+        merchant_id: String,
+        merchant_name: Option<String>,
+        profile_id: String,
+        profile_name: Option<String>,
+    ) -> Self {
+        Self {
+            orgs: vec![HierarchyOrg {
+                org_id,
+                org_name,
+                merchants: vec![HierarchyMerchant {
+                    merchant_id,
+                    merchant_name,
+                    profiles: vec![HierarchyProfile {
+                        profile_id,
+                        profile_name,
+                    }],
+                }],
+            }],
+            report_stranded: false,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FetchRoutingConfig {
     pub merchant_id: String,
@@ -551,4 +643,39 @@ pub enum AlgorithmType {
     SuccessRate,
     Elimination,
     DebitRouting,
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
+mod preferred_connectors_tests {
+    use serde_json::json;
+
+    use super::PaymentInfo;
+
+    #[test]
+    fn preferred_connectors_uses_decision_engine_wire_contract() {
+        let payload = json!({
+            "paymentId": "pay_12345",
+            "amount": 100,
+            "currency": "CAD",
+            "preferredConnectors": ["loonio:mca_one"],
+            "paymentType": "ORDER_PAYMENT",
+            "paymentMethodType": "interac",
+            "paymentMethod": "bank_redirect"
+        });
+        let payment: PaymentInfo = serde_json::from_value(payload).expect("valid DE payment info");
+        assert_eq!(
+            payment.preferred_connectors,
+            Some(vec!["loonio:mca_one".to_string()])
+        );
+        let serialized = serde_json::to_value(payment).expect("serialize DE payment info");
+        assert_eq!(serialized["preferredConnectors"], json!(["loonio:mca_one"]));
+        for removed_field in [
+            "preferredConnector",
+            "preferredGateways",
+            "preferredGateway",
+        ] {
+            assert!(serialized.get(removed_field).is_none());
+        }
+    }
 }

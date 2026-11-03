@@ -560,6 +560,18 @@ impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Da
         Ok(format!("{base_url}v1/transactions/{transaction_id}/cancel"))
     }
 
+    fn get_request_body(
+        &self,
+        _req: &PaymentsCancelRouterData,
+        _connectors: &Connectors,
+    ) -> CustomResult<RequestContent, errors::ConnectorError> {
+        // Datatrans cancel takes no fields; send an empty JSON object `{}` so the
+        // application/json body is valid and avoids `INVALID_JSON_PAYLOAD`.
+        Ok(RequestContent::Json(Box::new(
+            datatrans::DatatransCancelRequest {},
+        )))
+    }
+
     fn build_request(
         &self,
         req: &PaymentsCancelRouterData,
@@ -839,7 +851,7 @@ static DATATRANS_SUPPORTED_PAYMENT_METHODS: LazyLock<SupportedPaymentMethods> =
             PaymentMethodDetails {
                 mandates: common_enums::enums::FeatureStatus::Supported,
                 refunds: common_enums::enums::FeatureStatus::Supported,
-                supported_capture_methods,
+                supported_capture_methods: supported_capture_methods.clone(),
                 specific_features: Some(
                     api_models::feature_matrix::PaymentMethodSpecificFeatures::Card({
                         api_models::feature_matrix::CardSpecificFeatures {
@@ -849,6 +861,28 @@ static DATATRANS_SUPPORTED_PAYMENT_METHODS: LazyLock<SupportedPaymentMethods> =
                         }
                     }),
                 ),
+            },
+        );
+
+        datatrans_supported_payment_methods.add(
+            PaymentMethod::Wallet,
+            PaymentMethodType::GooglePay,
+            PaymentMethodDetails {
+                mandates: common_enums::enums::FeatureStatus::Supported,
+                refunds: common_enums::enums::FeatureStatus::Supported,
+                supported_capture_methods: supported_capture_methods.clone(),
+                specific_features: None,
+            },
+        );
+
+        datatrans_supported_payment_methods.add(
+            PaymentMethod::Wallet,
+            PaymentMethodType::ApplePay,
+            PaymentMethodDetails {
+                mandates: common_enums::enums::FeatureStatus::Supported,
+                refunds: common_enums::enums::FeatureStatus::Supported,
+                supported_capture_methods,
+                specific_features: None,
             },
         );
 
@@ -866,6 +900,10 @@ static DATATRANS_CONNECTOR_INFO: ConnectorInfo = ConnectorInfo {
 static DATATRANS_SUPPORTED_WEBHOOK_FLOWS: [common_enums::enums::EventClass; 0] = [];
 
 impl ConnectorSpecifications for Datatrans {
+    fn is_multi_currency_processing_supported(&self) -> bool {
+        true
+    }
+
     fn get_connector_about(&self) -> Option<&'static ConnectorInfo> {
         Some(&DATATRANS_CONNECTOR_INFO)
     }

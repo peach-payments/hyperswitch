@@ -33,7 +33,7 @@ impl PaymentsApiClient {
                     state
                         .conf
                         .internal_merchant_id_profile_id_auth
-                        .internal_api_key
+                        .outbound_api_key()
                         .clone(),
                 ),
             ),
@@ -80,7 +80,7 @@ impl PaymentsApiClient {
         }
 
         let request = request_builder.build();
-        let response = api::call_connector_api(state, request, "Subscription Payments")
+        let response = api::call_connector_api(state, request, "Subscription Payments", None)
             .await
             .change_context(subscription_error.clone())?;
 

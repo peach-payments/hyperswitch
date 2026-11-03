@@ -91,14 +91,14 @@ async fn get_payment_method_amount_split(
             .payment_method_data
             .clone()
             .ok_or(errors::ApiErrorResponse::MissingRequiredField {
-                field_name: "payment_method_data",
+                field_name: "payment_method_data".into(),
             })?,
         payment_method_type: request.payment_method_type,
         payment_method_subtype: request
             .payment_method_subtype
             .get_required_value("payment_method_subtype")
             .change_context(errors::ApiErrorResponse::MissingRequiredField {
-                field_name: "payment_method_subtype",
+                field_name: "payment_method_subtype".into(),
             })?,
     };
 
@@ -237,7 +237,7 @@ pub(crate) async fn split_payments_execute_core(
         .find_payment_intent_by_id(
             &payment_id,
             platform.get_processor().get_key_store(),
-            platform.get_processor().get_account().storage_scheme,
+            platform.get_processor().get_storage_scheme(),
         )
         .await
         .to_not_found_response(errors::ApiErrorResponse::PaymentNotFound)?;
@@ -270,7 +270,7 @@ pub(crate) async fn split_payments_execute_core(
             payment_intent,
             payment_intent_update,
             platform.get_processor().get_key_store(),
-            platform.get_processor().get_account().storage_scheme,
+            platform.get_processor().get_storage_scheme(),
         )
         .await
         .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -352,7 +352,7 @@ pub(crate) async fn split_payments_execute_core(
                     payment_data.payment_intent.clone(),
                     payment_intent_update,
                     platform.get_processor().get_key_store(),
-                    platform.get_processor().get_account().storage_scheme,
+                    platform.get_processor().get_storage_scheme(),
                 )
                 .await
                 .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -444,7 +444,7 @@ pub(crate) async fn split_payments_execute_core(
                     payment_data.payment_intent.clone(),
                     payment_intent_update,
                     platform.get_processor().get_key_store(),
-                    platform.get_processor().get_account().storage_scheme,
+                    platform.get_processor().get_storage_scheme(),
                 )
                 .await
                 .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -478,7 +478,7 @@ pub(crate) async fn split_payments_execute_core(
             payment_intent,
             payment_intent_update,
             platform.get_processor().get_key_store(),
-            platform.get_processor().get_account().storage_scheme,
+            platform.get_processor().get_storage_scheme(),
         )
         .await
         .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -598,5 +598,8 @@ pub async fn create_domain_model_for_split_payment(
         network_transaction_link_id: None,
         authorized_amount: None,
         external_surcharge_details: None,
+        applied_offer_details: None,
+        payment_account_reference: None,
+        active_frm_id: None,
     })
 }

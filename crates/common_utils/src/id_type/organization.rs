@@ -1,3 +1,5 @@
+use error_stack::ResultExt;
+
 use crate::errors::{CustomResult, ValidationError};
 
 crate::id_type!(
@@ -13,7 +15,9 @@ crate::impl_try_from_cow_str_id_type!(OrganizationId, "organization_id");
 
 crate::impl_generate_id_id_type!(OrganizationId, "org");
 crate::impl_serializable_secret_id_type!(OrganizationId);
+#[cfg(feature = "diesel")]
 crate::impl_queryable_id_type!(OrganizationId);
+#[cfg(feature = "diesel")]
 crate::impl_to_sql_from_sql_id_type!(OrganizationId);
 
 impl OrganizationId {
@@ -29,5 +33,14 @@ impl OrganizationId {
     /// Get should call PM modular service key for payment
     pub fn get_should_call_pm_modular_service_key(&self) -> String {
         format!("should_call_pm_modular_service_{}", self.get_string_repr())
+    }
+
+    /// Re-wraps this organization id as a [`super::MerchantId`] for use as an encryption identifier.
+    pub fn as_merchant_key_identifier(&self) -> CustomResult<super::MerchantId, ValidationError> {
+        super::MerchantId::try_from(std::borrow::Cow::Owned(self.get_string_repr().to_owned()))
+            .change_context(ValidationError::InvalidValue {
+                message: "organization id could not be used as a merchant key identifier"
+                    .to_string(),
+            })
     }
 }

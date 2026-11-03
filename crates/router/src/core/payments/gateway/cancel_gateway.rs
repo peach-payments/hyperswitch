@@ -9,7 +9,6 @@ use hyperswitch_interfaces::{
     api::gateway as payment_gateway,
     connector_integration_interface::{BoxedConnectorIntegrationInterface, RouterDataConversion},
     errors::ConnectorError,
-    unified_connector_service::transformers::UnifiedConnectorServiceError,
 };
 use unified_connector_service_client::payments as payments_grpc;
 
@@ -60,11 +59,11 @@ where
         RouterData<Self, types::PaymentsCancelData, types::PaymentsResponseData>,
         ConnectorError,
     > {
+        let rollout_settings = context.rollout_settings();
         let merchant_connector_account = context.merchant_connector_account;
         let processor = &context.processor;
         let lineage_ids = context.lineage_ids;
         let header_payload = context.header_payload;
-        let unified_connector_service_execution_mode = context.execution_mode;
         let client = state
             .grpc_client
             .unified_connector_service_client
@@ -102,7 +101,9 @@ where
             .map(ucs_types::UcsResourceId::PaymentAttempt);
 
         let header_payload = state
-            .get_grpc_headers_ucs(unified_connector_service_execution_mode)
+            .get_grpc_headers_ucs(rollout_settings.execution_mode)
+            .payment_method(Some(router_data.payment_method))
+            .payment_method_type(router_data.payment_method_type)
             .external_vault_proxy_metadata(None)
             .merchant_reference_id(merchant_reference_id)
             .resource_id(resource_id)
@@ -113,53 +114,15 @@ where
             state,
             payment_void_request,
             header_payload,
-            unified_connector_service_execution_mode,
+            rollout_settings,
             |mut router_data, payment_void_request, grpc_headers| async move {
                 let response = match client
                     .payment_void(payment_void_request, connector_auth_metadata, grpc_headers)
                     .await
                 {
                     Ok(resp) => resp,
+                    // UCS connector errors are handled by the wrapper — see `ucs_logging_wrapper_granular`.
                     Err(report) => {
-                        if let UnifiedConnectorServiceError::ConnectorError(inner) =
-                            report.current_context()
-                        {
-                            let (code, message, status_code, reason, connector_transaction_id,
-                                 network_decline_code, network_advice_code, network_error_message,
-                                 connector) = (
-                                &inner.code, &inner.message, inner.status_code, &inner.reason, &inner.connector_transaction_id,
-                                &inner.network_decline_code, &inner.network_advice_code,
-                                &inner.network_error_message, &inner.connector,
-                            );
-                            logger::info!(
-                                "Connector error via UCS for void (connector {}, status {}): {} - {}",
-                                connector,
-                                status_code,
-                                code,
-                                message
-                            );
-                            router_data.response = Err(
-                                hyperswitch_domain_models::router_data::ErrorResponse {
-                                    code: code.clone(),
-                                    message: message.clone(),
-                                    reason: reason.clone(),
-                                    status_code,
-                                    attempt_status: None,
-                                    connector_transaction_id: connector_transaction_id.clone(),
-                                    connector_response_reference_id: None,
-                                    network_decline_code: network_decline_code.clone(),
-                                    network_advice_code: network_advice_code.clone(),
-                                    network_error_message: network_error_message.clone(),
-                                    connector_metadata: None,
-                                },
-                            );
-                            router_data.connector_http_status_code = Some(status_code);
-                            return Ok((
-                                router_data,
-                                (),
-                                payments_grpc::PaymentServiceVoidResponse::default(),
-                            ));
-                        }
                         return Err(report.attach_printable("Failed to Void payment"));
                     }
                 };
@@ -194,7 +157,7 @@ where
         ))
         .await
         .map(|(router_data, _)| router_data)
-        .map_err(super::convert_ucs_error_to_connector_error)
+        .map_err(payment_gateway::convert_ucs_error_to_connector_error)
     }
 }
 

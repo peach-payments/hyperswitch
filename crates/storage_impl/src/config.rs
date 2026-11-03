@@ -11,11 +11,52 @@ pub struct Database {
     pub host: String,
     pub port: u16,
     pub dbname: String,
-    pub pool_size: u32,
+    #[serde(alias = "pool_size")]
+    pub max_pool_size: u32,
     pub connection_timeout: u64,
     pub queue_strategy: QueueStrategy,
-    pub min_idle: Option<u32>,
-    pub max_lifetime: Option<u64>,
+    #[serde(alias = "min_idle", default = "default_min_idle_pool_size")]
+    pub min_idle_pool_size: u32,
+    #[serde(default = "default_max_lifetime")]
+    pub max_lifetime: u64,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout: u64,
+    #[serde(default = "default_keepalives_idle")]
+    pub keepalives_idle: u64,
+    #[serde(default = "default_keepalives_interval")]
+    pub keepalives_interval: u64,
+    #[serde(default = "default_keepalives_count")]
+    pub keepalives_count: u32,
+    #[serde(default = "default_tcp_user_timeout_ms")]
+    pub tcp_user_timeout_ms: u64,
+}
+
+const fn default_min_idle_pool_size() -> u32 {
+    2
+}
+
+const fn default_max_lifetime() -> u64 {
+    1800
+}
+
+const fn default_idle_timeout() -> u64 {
+    300
+}
+
+const fn default_keepalives_idle() -> u64 {
+    common_utils::DEFAULT_DB_KEEPALIVES_IDLE_SECS
+}
+
+const fn default_keepalives_interval() -> u64 {
+    common_utils::DEFAULT_DB_KEEPALIVES_INTERVAL_SECS
+}
+
+const fn default_keepalives_count() -> u32 {
+    common_utils::DEFAULT_DB_KEEPALIVES_COUNT
+}
+
+const fn default_tcp_user_timeout_ms() -> u64 {
+    common_utils::DEFAULT_DB_TCP_USER_TIMEOUT_MS
 }
 
 impl DbConnectionParams for Database {
@@ -33,6 +74,18 @@ impl DbConnectionParams for Database {
     }
     fn get_dbname(&self) -> &str {
         &self.dbname
+    }
+    fn get_pool_keepalives_idle(&self) -> u64 {
+        self.keepalives_idle
+    }
+    fn get_pool_keepalives_interval(&self) -> u64 {
+        self.keepalives_interval
+    }
+    fn get_pool_keepalives_count(&self) -> u32 {
+        self.keepalives_count
+    }
+    fn get_pool_tcp_user_timeout_ms(&self) -> u64 {
+        self.tcp_user_timeout_ms
     }
 }
 
@@ -61,11 +114,16 @@ impl Default for Database {
             host: "localhost".into(),
             port: 5432,
             dbname: String::new(),
-            pool_size: 5,
+            max_pool_size: 5,
             connection_timeout: 10,
             queue_strategy: QueueStrategy::default(),
-            min_idle: None,
-            max_lifetime: None,
+            min_idle_pool_size: default_min_idle_pool_size(),
+            max_lifetime: default_max_lifetime(),
+            idle_timeout: default_idle_timeout(),
+            keepalives_idle: default_keepalives_idle(),
+            keepalives_interval: default_keepalives_interval(),
+            keepalives_count: default_keepalives_count(),
+            tcp_user_timeout_ms: default_tcp_user_timeout_ms(),
         }
     }
 }

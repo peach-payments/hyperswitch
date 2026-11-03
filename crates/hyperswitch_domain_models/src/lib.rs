@@ -8,7 +8,6 @@ pub mod callback_mapper;
 pub mod card_issuer;
 pub mod card_testing_guard_data;
 pub mod cards_info;
-pub mod chat;
 pub mod configs;
 pub mod connector_endpoints;
 pub mod consts;
@@ -17,6 +16,7 @@ pub mod disputes;
 pub mod errors;
 pub mod ext_traits;
 pub mod gsm;
+pub mod hierarchical_resource;
 pub mod invoice;
 pub mod mandates;
 pub mod master_key;
@@ -48,6 +48,7 @@ pub mod transformers;
 pub mod type_encryption;
 pub mod types;
 pub mod vault;
+pub mod webhooks;
 
 #[cfg(not(feature = "payouts"))]
 pub trait PayoutAttemptInterface {}
@@ -116,6 +117,7 @@ pub trait ApiModelToDieselModelConvertor<F> {
 impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
     fn convert_from(from: ApiFeatureMetadata) -> Self {
         let ApiFeatureMetadata {
+            multi_currency_processing,
             redirect_response,
             search_tags,
             apple_pay_recurring_details,
@@ -127,6 +129,8 @@ impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
         } = from;
 
         Self {
+            multi_currency_processing: multi_currency_processing
+                .map(diesel_models::types::MultiCurrencyProcessingData::convert_from),
             redirect_response: redirect_response.map(RedirectResponse::convert_from),
             search_tags,
             apple_pay_recurring_details: apple_pay_recurring_details
@@ -145,6 +149,7 @@ impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
 
     fn convert_back(self) -> ApiFeatureMetadata {
         let Self {
+            multi_currency_processing,
             redirect_response,
             search_tags,
             apple_pay_recurring_details,
@@ -156,6 +161,7 @@ impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
         } = self;
 
         ApiFeatureMetadata {
+            multi_currency_processing: multi_currency_processing.map(|data| data.convert_back()),
             redirect_response: redirect_response.map(|v| v.convert_back()),
             search_tags,
             apple_pay_recurring_details: apple_pay_recurring_details.map(|v| v.convert_back()),
@@ -734,6 +740,7 @@ impl ApiModelToDieselModelConvertor<api_models::payments::PixAutomaticoAdditiona
 impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
     fn convert_from(from: ApiFeatureMetadata) -> Self {
         let ApiFeatureMetadata {
+            multi_currency_processing,
             redirect_response,
             search_tags,
             apple_pay_recurring_details,
@@ -745,6 +752,8 @@ impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
         } = from;
 
         Self {
+            multi_currency_processing: multi_currency_processing
+                .map(diesel_models::types::MultiCurrencyProcessingData::convert_from),
             redirect_response: redirect_response.map(RedirectResponse::convert_from),
             search_tags,
             apple_pay_recurring_details: apple_pay_recurring_details
@@ -764,6 +773,7 @@ impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
 
     fn convert_back(self) -> ApiFeatureMetadata {
         let Self {
+            multi_currency_processing,
             redirect_response,
             search_tags,
             apple_pay_recurring_details,
@@ -775,6 +785,7 @@ impl ApiModelToDieselModelConvertor<ApiFeatureMetadata> for FeatureMetadata {
         } = self;
 
         ApiFeatureMetadata {
+            multi_currency_processing: multi_currency_processing.map(|data| data.convert_back()),
             redirect_response: redirect_response
                 .map(|redirect_response| redirect_response.convert_back()),
             search_tags,
@@ -893,6 +904,9 @@ impl ApiModelToDieselModelConvertor<ApiBillingConnectorAdditionalCardInfo>
         Self {
             card_issuer: from.card_issuer,
             card_network: from.card_network,
+            card_type: from.card_type,
+            card_issuing_country: from.card_issuing_country,
+            card_isin: from.card_isin,
         }
     }
 
@@ -900,6 +914,9 @@ impl ApiModelToDieselModelConvertor<ApiBillingConnectorAdditionalCardInfo>
         ApiBillingConnectorAdditionalCardInfo {
             card_issuer: self.card_issuer,
             card_network: self.card_network,
+            card_type: self.card_type,
+            card_issuing_country: self.card_issuing_country,
+            card_isin: self.card_isin,
         }
     }
 }
@@ -947,6 +964,7 @@ impl ApiModelToDieselModelConvertor<ApiRevenueRecoveryMetadata> for PaymentReven
                 .first_payment_attempt_network_decline_code,
             first_payment_attempt_pg_error_code: from.first_payment_attempt_pg_error_code,
             invoice_billing_started_at_time: from.invoice_billing_started_at_time,
+            revenue_recovery_ab_routing: from.revenue_recovery_ab_routing,
         }
     }
 
@@ -972,6 +990,7 @@ impl ApiModelToDieselModelConvertor<ApiRevenueRecoveryMetadata> for PaymentReven
                 .first_payment_attempt_network_decline_code,
             first_payment_attempt_pg_error_code: self.first_payment_attempt_pg_error_code,
             invoice_billing_started_at_time: self.invoice_billing_started_at_time,
+            revenue_recovery_ab_routing: self.revenue_recovery_ab_routing,
         }
     }
 }
@@ -1018,6 +1037,9 @@ impl ApiModelToDieselModelConvertor<ApiOrderDetailsWithAmount> for OrderDetailsW
             unit_of_measure,
             total_amount,
             unit_discount_amount,
+            discount_name,
+            discount_percentage,
+            discount_type,
         } = from;
         Self {
             product_name,
@@ -1040,6 +1062,9 @@ impl ApiModelToDieselModelConvertor<ApiOrderDetailsWithAmount> for OrderDetailsW
             unit_of_measure,
             total_amount,
             unit_discount_amount,
+            discount_name,
+            discount_percentage,
+            discount_type,
         }
     }
 
@@ -1065,6 +1090,9 @@ impl ApiModelToDieselModelConvertor<ApiOrderDetailsWithAmount> for OrderDetailsW
             unit_of_measure,
             total_amount,
             unit_discount_amount,
+            discount_name,
+            discount_percentage,
+            discount_type,
         } = self;
         ApiOrderDetailsWithAmount {
             product_name,
@@ -1087,6 +1115,9 @@ impl ApiModelToDieselModelConvertor<ApiOrderDetailsWithAmount> for OrderDetailsW
             unit_of_measure,
             total_amount,
             unit_discount_amount,
+            discount_name,
+            discount_percentage,
+            discount_type,
         }
     }
 }
@@ -1137,6 +1168,8 @@ impl ApiModelToDieselModelConvertor<api_models::admin::PaymentLinkConfigRequest>
             is_setup_mandate_flow: item.is_setup_mandate_flow,
             color_icon_card_cvc_error: item.color_icon_card_cvc_error,
             show_merchant_name: item.show_merchant_name,
+            payment_methods_separator_text: item.payment_methods_separator_text,
+            redirect_delay_seconds: item.redirect_delay_seconds,
         }
     }
     fn convert_back(self) -> api_models::admin::PaymentLinkConfigRequest {
@@ -1168,6 +1201,8 @@ impl ApiModelToDieselModelConvertor<api_models::admin::PaymentLinkConfigRequest>
             is_setup_mandate_flow,
             color_icon_card_cvc_error,
             show_merchant_name,
+            payment_methods_separator_text,
+            redirect_delay_seconds,
         } = self;
         api_models::admin::PaymentLinkConfigRequest {
             theme,
@@ -1203,6 +1238,8 @@ impl ApiModelToDieselModelConvertor<api_models::admin::PaymentLinkConfigRequest>
             is_setup_mandate_flow,
             color_icon_card_cvc_error,
             show_merchant_name,
+            payment_methods_separator_text,
+            redirect_delay_seconds,
         }
     }
 }
@@ -1373,6 +1410,36 @@ impl From<&api_models::payments::RecordAttemptErrorDetails>
             network_advice_code: error.network_advice_code.clone(),
             network_decline_code: error.network_decline_code.clone(),
             network_error_message: error.network_error_message.clone(),
+            standardised_code: None,
+        }
+    }
+}
+
+impl ApiModelToDieselModelConvertor<api_models::payments::MultiCurrencyProcessingData>
+    for diesel_models::types::MultiCurrencyProcessingData
+{
+    fn convert_from(from: api_models::payments::MultiCurrencyProcessingData) -> Self {
+        Self {
+            amount: from.amount,
+            currency: from.currency,
+            conversion_rate: from.conversion_rate,
+            date: from.date,
+            processing_reference_id: from.processing_reference_id,
+            conversion_provider: from.conversion_provider,
+            user_id: from.user_id,
+            conversion_reason_code: from.conversion_reason_code,
+        }
+    }
+    fn convert_back(self) -> api_models::payments::MultiCurrencyProcessingData {
+        api_models::payments::MultiCurrencyProcessingData {
+            amount: self.amount,
+            currency: self.currency,
+            conversion_rate: self.conversion_rate,
+            date: self.date,
+            processing_reference_id: self.processing_reference_id,
+            conversion_provider: self.conversion_provider,
+            user_id: self.user_id,
+            conversion_reason_code: self.conversion_reason_code,
         }
     }
 }

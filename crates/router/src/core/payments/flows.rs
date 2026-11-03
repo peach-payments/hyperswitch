@@ -16,6 +16,7 @@ pub mod session_flow;
 pub mod session_update_flow;
 pub mod setup_mandate_flow;
 pub mod update_metadata_flow;
+pub mod update_post_confirm_flow;
 
 use async_trait::async_trait;
 use common_enums;
@@ -26,7 +27,8 @@ use hyperswitch_domain_models::router_flow_types::{
     BillingConnectorInvoiceSync, BillingConnectorPaymentsSync, InvoiceRecordBack,
 };
 use hyperswitch_domain_models::{
-    payments as domain_payments, router_request_types::PaymentsCaptureData,
+    payments as domain_payments,
+    router_request_types::{CurrentFlowInfo, PaymentsCaptureData},
 };
 
 use crate::{
@@ -49,6 +51,7 @@ pub trait ConstructFlowSpecificData<F, Req, Res> {
         state: &SessionState,
         connector_id: &str,
         processor: &domain::Processor,
+        business_profile: &domain::Profile,
         merchant_connector_account: &helpers::MerchantConnectorAccountType,
         merchant_recipient_data: Option<types::MerchantRecipientData>,
         header_payload: Option<domain_payments::HeaderPayload>,
@@ -91,6 +94,10 @@ pub trait ConstructFlowSpecificData<F, Req, Res> {
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait Feature<F, T> {
+    fn current_flow_info(&self) -> Option<CurrentFlowInfo> {
+        None
+    }
+
     async fn decide_flows<'a>(
         self,
         state: &SessionState,
@@ -321,7 +328,7 @@ pub trait Feature<F, T> {
         _merchant_connector_account: domain::MerchantConnectorAccountTypeDetails,
         _external_vault_merchant_connector_account: domain::MerchantConnectorAccountTypeDetails,
         _processor: &domain::Processor,
-        _unified_connector_service_execution_mode: common_enums::ExecutionMode,
+        _rollout_settings: crate::core::unified_connector_service::kill_switch::RolloutSettings,
     ) -> RouterResult<()>
     where
         F: Clone,
@@ -340,7 +347,7 @@ pub trait Feature<F, T> {
         _merchant_connector_account: &'a helpers::MerchantConnectorAccountType,
         _external_vault_merchant_connector_account: &'a helpers::MerchantConnectorAccountType,
         _processor: &domain::Processor,
-        _unified_connector_service_execution_mode: common_enums::ExecutionMode,
+        _rollout_settings: crate::core::unified_connector_service::kill_switch::RolloutSettings,
     ) -> RouterResult<()>
     where
         F: Clone,

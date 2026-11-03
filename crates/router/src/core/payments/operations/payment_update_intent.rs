@@ -69,7 +69,7 @@ impl ValidateStatusForOperation for PaymentUpdateIntent {
             | common_enums::IntentStatus::Review => {
                 Err(errors::ApiErrorResponse::PaymentUnexpectedState {
                     current_flow: format!("{self:?}"),
-                    field_name: "status".to_string(),
+                    field_name: "status".into(),
                     current_value: intent_status.to_string(),
                     states: ["requires_payment_method".to_string()].join(", "),
                 })
@@ -157,8 +157,8 @@ impl<F: Send + Clone> GetTracker<F, payments::PaymentIntentData<F>, PaymentsUpda
             .await?;
         }
         let key_manager_state = &state.into();
-        let storage_scheme = platform.get_processor().get_account().storage_scheme;
-        let storage_scheme = platform.get_processor().get_account().storage_scheme;
+        let storage_scheme = platform.get_processor().get_storage_scheme();
+        let storage_scheme = platform.get_processor().get_storage_scheme();
         let payment_intent = db
             .find_payment_intent_by_id(
                 payment_id,
@@ -195,6 +195,9 @@ impl<F: Send + Clone> GetTracker<F, payments::PaymentIntentData<F>, PaymentsUpda
             request_external_three_ds_authentication,
             set_active_attempt_id,
             enable_partial_authorization,
+            is_account_funded_transaction,
+            recipient_details,
+            enable_avs_check,
         } = request.clone();
 
         let batch_encrypted_data = domain_types::crypto_operation(
@@ -206,6 +209,7 @@ impl<F: Send + Clone> GetTracker<F, payments::PaymentIntentData<F>, PaymentsUpda
                         shipping_address: shipping.map(|address| address.encode_to_value()).transpose().change_context(errors::ApiErrorResponse::InternalServerError).attach_printable("Failed to encode shipping address")?.map(hyperswitch_masking::Secret::new),
                         billing_address: billing.map(|address| address.encode_to_value()).transpose().change_context(errors::ApiErrorResponse::InternalServerError).attach_printable("Failed to encode billing address")?.map(hyperswitch_masking::Secret::new),
                         customer_details: None,
+                        recipient_details: recipient_details.map(|recipient| recipient.encode_to_value()).transpose().change_context(errors::ApiErrorResponse::InternalServerError).attach_printable("Failed to encode recipient details")?.map(hyperswitch_masking::Secret::new),
                     },
                 ),
             ),
@@ -244,12 +248,11 @@ impl<F: Send + Clone> GetTracker<F, payments::PaymentIntentData<F>, PaymentsUpda
             None => payment_intent.amount_details,
         };
 
-        let active_attempt_id = set_active_attempt_id
-            .map(|active_attempt_req| match active_attempt_req {
-                UpdateActiveAttempt::Set(global_attempt_id) => Some(global_attempt_id),
-                UpdateActiveAttempt::Unset => None,
-            })
-            .unwrap_or(payment_intent.active_attempt_id);
+        let active_attempt_id = match set_active_attempt_id {
+            Some(UpdateActiveAttempt::Set(global_attempt_id)) => Some(global_attempt_id),
+            Some(UpdateActiveAttempt::Unset) => None,
+            Some(UpdateActiveAttempt::NoAction) | None => payment_intent.active_attempt_id,
+        };
 
         let payment_intent = hyperswitch_domain_models::payments::PaymentIntent {
             amount_details: updated_amount_details,
@@ -263,7 +266,7 @@ impl<F: Send + Clone> GetTracker<F, payments::PaymentIntentData<F>, PaymentsUpda
             feature_metadata: (feature_metadata
                 .map(FeatureMetadata::convert_from)
                 .or(payment_intent.feature_metadata)),
-            updated_by: storage_scheme.to_string(),
+            updated_by: storage_scheme.inner().to_string(),
             request_incremental_authorization: request_incremental_authorization
                 .unwrap_or(payment_intent.request_incremental_authorization),
             session_expiry: session_expiry.unwrap_or(payment_intent.session_expiry),
@@ -304,6 +307,13 @@ impl<F: Send + Clone> GetTracker<F, payments::PaymentIntentData<F>, PaymentsUpda
             enable_partial_authorization: enable_partial_authorization
                 .unwrap_or(payment_intent.enable_partial_authorization),
             setup_future_usage: setup_future_usage.unwrap_or(payment_intent.setup_future_usage),
+            is_account_funded_transaction: is_account_funded_transaction
+                .or(payment_intent.is_account_funded_transaction),
+            recipient_details: decrypted_payment_intent
+                .recipient_details
+                .clone()
+                .or(payment_intent.recipient_details.clone()),
+            enable_avs_check: enable_avs_check.or(payment_intent.enable_avs_check),
             ..payment_intent
         };
 
@@ -344,7 +354,7 @@ impl<F: Clone> UpdateTracker<F, payments::PaymentIntentData<F>, PaymentsUpdateIn
         F: 'b + Send,
     {
         let db = &*state.store;
-        let storage_scheme = processor.get_account().storage_scheme;
+        let storage_scheme = processor.get_storage_scheme();
         let key_store = processor.get_key_store();
 
         let intent = payment_data.payment_intent.clone();
@@ -400,6 +410,8 @@ impl<F: Clone> UpdateTracker<F, payments::PaymentIntentData<F>, PaymentsUpdateIn
                 profile_acquirer_id: intent.profile_acquirer_id,
                 external_surcharge_strategy: intent.external_surcharge_strategy,
                 external_surcharge_applicable: intent.external_surcharge_applicable,
+                enable_avs_check: intent.enable_avs_check,
+                settlement_conclusion_applied: intent.settlement_conclusion_applied,
             }));
 
         let new_payment_intent = db

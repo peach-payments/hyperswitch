@@ -78,10 +78,10 @@ pub struct SuperpositionClientConfig {
     pub org_id: String,
     /// Workspace ID in Superposition
     pub workspace_id: String,
-    /// Polling interval in seconds for configuration updates
-    pub polling_interval: u64,
-    /// Request timeout in seconds for Superposition API calls (None = no timeout)
-    pub request_timeout: Option<u64>,
+    /// Polling interval in milliseconds for configuration updates
+    pub polling_interval_milliseconds: u64,
+    /// Request timeout in milliseconds for Superposition API calls (None = no timeout)
+    pub request_timeout_milliseconds: Option<u64>,
     /// Path to a TOML backup config file on PVC/EFS.
     /// Used as fallback if the primary HTTP init fails at startup.
     pub backup_file_path: Option<std::path::PathBuf>,
@@ -94,8 +94,8 @@ impl Default for SuperpositionClientConfig {
             token: Secret::new(String::new()),
             org_id: String::new(),
             workspace_id: String::new(),
-            polling_interval: 15,
-            request_timeout: None,
+            polling_interval_milliseconds: 15_000,
+            request_timeout_milliseconds: None,
             backup_file_path: None,
         }
     }
@@ -103,6 +103,11 @@ impl Default for SuperpositionClientConfig {
 
 /// Errors that can occur when using Superposition
 #[derive(Debug, thiserror::Error)]
+// Deja records the WHOLE `CustomResult<T, SuperpositionError>` at the read
+// boundary ("recording threw ⇒ replay throws"), so the error must round-trip.
+// Every variant is `Variant(String)` → trivially (de)serializable. Feature-gated
+// so the release build (deja off) keeps the error type dependency-lean.
+#[cfg_attr(feature = "deja", derive(serde::Serialize, serde::Deserialize))]
 pub enum SuperpositionError {
     /// Error initializing the Superposition client
     #[error("Failed to initialize Superposition client: {0}")]

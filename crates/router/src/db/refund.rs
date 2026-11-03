@@ -83,8 +83,8 @@ pub trait RefundInterface {
         processor_merchant_id: &common_utils::id_type::MerchantId,
         refund_details: &refunds::RefundListConstraints,
         storage_scheme: enums::MerchantStorageScheme,
-        limit: i64,
-        offset: i64,
+        limit: diesel_models::list::PageSize,
+        offset: diesel_models::list::PageOffset,
     ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError>;
 
     #[cfg(all(feature = "v2", feature = "olap"))]
@@ -93,9 +93,25 @@ pub trait RefundInterface {
         merchant_id: &common_utils::id_type::MerchantId,
         refund_details: refunds::RefundListConstraints,
         storage_scheme: enums::MerchantStorageScheme,
-        limit: i64,
-        offset: i64,
+        limit: diesel_models::list::PageSize,
+        offset: diesel_models::list::PageOffset,
     ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError>;
+
+    #[cfg(all(feature = "v1", feature = "olap"))]
+    async fn filter_refund_by_platform_merchant_id(
+        &self,
+        platform_merchant_id: &common_utils::id_type::MerchantId,
+        refund_details: &refunds::RefundListConstraints,
+        limit: diesel_models::list::PageSize,
+        offset: diesel_models::list::PageOffset,
+    ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError>;
+
+    #[cfg(all(feature = "v1", feature = "olap"))]
+    async fn get_total_count_of_refunds_for_platform(
+        &self,
+        platform_merchant_id: &common_utils::id_type::MerchantId,
+        refund_details: &refunds::RefundListConstraints,
+    ) -> CustomResult<i64, errors::StorageError>;
 
     #[cfg(all(feature = "v1", feature = "olap"))]
     async fn filter_refund_by_meta_constraints(
@@ -379,8 +395,8 @@ mod storage {
             processor_merchant_id: &common_utils::id_type::MerchantId,
             refund_details: &refunds::RefundListConstraints,
             _storage_scheme: enums::MerchantStorageScheme,
-            limit: i64,
-            offset: i64,
+            limit: diesel_models::list::PageSize,
+            offset: diesel_models::list::PageOffset,
         ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
             let conn = connection::pg_connection_read(self).await?;
             <diesel_models::refund::Refund as storage_types::RefundDbExt>::filter_by_constraints(
@@ -401,8 +417,8 @@ mod storage {
             merchant_id: &common_utils::id_type::MerchantId,
             refund_details: refunds::RefundListConstraints,
             _storage_scheme: enums::MerchantStorageScheme,
-            limit: i64,
-            offset: i64,
+            limit: diesel_models::list::PageSize,
+            offset: diesel_models::list::PageOffset,
         ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
             let conn = connection::pg_connection_read(self).await?;
             <diesel_models::refund::Refund as storage_types::RefundDbExt>::filter_by_constraints(
@@ -411,6 +427,44 @@ mod storage {
                 refund_details,
                 limit,
                 offset,
+            )
+            .await
+            .map_err(|error| report!(errors::StorageError::from(error)))
+        }
+
+        #[cfg(all(feature = "v1", feature = "olap"))]
+        #[instrument(skip_all)]
+        async fn filter_refund_by_platform_merchant_id(
+            &self,
+            platform_merchant_id: &common_utils::id_type::MerchantId,
+            refund_details: &refunds::RefundListConstraints,
+            limit: diesel_models::list::PageSize,
+            offset: diesel_models::list::PageOffset,
+        ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
+            let conn = connection::pg_connection_read(self).await?;
+            <diesel_models::refund::Refund as storage_types::RefundDbExt>::filter_by_platform_constraints(
+                &conn,
+                platform_merchant_id,
+                refund_details,
+                limit,
+                offset,
+            )
+            .await
+            .map_err(|error| report!(errors::StorageError::from(error)))
+        }
+
+        #[cfg(all(feature = "v1", feature = "olap"))]
+        #[instrument(skip_all)]
+        async fn get_total_count_of_refunds_for_platform(
+            &self,
+            platform_merchant_id: &common_utils::id_type::MerchantId,
+            refund_details: &refunds::RefundListConstraints,
+        ) -> CustomResult<i64, errors::StorageError> {
+            let conn = connection::pg_connection_read(self).await?;
+            <diesel_models::refund::Refund as storage_types::RefundDbExt>::get_platform_refunds_count(
+                &conn,
+                platform_merchant_id,
+                refund_details,
             )
             .await
             .map_err(|error| report!(errors::StorageError::from(error)))
@@ -635,6 +689,7 @@ mod storage {
                         refund_error_message: None,
                         refund_error_code: None,
                         metadata: new.metadata.clone(),
+                        feature_metadata: new.feature_metadata.clone(),
                         refund_arn: new.refund_arn.clone(),
                         created_at: new.created_at,
                         modified_at: new.created_at,
@@ -661,7 +716,7 @@ mod storage {
 
                     let field = format!(
                         "pa_{}_ref_{}",
-                        &created_refund.attempt_id, &created_refund.refund_id
+                        created_refund.attempt_id, created_refund.refund_id
                     );
 
                     let mut reverse_lookups = vec![
@@ -844,7 +899,7 @@ mod storage {
                 merchant_id: &merchant_id,
                 payment_id: &payment_id,
             };
-            let field = format!("pa_{}_ref_{}", &this.attempt_id, &this.refund_id);
+            let field = format!("pa_{}_ref_{}", this.attempt_id, this.refund_id);
             let storage_scheme = Box::pin(decide_storage_scheme::<_, diesel_refund::Refund>(
                 self,
                 storage_scheme,
@@ -1203,8 +1258,8 @@ mod storage {
             processor_merchant_id: &common_utils::id_type::MerchantId,
             refund_details: &refunds::RefundListConstraints,
             _storage_scheme: enums::MerchantStorageScheme,
-            limit: i64,
-            offset: i64,
+            limit: diesel_models::list::PageSize,
+            offset: diesel_models::list::PageOffset,
         ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
             let conn = connection::pg_connection_read(self).await?;
             <diesel_models::refund::Refund as storage_types::RefundDbExt>::filter_by_constraints(
@@ -1225,8 +1280,8 @@ mod storage {
             merchant_id: &common_utils::id_type::MerchantId,
             refund_details: refunds::RefundListConstraints,
             _storage_scheme: enums::MerchantStorageScheme,
-            limit: i64,
-            offset: i64,
+            limit: diesel_models::list::PageSize,
+            offset: diesel_models::list::PageOffset,
         ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
             let conn = connection::pg_connection_read(self).await?;
             <diesel_models::refund::Refund as storage_types::RefundDbExt>::filter_by_constraints(
@@ -1235,6 +1290,44 @@ mod storage {
                 refund_details,
                 limit,
                 offset,
+            )
+            .await
+            .map_err(|error| report!(errors::StorageError::from(error)))
+        }
+
+        #[cfg(all(feature = "v1", feature = "olap"))]
+        #[instrument(skip_all)]
+        async fn filter_refund_by_platform_merchant_id(
+            &self,
+            platform_merchant_id: &common_utils::id_type::MerchantId,
+            refund_details: &refunds::RefundListConstraints,
+            limit: diesel_models::list::PageSize,
+            offset: diesel_models::list::PageOffset,
+        ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
+            let conn = connection::pg_connection_read(self).await?;
+            <diesel_models::refund::Refund as storage_types::RefundDbExt>::filter_by_platform_constraints(
+                &conn,
+                platform_merchant_id,
+                refund_details,
+                limit,
+                offset,
+            )
+            .await
+            .map_err(|error| report!(errors::StorageError::from(error)))
+        }
+
+        #[cfg(all(feature = "v1", feature = "olap"))]
+        #[instrument(skip_all)]
+        async fn get_total_count_of_refunds_for_platform(
+            &self,
+            platform_merchant_id: &common_utils::id_type::MerchantId,
+            refund_details: &refunds::RefundListConstraints,
+        ) -> CustomResult<i64, errors::StorageError> {
+            let conn = connection::pg_connection_read(self).await?;
+            <diesel_models::refund::Refund as storage_types::RefundDbExt>::get_platform_refunds_count(
+                &conn,
+                platform_merchant_id,
+                refund_details,
             )
             .await
             .map_err(|error| report!(errors::StorageError::from(error)))
@@ -1365,6 +1458,7 @@ impl RefundInterface for MockDb {
             refund_error_message: None,
             refund_error_code: None,
             metadata: new.metadata,
+            feature_metadata: new.feature_metadata,
             refund_arn: new.refund_arn.clone(),
             created_at: new.created_at,
             modified_at: current_time,
@@ -1420,6 +1514,7 @@ impl RefundInterface for MockDb {
             refund_error_message: None,
             refund_error_code: None,
             metadata: new.metadata,
+            feature_metadata: new.feature_metadata,
             refund_arn: new.refund_arn.clone(),
             created_at: new.created_at,
             modified_at: current_time,
@@ -1635,8 +1730,8 @@ impl RefundInterface for MockDb {
         processor_merchant_id: &common_utils::id_type::MerchantId,
         refund_details: &refunds::RefundListConstraints,
         _storage_scheme: enums::MerchantStorageScheme,
-        limit: i64,
-        offset: i64,
+        limit: diesel_models::list::PageSize,
+        offset: diesel_models::list::PageOffset,
     ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
         let mut unique_connectors = HashSet::new();
         let mut unique_merchant_connector_ids = HashSet::new();
@@ -1736,8 +1831,8 @@ impl RefundInterface for MockDb {
             .filter(|refund| {
                 unique_statuses.is_empty() || unique_statuses.contains(&refund.refund_status)
             })
-            .skip(usize::try_from(offset).unwrap_or_default())
-            .take(usize::try_from(limit).unwrap_or(MAX_LIMIT))
+            .skip(usize::try_from(offset.as_i64()).unwrap_or_default())
+            .take(usize::try_from(limit.as_i64()).unwrap_or(MAX_LIMIT))
             .cloned()
             .collect::<Vec<_>>();
 
@@ -1750,8 +1845,8 @@ impl RefundInterface for MockDb {
         merchant_id: &common_utils::id_type::MerchantId,
         refund_details: refunds::RefundListConstraints,
         _storage_scheme: enums::MerchantStorageScheme,
-        limit: i64,
-        offset: i64,
+        limit: diesel_models::list::PageSize,
+        offset: diesel_models::list::PageOffset,
     ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
         let mut unique_connectors = HashSet::new();
         let mut unique_connector_ids = HashSet::new();
@@ -1841,12 +1936,32 @@ impl RefundInterface for MockDb {
             .filter(|refund| {
                 unique_statuses.is_empty() || unique_statuses.contains(&refund.refund_status)
             })
-            .skip(usize::try_from(offset).unwrap_or_default())
-            .take(usize::try_from(limit).unwrap_or(MAX_LIMIT))
+            .skip(usize::try_from(offset.as_i64()).unwrap_or_default())
+            .take(usize::try_from(limit.as_i64()).unwrap_or(MAX_LIMIT))
             .cloned()
             .collect::<Vec<_>>();
 
         Ok(filtered_refunds)
+    }
+
+    #[cfg(all(feature = "v1", feature = "olap"))]
+    async fn filter_refund_by_platform_merchant_id(
+        &self,
+        _platform_merchant_id: &common_utils::id_type::MerchantId,
+        _refund_details: &refunds::RefundListConstraints,
+        _limit: diesel_models::list::PageSize,
+        _offset: diesel_models::list::PageOffset,
+    ) -> CustomResult<Vec<diesel_models::refund::Refund>, errors::StorageError> {
+        Err(errors::StorageError::MockDbError)?
+    }
+
+    #[cfg(all(feature = "v1", feature = "olap"))]
+    async fn get_total_count_of_refunds_for_platform(
+        &self,
+        _platform_merchant_id: &common_utils::id_type::MerchantId,
+        _refund_details: &refunds::RefundListConstraints,
+    ) -> CustomResult<i64, errors::StorageError> {
+        Err(errors::StorageError::MockDbError)?
     }
 
     #[cfg(all(feature = "v1", feature = "olap"))]

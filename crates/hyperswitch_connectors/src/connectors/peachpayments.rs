@@ -214,10 +214,7 @@ impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsRespons
         if req.request.capture_method.unwrap_or_default() == CaptureMethod::Automatic {
             return Err(errors::ConnectorError::CaptureMethodNotSupported.into());
         }
-        Ok(format!(
-            "{}/transactions/authorization",
-            self.base_url(connectors)
-        ))
+        Ok(format!("{}/transactions", self.base_url(connectors)))
     }
 
     fn get_request_body(
@@ -335,7 +332,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
                 if req.request.minor_amount == MinorUnit::zero() {
                     return Err(errors::ConnectorError::NotSupported {
                         message: "automatic capture for zero-amount transactions".to_string(),
-                        connector: CONNECTOR,
+                        connector: CONNECTOR.into(),
                     }
                     .into());
                 }
@@ -697,12 +694,12 @@ impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Pe
             req.request
                 .minor_amount
                 .ok_or(errors::ConnectorError::MissingRequiredField {
-                    field_name: "Amount",
+                    field_name: "Amount".into(),
                 })?,
             req.request
                 .currency
                 .ok_or(errors::ConnectorError::MissingRequiredField {
-                    field_name: "Currency",
+                    field_name: "Currency".into(),
                 })?,
         )?;
 

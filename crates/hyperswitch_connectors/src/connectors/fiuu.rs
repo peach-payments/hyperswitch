@@ -38,6 +38,7 @@ use hyperswitch_interfaces::{
         ConnectorValidation,
     },
     configs::Connectors,
+    consts::{NO_ERROR_CODE, NO_ERROR_MESSAGE},
     errors,
     events::connector_api_logs::ConnectorEvent,
     types::{self, Response},
@@ -89,6 +90,13 @@ pub fn parse_and_log_keys_in_url_encoded_response<T>(data: &[u8]) {
     }
 }
 
+/// Returns the trimmed body if it is a plain string, i.e. it has no `key=value` lines
+fn get_plain_text_response(data: &[u8]) -> Option<String> {
+    let response_str = std::str::from_utf8(data).ok()?.trim();
+    (!response_str.is_empty() && !response_str.lines().any(|line| line.contains('=')))
+        .then(|| response_str.to_string())
+}
+
 fn parse_response<T>(data: &[u8]) -> Result<T, errors::ConnectorError>
 where
     T: for<'de> Deserialize<'de>,
@@ -114,6 +122,18 @@ where
                 miscellaneous.insert(key.to_string(), Secret::new(old_value.to_string()));
             }
         }
+    }
+    // No `key=value` lines found: the body carries no parsed payment fields, so log it in full
+    // to see what Fiuu actually returned
+    if json.is_empty() {
+        router_env::logger::error!(
+            response_len = data.len(),
+            response_lines = response_str.lines().count(),
+            is_blank = response_str.trim().is_empty(),
+            response_body = %response_str,
+            "No key-value pairs found in Fiuu response for type {}",
+            type_name::<T>()
+        );
     }
     if !miscellaneous.is_empty() {
         let misc_value = serde_json::to_value(miscellaneous).map_err(|e| {
@@ -219,27 +239,55 @@ impl ConnectorCommon for Fiuu {
         res: Response,
         event_builder: Option<&mut ConnectorEvent>,
     ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
-        let response: fiuu::FiuuErrorResponse = res
-            .response
-            .parse_struct("FiuuErrorResponse")
-            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
+        if res.response.is_empty() {
+            return Ok(ErrorResponse {
+                status_code: res.status_code,
+                code: NO_ERROR_CODE.to_string(),
+                message: NO_ERROR_MESSAGE.to_string(),
+                reason: None,
+                attempt_status: None,
+                connector_transaction_id: None,
+                connector_response_reference_id: None,
+                network_advice_code: None,
+                network_decline_code: None,
+                network_error_message: None,
+                connector_metadata: None,
+            });
+        }
 
-        event_builder.map(|i| i.set_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
+        let response: Result<fiuu::FiuuErrorResponse, _> =
+            res.response.parse_struct("FiuuErrorResponse");
 
-        Ok(ErrorResponse {
-            status_code: res.status_code,
-            code: response.error_code.clone(),
-            message: response.error_desc.clone(),
-            reason: Some(response.error_desc.clone()),
-            attempt_status: None,
-            connector_transaction_id: None,
-            connector_response_reference_id: None,
-            network_advice_code: None,
-            network_decline_code: None,
-            network_error_message: None,
-            connector_metadata: None,
-        })
+        match response {
+            Ok(response) => {
+                event_builder.map(|i| i.set_response_body(&response));
+                router_env::logger::info!(connector_response=?response);
+
+                Ok(ErrorResponse {
+                    status_code: res.status_code,
+                    code: response.error_code.clone(),
+                    message: response.error_desc.clone(),
+                    reason: Some(response.error_desc.clone()),
+                    attempt_status: None,
+                    connector_transaction_id: None,
+                    connector_response_reference_id: None,
+                    network_advice_code: None,
+                    network_decline_code: None,
+                    network_error_message: None,
+                    connector_metadata: None,
+                })
+            }
+            Err(error_msg) => {
+                if let Some(event) = event_builder {
+                    event.set_error(serde_json::json!({
+                        "error": "Error response parsing failed",
+                        "status_code": res.status_code
+                    }));
+                }
+                router_env::logger::error!(deserialization_error =? error_msg);
+                utils::handle_json_response_deserialization_failure(res, "fiuu")
+            }
+        }
     }
 }
 pub fn build_form_from_struct<T: Serialize + Send + 'static>(
@@ -449,22 +497,50 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Fiu
                 let content_header = utils::get_http_header("Content-type", &headers)
                     .attach_printable("Missing content type in headers")
                     .change_context(errors::ConnectorError::ResponseHandlingFailed)?;
-                let response: fiuu::FiuuPaymentResponse = if content_header
-                    == "text/plain;charset=UTF-8"
-                {
-                    parse_response(&res.response)
+                let response = if content_header == "text/plain;charset=UTF-8" {
+                    parse_response::<fiuu::FiuuPaymentResponse>(&res.response)
                 } else {
                     Err(errors::ConnectorError::ResponseDeserializationFailed)
                         .attach_printable(format!("Expected content type to be text/plain;charset=UTF-8 , but received different content type as {content_header} in response"))?
-                }?;
-                event_builder.map(|i| i.set_response_body(&response));
-                router_env::logger::info!(connector_response=?response);
-                RouterData::try_from(ResponseRouterData {
-                    response,
-                    data: data.clone(),
-                    http_code: res.status_code,
-                })
-                .change_context(errors::ConnectorError::ResponseHandlingFailed)
+                };
+                match response {
+                    Ok(response) => {
+                        event_builder.map(|i| i.set_response_body(&response));
+                        router_env::logger::info!(connector_response=?response);
+                        RouterData::try_from(ResponseRouterData {
+                            response,
+                            data: data.clone(),
+                            http_code: res.status_code,
+                        })
+                        .change_context(errors::ConnectorError::ResponseHandlingFailed)
+                    }
+                    // Fiuu can respond with a plain string instead of `key=value` pairs
+                    // (e.g. "System is busy now, temporary out of services..."). Treat it as
+                    // an error without changing the attempt status, so the next sync can retry.
+                    Err(error) => match get_plain_text_response(&res.response) {
+                        Some(message) => {
+                            event_builder.map(|i| i.set_response_body(&message));
+                            router_env::logger::info!(connector_response=?message);
+                            Ok(RouterData {
+                                response: Err(ErrorResponse {
+                                    status_code: res.status_code,
+                                    code: NO_ERROR_CODE.to_string(),
+                                    message: message.clone(),
+                                    reason: Some(message),
+                                    attempt_status: Some(data.status),
+                                    connector_transaction_id: None,
+                                    connector_response_reference_id: None,
+                                    network_advice_code: None,
+                                    network_decline_code: None,
+                                    network_error_message: None,
+                                    connector_metadata: None,
+                                }),
+                                ..data.clone()
+                            })
+                        }
+                        None => Err(error.into()),
+                    },
+                }
             }
             None => {
                 // We don't get headers for payment webhook response handling
@@ -903,6 +979,9 @@ impl webhooks::IncomingWebhook for Fiuu {
         request: &webhooks::IncomingWebhookRequestDetails<'_>,
         _context: Option<&webhooks::WebhookContext>,
     ) -> CustomResult<api_models::webhooks::IncomingWebhookEvent, errors::ConnectorError> {
+        if request.body.is_empty() {
+            return Ok(api_models::webhooks::IncomingWebhookEvent::EndpointVerification);
+        }
         let header = utils::get_header_key_value("content-type", request.headers)?;
         let resource: FiuuWebhooksResponse = if header == "application/x-www-form-urlencoded" {
             parse_and_log_keys_in_url_encoded_response::<FiuuWebhooksResponse>(request.body);

@@ -209,6 +209,14 @@ impl TryFrom<&HipayRouterData<&PaymentsAuthorizeRouterData>> for HipayPaymentsRe
                         | Some(CardNetwork::Accel)
                         | Some(CardNetwork::Pulse)
                         | Some(CardNetwork::Nyce)
+                        | Some(CardNetwork::Prop)
+                        | Some(CardNetwork::PrivateLabel)
+                        | Some(CardNetwork::Dinacard)
+                        | Some(CardNetwork::AirPlus)
+                        | Some(CardNetwork::Aurore)
+                        | Some(CardNetwork::EftposAustralia)
+                        | Some(CardNetwork::GeCapital)
+                        | Some(CardNetwork::Uatp)
                         | None => "".to_string(),
                     },
                 },
@@ -283,6 +291,13 @@ impl From<&HipayTokenResponse> for AdditionalPaymentMethodConnectorResponse {
             card_network: Some(hipay_token_response.brand.clone()),
             domestic_network: hipay_token_response.domestic_network.clone(),
             auth_code: None,
+            processor_card_network: None,
+            card_subtype: None,
+            card_segment_type: None,
+            funding_source: None,
+            card_type: None,
+            issuer_name: None,
+            issuer_country: None,
         }
     }
 }
@@ -392,6 +407,7 @@ impl TryFrom<PaymentsResponseRouterData<HipayPaymentsResponse>> for PaymentsAuth
                 incremental_authorization_allowed: None,
                 authentication_data: None,
                 charges: None,
+                payment_account_reference: None,
             })
         };
         Ok(Self {
@@ -628,6 +644,7 @@ impl TryFrom<PaymentsCaptureResponseRouterData<HipayMaintenanceResponse<HipayPay
                 incremental_authorization_allowed: None,
                 authentication_data: None,
                 charges: None,
+                payment_account_reference: None,
             }),
             ..item.data
         })
@@ -655,6 +672,7 @@ impl TryFrom<PaymentsCancelResponseRouterData<HipayMaintenanceResponse<HipayPaym
                 incremental_authorization_allowed: None,
                 authentication_data: None,
                 charges: None,
+                payment_account_reference: None,
             }),
             ..item.data
         })
@@ -772,6 +790,7 @@ impl TryFrom<PaymentsSyncResponseRouterData<HipaySyncResponse>> for PaymentsSync
                         incremental_authorization_allowed: None,
                         authentication_data: None,
                         charges: None,
+                        payment_account_reference: None,
                     })
                 };
                 Ok(Self {

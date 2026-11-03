@@ -15,14 +15,13 @@ use hyperswitch_domain_models::{
     router_data::{AccessToken, ErrorResponse, RouterData},
     router_flow_types::{
         unified_authentication_service::PreAuthenticate, AccessTokenAuth, Authorize, Capture,
-        CompleteAuthorize, Execute, PSync, PaymentMethodToken, PreProcessing, RSync, Session,
-        SetupMandate, Void,
+        CompleteAuthorize, Execute, PSync, PaymentMethodToken, RSync, Session, SetupMandate, Void,
     },
     router_request_types::{
         AccessTokenRequestData, CompleteAuthorizeData, PaymentMethodTokenizationData,
         PaymentsAuthorizeData, PaymentsCancelData, PaymentsCaptureData,
-        PaymentsPreAuthenticateData, PaymentsPreProcessingData, PaymentsSessionData,
-        PaymentsSyncData, RefundsData, SetupMandateRequestData,
+        PaymentsPreAuthenticateData, PaymentsSessionData, PaymentsSyncData, RefundsData,
+        SetupMandateRequestData,
     },
     router_response_types::{
         ConnectorInfo, PaymentMethodDetails, PaymentsResponseData, RefundsResponseData,
@@ -31,8 +30,7 @@ use hyperswitch_domain_models::{
     types::{
         PaymentsAuthorizeRouterData, PaymentsCancelRouterData, PaymentsCaptureRouterData,
         PaymentsCompleteAuthorizeRouterData, PaymentsPreAuthenticateRouterData,
-        PaymentsPreProcessingRouterData, PaymentsSyncRouterData, RefundsRouterData,
-        SetupMandateRouterData,
+        PaymentsSyncRouterData, RefundsRouterData, SetupMandateRouterData,
     },
 };
 use hyperswitch_interfaces::{
@@ -41,12 +39,13 @@ use hyperswitch_interfaces::{
         ConnectorSpecifications, ConnectorValidation,
     },
     configs::Connectors,
+    consts::{NO_ERROR_CODE, NO_ERROR_MESSAGE},
     errors::ConnectorError,
     events::connector_api_logs::ConnectorEvent,
     types::{
         PaymentsAuthorizeType, PaymentsCaptureType, PaymentsCompleteAuthorizeType,
-        PaymentsPreAuthenticateType, PaymentsPreProcessingType, PaymentsSyncType, PaymentsVoidType,
-        RefundExecuteType, RefundSyncType, Response, SetupMandateType,
+        PaymentsPreAuthenticateType, PaymentsSyncType, PaymentsVoidType, RefundExecuteType,
+        RefundSyncType, Response, SetupMandateType,
     },
     webhooks::{IncomingWebhook, IncomingWebhookRequestDetails, WebhookContext},
 };
@@ -123,27 +122,55 @@ impl ConnectorCommon for Nmi {
         res: Response,
         event_builder: Option<&mut ConnectorEvent>,
     ) -> CustomResult<ErrorResponse, ConnectorError> {
-        let response: nmi::StandardResponse = res
-            .response
-            .parse_struct("StandardResponse")
-            .change_context(ConnectorError::ResponseDeserializationFailed)?;
+        if res.response.is_empty() {
+            return Ok(ErrorResponse {
+                status_code: res.status_code,
+                code: NO_ERROR_CODE.to_string(),
+                message: NO_ERROR_MESSAGE.to_string(),
+                reason: None,
+                attempt_status: None,
+                connector_transaction_id: None,
+                connector_response_reference_id: None,
+                network_advice_code: None,
+                network_decline_code: None,
+                network_error_message: None,
+                connector_metadata: None,
+            });
+        }
 
-        event_builder.map(|i| i.set_error_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
+        let response: Result<nmi::StandardResponse, _> =
+            res.response.parse_struct("StandardResponse");
 
-        Ok(ErrorResponse {
-            message: response.responsetext.to_owned(),
-            status_code: res.status_code,
-            reason: Some(response.responsetext),
-            code: response.response_code,
-            attempt_status: None,
-            connector_transaction_id: Some(response.transactionid),
-            connector_response_reference_id: None,
-            network_advice_code: None,
-            network_decline_code: None,
-            network_error_message: None,
-            connector_metadata: None,
-        })
+        match response {
+            Ok(response) => {
+                event_builder.map(|i| i.set_error_response_body(&response));
+                router_env::logger::info!(connector_response=?response);
+
+                Ok(ErrorResponse {
+                    message: response.responsetext.to_owned(),
+                    status_code: res.status_code,
+                    reason: Some(response.responsetext),
+                    code: response.response_code,
+                    attempt_status: None,
+                    connector_transaction_id: Some(response.transactionid),
+                    connector_response_reference_id: None,
+                    network_advice_code: None,
+                    network_decline_code: None,
+                    network_error_message: None,
+                    connector_metadata: None,
+                })
+            }
+            Err(error_msg) => {
+                if let Some(event) = event_builder {
+                    event.set_error(serde_json::json!({
+                        "error": "Error response parsing failed",
+                        "status_code": res.status_code
+                    }));
+                }
+                router_env::logger::error!(deserialization_error =? error_msg);
+                crate::utils::handle_json_response_deserialization_failure(res, "nmi")
+            }
+        }
     }
 }
 
@@ -304,85 +331,6 @@ impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsRespons
         res: Response,
     ) -> CustomResult<SetupMandateRouterData, ConnectorError> {
         let response: nmi::StandardResponse = serde_urlencoded::from_bytes(&res.response)
-            .change_context(ConnectorError::ResponseDeserializationFailed)?;
-        event_builder.map(|i| i.set_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
-        RouterData::try_from(ResponseRouterData {
-            response,
-            data: data.clone(),
-            http_code: res.status_code,
-        })
-    }
-
-    fn get_error_response(
-        &self,
-        res: Response,
-        event_builder: Option<&mut ConnectorEvent>,
-    ) -> CustomResult<ErrorResponse, ConnectorError> {
-        self.build_error_response(res, event_builder)
-    }
-}
-
-impl api::PaymentsPreProcessing for Nmi {}
-
-impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData> for Nmi {
-    fn get_headers(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<Vec<(String, Maskable<String>)>, ConnectorError> {
-        self.build_headers(req, connectors)
-    }
-
-    fn get_content_type(&self) -> &'static str {
-        self.common_get_content_type()
-    }
-
-    fn get_url(
-        &self,
-        _req: &PaymentsPreProcessingRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<String, ConnectorError> {
-        Ok(format!("{}api/transact.php", self.base_url(connectors)))
-    }
-
-    fn get_request_body(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        _connectors: &Connectors,
-    ) -> CustomResult<RequestContent, ConnectorError> {
-        let connector_req = nmi::NmiVaultRequest::try_from(req)?;
-        Ok(RequestContent::FormUrlEncoded(Box::new(connector_req)))
-    }
-
-    fn build_request(
-        &self,
-        req: &PaymentsPreProcessingRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<Option<Request>, ConnectorError> {
-        let req = Some(
-            RequestBuilder::new()
-                .method(Method::Post)
-                .attach_default_headers()
-                .headers(PaymentsPreProcessingType::get_headers(
-                    self, req, connectors,
-                )?)
-                .url(&PaymentsPreProcessingType::get_url(self, req, connectors)?)
-                .set_body(PaymentsPreProcessingType::get_request_body(
-                    self, req, connectors,
-                )?)
-                .build(),
-        );
-        Ok(req)
-    }
-
-    fn handle_response(
-        &self,
-        data: &PaymentsPreProcessingRouterData,
-        event_builder: Option<&mut ConnectorEvent>,
-        res: Response,
-    ) -> CustomResult<PaymentsPreProcessingRouterData, ConnectorError> {
-        let response: nmi::NmiVaultResponse = serde_urlencoded::from_bytes(&res.response)
             .change_context(ConnectorError::ResponseDeserializationFailed)?;
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
@@ -1015,6 +963,10 @@ impl IncomingWebhook for Nmi {
         request: &IncomingWebhookRequestDetails<'_>,
         _context: Option<&WebhookContext>,
     ) -> CustomResult<IncomingWebhookEvent, ConnectorError> {
+        if request.body.is_empty() {
+            return Ok(IncomingWebhookEvent::EventNotSupported);
+        }
+
         let event_type_body: nmi::NmiWebhookEventBody = request
             .body
             .parse_struct("nmi NmiWebhookEventType")
@@ -1043,6 +995,7 @@ impl IncomingWebhook for Nmi {
                 Ok(Box::new(nmi::SyncResponse::try_from(&webhook_body)?))
             }
             nmi::NmiActionType::Refund => Ok(Box::new(webhook_body)),
+            nmi::NmiActionType::Unknown => Err(ConnectorError::WebhooksNotImplemented)?,
         }
     }
 }
@@ -1057,13 +1010,13 @@ impl ConnectorRedirectResponse for Nmi {
         match action {
             PaymentAction::CompleteAuthorize => {
                 let payload_data = json_payload.ok_or(ConnectorError::MissingRequiredField {
-                    field_name: "connector_metadata",
+                    field_name: "connector_metadata".into(),
                 })?;
 
                 let redirect_res: nmi::NmiRedirectResponse = serde_json::from_value(payload_data)
                     .change_context(
                     ConnectorError::MissingConnectorRedirectionPayload {
-                        field_name: "redirect_res",
+                        field_name: "redirect_res".into(),
                     },
                 )?;
 
@@ -1188,13 +1141,16 @@ impl ConnectorSpecifications for Nmi {
             api::CurrentFlowInfo::Authorize {
                 auth_type,
                 request_data,
+                connector_meta_data: _,
             } => auth_type.is_three_ds() && request_data.is_card(),
             api::CurrentFlowInfo::CompleteAuthorize { .. } => false,
             api::CurrentFlowInfo::SetupMandate {
                 auth_type,
                 request_data,
             } => auth_type.is_three_ds() && request_data.is_card(),
-            api::CurrentFlowInfo::Psync { .. } => false,
+            api::CurrentFlowInfo::Psync { .. }
+            | api::CurrentFlowInfo::UpdatePostConfirm { .. }
+            | api::CurrentFlowInfo::ConnectorWebhookRegister { .. } => false,
         }
     }
     fn get_connector_about(&self) -> Option<&'static ConnectorInfo> {

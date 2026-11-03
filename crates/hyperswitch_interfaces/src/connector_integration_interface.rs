@@ -1,8 +1,11 @@
-use api_models::webhooks::{IncomingWebhookEvent, ObjectReferenceId};
+use api_models::{
+    merchant_connector_webhook_management::{Scope, ScopeIdentifier},
+    webhooks::{IncomingWebhookEvent, ObjectReferenceId},
+};
 use common_enums::PaymentAction;
 use common_utils::{crypto, errors::CustomResult, request::Request};
 use hyperswitch_domain_models::{
-    api::ApplicationResponse,
+    api::WebhookResponse,
     connector_endpoints::Connectors,
     errors::api_error_response::ApiErrorResponse,
     router_data::{ConnectorAuthType, ErrorResponse, RouterData},
@@ -356,7 +359,7 @@ impl IncomingWebhook for ConnectorEnum {
         connector_authentication_type: Option<
             crypto::Encryptable<hyperswitch_masking::Secret<serde_json::Value>>,
         >,
-    ) -> CustomResult<ApplicationResponse<serde_json::Value>, errors::ConnectorError> {
+    ) -> CustomResult<WebhookResponse<serde_json::Value>, errors::ConnectorError> {
         match self {
             Self::Old(connector) => connector.get_webhook_api_response(
                 request,
@@ -415,6 +418,19 @@ impl IncomingWebhook for ConnectorEnum {
         match self {
             Self::Old(connector) => connector.get_network_txn_id(request),
             Self::New(connector) => connector.get_network_txn_id(request),
+        }
+    }
+
+    fn get_webhook_mandate_details_update(
+        &self,
+        request: &IncomingWebhookRequestDetails<'_>,
+    ) -> CustomResult<
+        Option<crate::webhooks::IncomingWebhookMandateDetailsUpdate>,
+        errors::ConnectorError,
+    > {
+        match self {
+            Self::Old(connector) => connector.get_webhook_mandate_details_update(request),
+            Self::New(connector) => connector.get_webhook_mandate_details_update(request),
         }
     }
 
@@ -564,6 +580,27 @@ impl ConnectorValidation for ConnectorEnum {
     }
 }
 impl ConnectorSpecifications for ConnectorEnum {
+    fn is_webhook_ip_verification_required(&self) -> bool {
+        match self {
+            Self::Old(connector) => connector.is_webhook_ip_verification_required(),
+            Self::New(connector) => connector.is_webhook_ip_verification_required(),
+        }
+    }
+
+    fn is_webhook_mtls_required(&self) -> bool {
+        match self {
+            Self::Old(connector) => connector.is_webhook_mtls_required(),
+            Self::New(connector) => connector.is_webhook_mtls_required(),
+        }
+    }
+
+    fn is_multi_currency_processing_supported(&self) -> bool {
+        match self {
+            Self::Old(connector) => connector.is_multi_currency_processing_supported(),
+            Self::New(connector) => connector.is_multi_currency_processing_supported(),
+        }
+    }
+
     fn is_balance_check_flow_required(&self, current_flow: CurrentFlowInfo) -> bool {
         match self {
             Self::Old(connector) => connector.is_balance_check_flow_required(current_flow),
@@ -669,6 +706,20 @@ impl ConnectorSpecifications for ConnectorEnum {
         }
     }
 
+    /// Check if connector should be called for UpdatePostConfirm
+    fn should_call_connector_for_update_post_confirm(
+        &self,
+        payment_method_type: Option<common_enums::PaymentMethodType>,
+        intent_status: common_enums::IntentStatus,
+    ) -> bool {
+        match self {
+            Self::Old(connector) => connector
+                .should_call_connector_for_update_post_confirm(payment_method_type, intent_status),
+            Self::New(connector) => connector
+                .should_call_connector_for_update_post_confirm(payment_method_type, intent_status),
+        }
+    }
+
     /// Check if connector supports authentication token
     fn authentication_token_for_token_creation(&self) -> bool {
         match self {
@@ -682,6 +733,17 @@ impl ConnectorSpecifications for ConnectorEnum {
         match self {
             Self::Old(connector) => connector.is_sdk_client_token_generation_enabled(),
             Self::New(connector) => connector.is_sdk_client_token_generation_enabled(),
+        }
+    }
+
+    fn should_allow_mit_when_connector_mandate_status_is_inactive(&self) -> Option<bool> {
+        match self {
+            Self::Old(connector) => {
+                connector.should_allow_mit_when_connector_mandate_status_is_inactive()
+            }
+            Self::New(connector) => {
+                connector.should_allow_mit_when_connector_mandate_status_is_inactive()
+            }
         }
     }
 
@@ -765,6 +827,21 @@ impl ConnectorSpecifications for ConnectorEnum {
         }
     }
 
+    #[cfg(feature = "payouts")]
+    fn generate_payout_connector_request_reference_id(
+        &self,
+        payout_attempt: &hyperswitch_domain_models::payouts::payout_attempt::PayoutAttempt,
+    ) -> String {
+        match self {
+            Self::Old(connector) => {
+                connector.generate_payout_connector_request_reference_id(payout_attempt)
+            }
+            Self::New(connector) => {
+                connector.generate_payout_connector_request_reference_id(payout_attempt)
+            }
+        }
+    }
+
     #[cfg(feature = "v1")]
     fn generate_connector_customer_id(
         &self,
@@ -808,16 +885,39 @@ impl ConnectorSpecifications for ConnectorEnum {
         }
     }
 
+    #[cfg(feature = "frm")]
+    fn get_payment_frm_metadata(
+        &self,
+        payment_attempt: &hyperswitch_domain_models::payments::payment_attempt::PaymentAttempt,
+    ) -> CustomResult<Option<common_utils::pii::SecretSerdeValue>, errors::ConnectorError> {
+        match self {
+            Self::Old(connector) => connector.get_payment_frm_metadata(payment_attempt),
+            Self::New(connector) => connector.get_payment_frm_metadata(payment_attempt),
+        }
+    }
+
+    #[cfg(feature = "frm")]
+    fn get_payout_frm_metadata(
+        &self,
+        payout_attempt: &hyperswitch_domain_models::payouts::payout_attempt::PayoutAttempt,
+    ) -> CustomResult<Option<common_utils::pii::SecretSerdeValue>, errors::ConnectorError> {
+        match self {
+            Self::Old(connector) => connector.get_payout_frm_metadata(payout_attempt),
+            Self::New(connector) => connector.get_payout_frm_metadata(payout_attempt),
+        }
+    }
+
     fn is_payment_recurrence_operation_needed(
         &self,
-        payment_intent: &hyperswitch_domain_models::payments::PaymentIntent,
+        setup_future_usage: Option<common_enums::FutureUsage>,
+        current_flow: Option<CurrentFlowInfo>,
     ) -> Option<bool> {
         match self {
             Self::Old(connector) => {
-                connector.is_payment_recurrence_operation_needed(payment_intent)
+                connector.is_payment_recurrence_operation_needed(setup_future_usage, current_flow)
             }
             Self::New(connector) => {
-                connector.is_payment_recurrence_operation_needed(payment_intent)
+                connector.is_payment_recurrence_operation_needed(setup_future_usage, current_flow)
             }
         }
     }
@@ -836,12 +936,14 @@ impl ConnectorSpecifications for ConnectorEnum {
         }
     }
 
-    fn get_api_webhook_config(
+    fn get_webhook_registration_plan(
         &self,
-    ) -> &'static common_types::connector_webhook_configuration::WebhookSetupCapabilities {
+        scope: &Scope,
+        connectors: &Connectors,
+    ) -> CustomResult<Vec<(ScopeIdentifier, String)>, errors::ConnectorError> {
         match self {
-            Self::Old(connector) => connector.get_api_webhook_config(),
-            Self::New(connector) => connector.get_api_webhook_config(),
+            Self::Old(connector) => connector.get_webhook_registration_plan(scope, connectors),
+            Self::New(connector) => connector.get_webhook_registration_plan(scope, connectors),
         }
     }
 }

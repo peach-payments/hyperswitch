@@ -5,6 +5,7 @@ use std::fmt::Debug;
 
 use api_models::webhooks::{AuthenticationIdType, IncomingWebhookEvent, ObjectReferenceId};
 use common_utils::{
+    crypto,
     errors::CustomResult,
     ext_traits::ByteSliceExt,
     request::{Method, Request, RequestBuilder, RequestContent},
@@ -241,15 +242,19 @@ impl IncomingWebhook for Netcetera {
             challenge_code_reason,
         })
     }
-}
 
-fn build_endpoint(
-    base_url: &str,
-    connector_metadata: &Option<common_utils::pii::SecretSerdeValue>,
-) -> CustomResult<String, ConnectorError> {
-    let metadata = netcetera::NetceteraMetaData::try_from(connector_metadata)?;
-    let endpoint_prefix = metadata.endpoint_prefix;
-    Ok(base_url.replace("{{merchant_endpoint_prefix}}", &endpoint_prefix))
+    async fn verify_webhook_source(
+        &self,
+        _request: &IncomingWebhookRequestDetails<'_>,
+        _merchant_id: &common_utils::id_type::MerchantId,
+        _connector_webhook_details: Option<common_utils::pii::SecretSerdeValue>,
+        _connector_account_details: crypto::Encryptable<
+            hyperswitch_masking::Secret<serde_json::Value>,
+        >,
+        _connector_name: &str,
+    ) -> CustomResult<bool, ConnectorError> {
+        Ok(true)
+    }
 }
 
 impl ConnectorPreAuthentication for Netcetera {}
@@ -275,11 +280,10 @@ impl ConnectorIntegration<PreAuthentication, PreAuthNRequestData, Authentication
 
     fn get_url(
         &self,
-        req: &PreAuthNRouterData,
+        _req: &PreAuthNRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, ConnectorError> {
-        let base_url = build_endpoint(self.base_url(connectors), &req.connector_meta_data)?;
-        Ok(format!("{base_url}/3ds/versioning"))
+        Ok(format!("{}/3ds/versioning", self.base_url(connectors)))
     }
 
     fn get_request_body(
@@ -367,11 +371,10 @@ impl
 
     fn get_url(
         &self,
-        req: &ConnectorAuthenticationRouterData,
+        _req: &ConnectorAuthenticationRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, ConnectorError> {
-        let base_url = build_endpoint(self.base_url(connectors), &req.connector_meta_data)?;
-        Ok(format!("{base_url}/3ds/authentication"))
+        Ok(format!("{}/3ds/authentication", self.base_url(connectors)))
     }
 
     fn get_request_body(
@@ -384,12 +387,12 @@ impl
             req.request
                 .currency
                 .ok_or(ConnectorError::MissingRequiredField {
-                    field_name: "currency",
+                    field_name: "currency".into(),
                 })?,
             req.request
                 .amount
                 .ok_or(ConnectorError::MissingRequiredField {
-                    field_name: "amount",
+                    field_name: "amount".into(),
                 })?,
             req,
         ))?;

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use api_models::payments::{
     MandateAmountData as ApiMandateAmountData, MandateData as ApiMandateData, MandateType,
 };
-use common_enums::Currency;
+use common_enums::{AttemptStatus, Currency};
 use common_types::payments as common_payments_types;
 use common_utils::{
     date_time,
@@ -15,7 +15,7 @@ use error_stack::ResultExt;
 use hyperswitch_masking::Secret;
 use time::PrimitiveDateTime;
 
-use crate::router_data::RecurringMandatePaymentData;
+use crate::{payments::payment_attempt::PaymentAttempt, router_data::RecurringMandatePaymentData};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -248,6 +248,9 @@ impl From<&PaymentsMandateReferenceRecord> for RecurringMandatePaymentData {
             original_payment_authorized_currency: mandate_reference_record
                 .original_payment_authorized_currency,
             mandate_metadata: mandate_reference_record.mandate_metadata.clone(),
+            // Lives on the payment method, not the mandate record; set by the caller.
+            network_transaction_id: None,
+            network_transaction_link_id: None,
         }
     }
 }
@@ -603,6 +606,50 @@ pub enum MandateTransactionType {
     RecurringMandateTransaction,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    serde::Deserialize,
+    serde::Serialize,
+    strum::Display,
+    strum::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum MandateActivation {
+    /// The connector issued a mandate identifier but the customer's action is still pending
+    Pending,
+    /// The payment succeeded and the connector mandate can be treated as active
+    Successful,
+    /// The mandate could not be activated (non-success status)
+    Failed,
+}
+
+#[cfg(feature = "v1")]
+impl From<&PaymentAttempt> for MandateActivation {
+    fn from(payment_attempt: &PaymentAttempt) -> Self {
+        let has_connector_mandate_id = payment_attempt
+            .connector_mandate_detail
+            .as_ref()
+            .and_then(|cmr| cmr.connector_mandate_id.as_ref())
+            .is_some();
+
+        match (has_connector_mandate_id, payment_attempt.status) {
+            (true, AttemptStatus::AuthenticationPending) => Self::Pending,
+            (
+                true,
+                AttemptStatus::Charged
+                | AttemptStatus::Authorized
+                | AttemptStatus::PartiallyAuthorized,
+            ) => Self::Successful,
+            _ => Self::Failed,
+        }
+    }
+}
+
 #[derive(Default, Eq, PartialEq, Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct MandateIds {
     pub mandate_id: Option<String>,
@@ -658,6 +705,12 @@ pub enum MandateReferenceId {
     NetworkMandateId(NetworkMandateIdRef), // network_txns_id send by Issuer to connector, Used for PG agnostic mandate txns along with card data
     NetworkTokenWithNTI(NetworkTokenWithNTIRef), // network_txns_id send by Issuer to connector, Used for PG agnostic mandate txns along with network token data
     CardWithLimitedData(CardWithLimitedDataRef), // indicates the recurring transaction is done by card data only
+}
+
+impl MandateReferenceId {
+    pub fn is_network_mandate_id(&self) -> bool {
+        matches!(self, Self::NetworkMandateId(_))
+    }
 }
 
 /// Scheme-level identifiers for PSP-agnostic MIT flows (raw card path).
@@ -774,6 +827,9 @@ impl From<&UpdatedMandateDetails> for api_models::payments::AdditionalCardInfo {
             card_isin: card_info.card_isin.clone(),
             card_issuer: None,
             card_type: None,
+            card_subtype: None,
+            card_segment_type: None,
+            funding_source: None,
             card_issuing_country: None,
             card_issuing_country_code: None,
             bank_code: None,

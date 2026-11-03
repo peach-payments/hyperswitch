@@ -18,7 +18,9 @@ use hyperswitch_domain_models::type_encryption::{crypto_operation, CryptoOperati
 use hyperswitch_masking::{ExposeInterface, PeekInterface, Secret, SwitchStrategy};
 use router_env::logger;
 
-use super::PayoutData;
+use super::{validator::PayoutExecutionKindValidation, PayoutData};
+#[cfg(feature = "v1")]
+use crate::core::payments::helpers as payments_helpers;
 #[cfg(feature = "payouts")]
 use crate::core::payments::route_connector_v1_for_payouts;
 use crate::{
@@ -60,6 +62,11 @@ pub async fn make_payout_method_data(
     payout_data: Option<&mut PayoutData>,
     storage_scheme: storage::enums::MerchantStorageScheme,
 ) -> RouterResult<Option<api::PayoutMethodData>> {
+    payout_data
+        .as_ref()
+        .map(|data| data.payout_attempt.execution_kind)
+        .unwrap_or_default()
+        .validate_normal_execution_kind()?;
     let db = &*state.store;
     let hyperswitch_token = if let Some(payout_token) = payout_token {
         if payout_token.starts_with("temporary_token_") {
@@ -141,12 +148,12 @@ pub async fn make_payout_method_data(
                     )?;
                     Ok(pm)
                 } else {
-                    let resp = cards::get_card_from_locker(
+                    let resp = Box::pin(cards::get_card_from_locker(
                         state,
                         customer_id,
                         merchant_id,
                         payout_token.as_ref(),
-                    )
+                    ))
                     .await
                     .attach_printable("Payout method [card] could not be fetched from HS locker")?
                     .get_card();
@@ -326,6 +333,10 @@ pub async fn fetch_payout_method_data(
     connector_data: &api::ConnectorData,
     platform: &domain::Platform,
 ) -> RouterResult<()> {
+    payout_data
+        .payout_attempt
+        .execution_kind
+        .validate_normal_execution_kind()?;
     let connector_transfer_method_id =
         should_create_connector_transfer_method(payout_data, connector_data)?;
 
@@ -343,7 +354,7 @@ pub async fn fetch_payout_method_data(
         let merchant_id = payout_data.payout_attempt.merchant_id.clone();
         let payout_type = payout_data.payouts.payout_type;
 
-        let payout_method_data = make_payout_method_data(
+        let payout_method_data = Box::pin(make_payout_method_data(
             state,
             payout_method_data_clone.as_ref(),
             payout_token.as_deref(),
@@ -353,7 +364,7 @@ pub async fn fetch_payout_method_data(
             platform.get_processor().get_key_store(),
             Some(payout_data),
             platform.get_processor().get_account().storage_scheme,
-        )
+        ))
         .await?
         .get_required_value("payout_method_data")?;
 
@@ -372,6 +383,10 @@ pub async fn save_payout_data_to_locker(
     connector_mandate_details: Option<serde_json::Value>,
     platform: &domain::Platform,
 ) -> RouterResult<()> {
+    payout_data
+        .payout_attempt
+        .execution_kind
+        .validate_normal_execution_kind()?;
     let mut pm_id: Option<String> = None;
     let payouts = &payout_data.payouts;
     let key_manager_state = state.into();
@@ -396,6 +411,9 @@ pub async fn save_payout_data_to_locker(
                 card_network: None,
                 card_issuer: None,
                 card_type: None,
+                card_subtype: None,
+                card_segment_type: None,
+                funding_source: None,
             };
             let payload = StoreLockerReq::LockerCard(StoreCardReq {
                 merchant_id: platform.get_processor().get_account().get_id().clone(),
@@ -653,6 +671,11 @@ pub async fn save_payout_data_to_locker(
                             card_issuer: card_info.card_issuer,
                             card_network: card_info.card_network,
                             card_type: card_info.card_type,
+                            card_subtype: card_info.card_subtype,
+                            card_segment_type: card_info
+                                .card_segment_type
+                                .and_then(|segment_type| segment_type.parse().ok()),
+                            funding_source: card_info.funding_source,
                             saved_to_locker: true,
                             co_badged_card_data: None,
                         },
@@ -675,6 +698,9 @@ pub async fn save_payout_data_to_locker(
                             card_issuer: None,
                             card_network: None,
                             card_type: None,
+                            card_subtype: None,
+                            card_segment_type: None,
+                            funding_source: None,
                             saved_to_locker: true,
                             co_badged_card_data: None,
                         },
@@ -832,6 +858,8 @@ pub async fn save_payout_data_to_locker(
                 existing_pm,
                 pm_update,
                 platform.get_processor().get_account().storage_scheme,
+                // Payout payment method writes are outside PM modular card compat.
+                None,
             )
             .await
             .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -910,12 +938,20 @@ pub(super) async fn get_or_create_customer_details(
         .get_inner()
         .peek();
 
+    let use_merchant_reference_id =
+        payments_helpers::should_use_merchant_reference_id_as_customer_id_for_provider(
+            state,
+            platform.get_provider(),
+            Some(&customer_id),
+        )
+        .await;
     match db
         .find_customer_optional_by_customer_id_merchant_id(
             &customer_id,
             merchant_id,
             platform.get_processor().get_key_store(),
             platform.get_processor().get_account().storage_scheme,
+            use_merchant_reference_id,
         )
         .await
         .change_context(errors::ApiErrorResponse::InternalServerError)?
@@ -1093,6 +1129,7 @@ pub async fn decide_payout_connector(
                 &TransactionData::Payout(payout_data),
                 eligible_connectors,
                 &business_profile,
+                None,
             )
             .await
             .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -1142,6 +1179,7 @@ pub async fn decide_payout_connector(
                 &TransactionData::Payout(payout_data),
                 eligible_connectors,
                 &business_profile,
+                None,
             )
             .await
             .change_context(errors::ApiErrorResponse::InternalServerError)
@@ -1357,6 +1395,7 @@ pub fn is_payout_err_state(status: api_enums::PayoutStatus) -> bool {
         api_enums::PayoutStatus::Cancelled
             | api_enums::PayoutStatus::Failed
             | api_enums::PayoutStatus::Ineligible
+            | api_enums::PayoutStatus::NotPermitted
     )
 }
 
@@ -1461,6 +1500,11 @@ pub async fn update_payouts_and_payout_attempt(
             .to_owned()
             .clone()
             .or(payouts.description.clone()),
+        billing_descriptor: req
+            .billing_descriptor
+            .to_owned()
+            .or(payouts.billing_descriptor.clone())
+            .map(Box::new),
         recurring: req.recurring.to_owned().unwrap_or(payouts.recurring),
         auto_fulfill: req.auto_fulfill.to_owned().unwrap_or(payouts.auto_fulfill),
         return_url: req
@@ -1491,22 +1535,16 @@ pub async fn update_payouts_and_payout_attempt(
         .await
         .change_context(errors::ApiErrorResponse::InternalServerError)
         .attach_printable("Error updating payouts")?;
-    let updated_business_country =
-        payout_attempt
-            .business_country
-            .map_or(req.business_country.to_owned(), |c| {
-                req.business_country
-                    .to_owned()
-                    .and_then(|nc| if nc != c { Some(nc) } else { None })
-            });
-    let updated_business_label =
-        payout_attempt
-            .business_label
-            .map_or(req.business_label.to_owned(), |l| {
-                req.business_label
-                    .to_owned()
-                    .and_then(|nl| if nl != l { Some(nl) } else { None })
-            });
+    let updated_business_country = payout_attempt
+        .business_country
+        .map_or(req.business_country.to_owned(), |c| {
+            req.business_country.to_owned().filter(|&nc| nc != c)
+        });
+    let updated_business_label = payout_attempt
+        .business_label
+        .map_or(req.business_label.to_owned(), |l| {
+            req.business_label.to_owned().filter(|nl| *nl != l)
+        });
     if updated_business_country.is_some()
         || updated_business_label.is_some()
         || customer_id.is_some()
@@ -1580,6 +1618,7 @@ pub(super) fn get_customer_details_from_request(
         phone_country_code: customer_phone_code,
         tax_registration_id,
         document_details,
+        date_of_birth: None,
     }
 }
 
@@ -1604,7 +1643,7 @@ pub async fn get_translated_unified_code_and_message(
         .await
         .transpose()
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "unified_message",
+            field_name: "unified_message".into(),
         })?
         .or_else(|| unified_message.cloned()))
 }
@@ -1814,4 +1853,37 @@ pub fn should_continue_payout<F: Clone + 'static>(
     router_data: &router_types::PayoutsRouterData<F>,
 ) -> bool {
     router_data.response.is_ok()
+}
+
+pub fn merge_connector_metadata(
+    merchant_metadata: Option<pii::SecretSerdeValue>,
+    connector_metadata: Option<pii::SecretSerdeValue>,
+) -> Option<pii::SecretSerdeValue> {
+    let connector_details = connector_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.peek().as_object())
+        .filter(|details| !details.is_empty());
+
+    let merchant_details = match merchant_metadata.as_ref().map(|metadata| metadata.peek()) {
+        Some(serde_json::Value::Object(details)) => Some(details.clone()),
+        Some(_) | None => None,
+    };
+
+    // if both are present, it is merged but in case of conflict, connector metadata takes precedence
+    let merged = match (connector_details, merchant_details) {
+        (Some(connector_details), Some(mut merged)) => {
+            for (key, value) in connector_details {
+                merged.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+            Some(merged)
+        }
+        (connector_details, merchant_details) => merchant_details.or(connector_details.cloned()),
+    };
+
+    // `metadata` also holds a serialized FeatureMetadata, whose unset fields are written out
+    // as nulls. They carry nothing and only clutter the payout response.
+    merged.map(|mut details| {
+        details.retain(|_, value| !value.is_null());
+        Secret::new(serde_json::Value::Object(details))
+    })
 }

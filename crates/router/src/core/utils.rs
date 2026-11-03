@@ -25,7 +25,10 @@ use error_stack::{report, ResultExt};
 #[cfg(feature = "v2")]
 use hyperswitch_domain_models::types::VaultRouterData;
 use hyperswitch_domain_models::{
-    merchant_connector_account::MerchantConnectorAccount,
+    mandates,
+    merchant_connector_account::{
+        MerchantConnectorAccount, MerchantConnectorAccountWithoutEncrypted,
+    },
     payment_address::PaymentAddress,
     router_data::ErrorResponse,
     router_data_v2::flow_common_types::VaultConnectorFlowData,
@@ -33,12 +36,15 @@ use hyperswitch_domain_models::{
     types::{OrderDetailsWithAmount, VaultRouterDataV2},
 };
 use hyperswitch_interfaces::api::ConnectorSpecifications;
+#[cfg(feature = "frm")]
+use hyperswitch_interfaces::configs::Connectors;
+#[cfg(feature = "payouts")]
+use hyperswitch_masking::ExposeInterface;
 #[cfg(feature = "v2")]
 use hyperswitch_masking::ExposeOptionInterface;
-use hyperswitch_masking::Secret;
-#[cfg(feature = "payouts")]
-use hyperswitch_masking::{ExposeInterface, PeekInterface};
+use hyperswitch_masking::{PeekInterface, Secret};
 use maud::{html, PreEscaped};
+use redis_interface::errors::RedisError;
 use regex::Regex;
 use router_env::{instrument, tracing};
 use storage_impl::StorageError;
@@ -50,16 +56,19 @@ use super::payouts::{helpers as payout_helpers, PayoutData};
 use crate::core::payments;
 #[cfg(feature = "v2")]
 use crate::core::payments::helpers as payment_helpers;
+#[cfg(feature = "v2")]
+use crate::types::transformers::ForeignFrom;
 use crate::{
     configs::Settings,
     consts,
     core::{
         configs::dimension_state,
         errors::{self, RouterResult, StorageErrorExt},
+        payment_methods,
         payments::PaymentData,
     },
     db::StorageInterface,
-    routes::SessionState,
+    routes::{metrics::MerchantMode, SessionState},
     types::{
         self, api, domain,
         storage::{self, enums},
@@ -67,6 +76,34 @@ use crate::{
     },
     utils::{generate_id, OptionExt, ValueExt},
 };
+
+pub async fn get_merchant_fingerprint_secret(
+    state: &SessionState,
+    merchant_account: &domain::MerchantAccount,
+) -> RouterResult<String> {
+    match merchant_account.fingerprint_secret.as_ref() {
+        Some(secret) => Ok(secret.peek().clone()),
+        None => {
+            router_env::logger::warn!(
+                merchant_id = ?merchant_account.get_id(),
+                "fingerprint_secret missing from merchant account; falling back to Superposition"
+            );
+            super::metrics::FINGERPRINT_SECRET_SUPERPOSITION_FETCH_COUNT.add(1, &[]);
+            let dimensions = dimension_state::Dimensions::new()
+                .with_processor_merchant_id(merchant_account.get_id().clone().into());
+            let secret = dimensions
+                .get_fingerprint_secret(&*state.store, state.superposition_service.as_ref(), None)
+                .await;
+
+            match secret.is_empty() {
+                false => Ok(secret),
+                true => Err(errors::ApiErrorResponse::InternalServerError).attach_printable(
+                    "fingerprint_secret not found in merchant account or Superposition",
+                ),
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct FeatureConfig {
@@ -94,6 +131,15 @@ pub async fn get_feature_config(
     platform: &domain::Platform,
     dimensions: &dimension_state::DimensionsWithProcessorAndProviderMerchantId,
 ) -> FeatureConfig {
+    if let Some(context) = state.payment_metrics_context {
+        return FeatureConfig {
+            is_payment_method_modular_allowed: matches!(
+                context.merchant_mode,
+                MerchantMode::Modular
+            ),
+        };
+    }
+
     let dimensions = dimensions
         .with_organization_id(
             platform
@@ -102,14 +148,15 @@ pub async fn get_feature_config(
                 .organization_id
                 .clone(),
         )
-        .without_provider_merchant_id()
         .without_processor_merchant_id();
 
-    let is_payment_method_modular_allowed = crate::core::payment_methods::utils::get_organization_eligibility_config_for_pm_modular_service(
-        state,
-        &dimensions,
-    )
-    .await;
+    let is_payment_method_modular_allowed =
+        payment_methods::utils::get_should_call_pm_modular_service(state, &dimensions, None).await;
+    router_env::logger::debug!(
+        is_payment_method_modular_allowed,
+        organization_id=%platform.get_processor().get_account().organization_id.get_string_repr(),
+        "resolved PM modular service feature flag"
+    );
     FeatureConfig {
         is_payment_method_modular_allowed,
     }
@@ -123,18 +170,29 @@ pub async fn validate_legacy_endpoint_access<E>(
 where
     E: From<errors::ApiErrorResponse> + error_stack::Context,
 {
+    // The dashboard authenticates via JWT and still relies on these legacy
+    // endpoints, so only merchant (API key) traffic is blocked from deprecated
+    // routes.
+    let is_dashboard_access = matches!(
+        platform.get_initiator(),
+        Some(domain::Initiator::Jwt { .. })
+    );
+
     let dimensions = dimension_state::Dimensions::new()
         .with_processor_merchant_id(platform.get_processor().get_processor_merchant_id())
         .with_provider_merchant_id(platform.get_provider().get_provider_merchant_id());
 
     let feature_config = get_feature_config(state, platform, &dimensions).await;
-    common_utils::fp_utils::when(feature_config.is_payment_method_modular_allowed, || {
-        Err(error_stack::report!(E::from(
-            errors::ApiErrorResponse::AccessForbidden {
-                resource: "Deprecated route".to_string(),
-            },
-        )))
-    })?;
+    common_utils::fp_utils::when(
+        feature_config.is_payment_method_modular_allowed && !is_dashboard_access,
+        || {
+            Err(error_stack::report!(E::from(
+                errors::ApiErrorResponse::AccessForbidden {
+                    resource: "Deprecated route".to_string(),
+                },
+            )))
+        },
+    )?;
     Ok(())
 }
 
@@ -156,6 +214,40 @@ pub async fn construct_payout_router_data<'a, F>(
 #[cfg(all(feature = "payouts", feature = "v1"))]
 #[instrument(skip_all)]
 pub async fn construct_payout_router_data<'a, F>(
+    state: &SessionState,
+    connector_data: &api::ConnectorData,
+    platform: &domain::Platform,
+    payout_data: &mut PayoutData,
+) -> RouterResult<types::PayoutsRouterData<F>> {
+    use crate::core::payouts::proxy::ExternalVaultPayout;
+
+    match payout_data.payout_attempt.execution_kind {
+        common_enums::PayoutExecutionKind::ExternalVaultProxy => {
+            Box::pin(
+                ExternalVaultPayout { state, platform }
+                    .construct_proxy_payout_router_data(connector_data, payout_data),
+            )
+            .await
+        }
+        common_enums::PayoutExecutionKind::Normal => match payout_data.external_vault_pmd.is_some()
+            || !matches!(
+                payout_data.execution_context,
+                crate::core::payouts::proxy::PayoutExecutionContext::Normal
+            ) {
+            true => Err(report!(errors::ApiErrorResponse::InvalidRequestData {
+                message: "Normal payouts cannot carry external vault execution data".to_owned(),
+            })),
+            false => {
+                construct_payout_router_data_common(state, connector_data, platform, payout_data)
+                    .await
+            }
+        },
+    }
+}
+
+/// Execution-specific checks run before this shared request builder.
+#[cfg(all(feature = "payouts", feature = "v1"))]
+pub(super) async fn construct_payout_router_data_common<F>(
     state: &SessionState,
     connector_data: &api::ConnectorData,
     platform: &domain::Platform,
@@ -202,16 +294,27 @@ pub async fn construct_payout_router_data<'a, F>(
         match api_models::enums::PayoutConnectors::try_from(connector_name.to_owned()).map_err(
             |err| report!(errors::ApiErrorResponse::InternalServerError).attach_printable(err),
         )? {
-            api_models::enums::PayoutConnectors::Stripe => {
-                payout_data.payouts.metadata.to_owned().and_then(|meta| {
-                    let val = meta
-                        .peek()
-                        .to_owned()
-                        .parse_value("PayoutVendorAccountDetails")
-                        .ok();
-                    val
+            api_models::enums::PayoutConnectors::Stripe => payout_data
+                .payouts
+                .metadata
+                .as_ref()
+                // Parse only metadata that carries vendor details; unrelated
+                // merchant metadata keeps the previous behavior and is treated
+                // as absent.
+                .filter(|metadata| {
+                    let value = metadata.peek();
+                    value.get("vendor_details").is_some()
+                        || value.get("individual_details").is_some()
                 })
-            }
+                .map(|metadata| {
+                    serde_json::from_value::<PayoutVendorAccountDetails>(metadata.peek().to_owned())
+                        .map_err(|error| {
+                            report!(errors::ApiErrorResponse::InvalidRequestData {
+                                message: format!("Invalid payout metadata: {error}"),
+                            })
+                        })
+                })
+                .transpose()?,
             _ => None,
         };
 
@@ -224,8 +327,9 @@ pub async fn construct_payout_router_data<'a, F>(
             .get_string_repr(),
     );
 
-    let connector_transfer_method_id =
-        payout_helpers::should_create_connector_transfer_method(&*payout_data, connector_data)?;
+    let connector_transfer_method_id = payout_data.connector_transfer_method_id.clone().or(
+        payout_helpers::should_create_connector_transfer_method(&*payout_data, connector_data)?,
+    );
 
     let browser_info = payout_data.browser_info.to_owned();
 
@@ -273,6 +377,9 @@ pub async fn construct_payout_router_data<'a, F>(
             amount: payouts.amount.get_amount_as_i64(),
             minor_amount: payouts.amount,
             connector_payout_id: payout_attempt.connector_payout_id.clone(),
+            connector_eligibility_reference_id: payout_attempt
+                .connector_eligibility_reference_id
+                .clone(),
             destination_currency: payouts.destination_currency,
             source_currency: payouts.source_currency,
             entity_type: payouts.entity_type.to_owned(),
@@ -289,6 +396,7 @@ pub async fn construct_payout_router_data<'a, F>(
                     phone_country_code: c.phone_country_code,
                     tax_registration_id: c.tax_registration_id.map(Encryptable::into_inner),
                     document_details: None,
+                    date_of_birth: None,
                 }),
             connector_transfer_method_id,
             webhook_url: Some(webhook_url),
@@ -296,6 +404,8 @@ pub async fn construct_payout_router_data<'a, F>(
             payout_connector_metadata: payout_attempt.payout_connector_metadata.to_owned(),
             additional_payout_method_data: payout_attempt.additional_payout_method_data.to_owned(),
             source_bank_data: payout_data.source_bank_data.clone(),
+            billing_descriptor: payouts.billing_descriptor.clone(),
+            external_vault_pmd: payout_data.external_vault_pmd.clone(),
         },
         response: Ok(types::PayoutsResponseData::default()),
         access_token: None,
@@ -304,7 +414,10 @@ pub async fn construct_payout_router_data<'a, F>(
         payment_method_token: None,
         recurring_mandate_payment_data: None,
         preprocessing_id: None,
-        connector_request_reference_id: payout_attempt.payout_attempt_id.clone(),
+        connector_request_reference_id: get_payout_connector_request_reference_id(
+            connector_data,
+            payout_attempt,
+        ),
         payout_method_data: payout_data.payout_method_data.to_owned(),
         quote_id: None,
         test_mode,
@@ -319,6 +432,7 @@ pub async fn construct_payout_router_data<'a, F>(
         payout_id: Some(payouts.payout_id.get_string_repr().to_string()),
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -332,6 +446,8 @@ pub async fn construct_payout_router_data<'a, F>(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
@@ -380,10 +496,11 @@ pub async fn construct_refund_router_data<'a, F>(
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_enum}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_enum}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -445,6 +562,11 @@ pub async fn construct_refund_router_data<'a, F>(
         minor_amount_captured: payment_intent.amount_captured,
         request: types::RefundsData {
             refund_id: refund.id.get_string_repr().to_string(),
+            payment_feature_metadata: payment_intent
+                .feature_metadata
+                .as_ref()
+                .map(api_models::payments::FeatureMetadata::foreign_from),
+            feature_metadata: refund.feature_metadata.clone(),
             connector_transaction_id: refund.get_connector_transaction_id().clone(),
             refund_amount: refund.refund_amount.get_amount_as_i64(),
             minor_refund_amount: refund.refund_amount,
@@ -464,6 +586,11 @@ pub async fn construct_refund_router_data<'a, F>(
             refund_connector_metadata: refund.metadata.clone(),
             capture_method: Some(capture_method),
             additional_payment_method_data: None,
+            payment_method_data: None,
+            mandate_id: None,
+            payment_connector_request_reference_id: payment_attempt
+                .connector_request_reference_id
+                .clone(),
         },
 
         response: Ok(types::RefundsResponseData {
@@ -498,6 +625,7 @@ pub async fn construct_refund_router_data<'a, F>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -511,9 +639,32 @@ pub async fn construct_refund_router_data<'a, F>(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
+}
+
+/// Resolves the `payments.accept_payment_amount_mismatch` config for the processor merchant and payment
+/// method type. Without a payment method type the config cannot be scoped, so `None` is returned and
+/// the integrity check stays strict.
+#[cfg(feature = "v1")]
+pub async fn get_accept_payment_amount_mismatch(
+    state: &SessionState,
+    processor: &domain::Processor,
+    payment_method_type: Option<enums::PaymentMethodType>,
+) -> Option<common_types::primitive_wrappers::AcceptAmountMismatchBool> {
+    let accept_amount_mismatch = dimension_state::Dimensions::new()
+        .with_processor_merchant_id(processor.get_processor_merchant_id())
+        .with_payment_method_type(payment_method_type?)
+        .get_accept_payment_amount_mismatch(
+            state.store.as_ref(),
+            state.superposition_service.as_ref(),
+            Some(processor.get_account().get_id()),
+        )
+        .await;
+    Some(common_types::primitive_wrappers::AcceptAmountMismatchBool::new(accept_amount_mismatch))
 }
 
 #[cfg(feature = "v1")]
@@ -529,6 +680,8 @@ pub async fn construct_refund_router_data<'a, F>(
     refund: &'a diesel_refund::Refund,
     split_refunds: Option<router_request_types::SplitRefundsRequest>,
     merchant_connector_account: &helpers::MerchantConnectorAccountType,
+    payment_method_data: Option<domain::PaymentMethodData>,
+    mandate_id: Option<mandates::MandateIds>,
 ) -> RouterResult<types::RefundsRouterData<F>> {
     let auth_type: types::ConnectorAuthType = merchant_connector_account
         .get_connector_account_details()
@@ -564,17 +717,18 @@ pub async fn construct_refund_router_data<'a, F>(
     let connector_enum = Connector::from_str(connector_id)
         .change_context(errors::ConnectorError::InvalidConnectorName)
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "connector",
+            field_name: "connector".into(),
         })
         .attach_printable_lazy(|| format!("unable to parse connector name {connector_id:?}"))?;
 
     let connector_api_version = if supported_connector.contains(&connector_enum) {
         state
             .store
-            .find_config_by_key(&format!("connector_api_version_{connector_id}"))
+            .find_config_by_key_optional(&format!("connector_api_version_{connector_id}"))
             .await
-            .map(|value| value.config)
             .ok()
+            .flatten()
+            .map(|value| value.config)
     } else {
         None
     };
@@ -585,11 +739,11 @@ pub async fn construct_refund_router_data<'a, F>(
         .map(|b| b.parse_value("BrowserInformation"))
         .transpose()
         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-            field_name: "browser_info",
+            field_name: "browser_info".into(),
         })?;
 
     let connector_refund_id = refund.get_optional_connector_refund_id().cloned();
-    let capture_method = payment_attempt.capture_method;
+    let capture_method = payment_attempt.get_effective_capture_method();
 
     let braintree_metadata = payment_intent
         .connector_metadata
@@ -644,6 +798,11 @@ pub async fn construct_refund_router_data<'a, F>(
         minor_amount_captured: payment_intent.amount_captured,
         request: types::RefundsData {
             refund_id: refund.refund_id.clone(),
+            payment_feature_metadata: payment_intent
+                .get_optional_feature_metadata()
+                .change_context(errors::ApiErrorResponse::InternalServerError)
+                .attach_printable("Failed to parse payment feature metadata")?,
+            feature_metadata: refund.feature_metadata.clone(),
             connector_transaction_id: refund.get_connector_transaction_id().clone(),
             refund_amount: refund.refund_amount.get_amount_as_i64(),
             minor_refund_amount: refund.refund_amount,
@@ -663,6 +822,11 @@ pub async fn construct_refund_router_data<'a, F>(
             merchant_config_currency,
             capture_method,
             additional_payment_method_data,
+            payment_method_data,
+            mandate_id,
+            payment_connector_request_reference_id: payment_attempt
+                .connector_request_reference_id
+                .clone(),
         },
 
         response: Ok(types::RefundsResponseData {
@@ -693,6 +857,7 @@ pub async fn construct_refund_router_data<'a, F>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -709,6 +874,8 @@ pub async fn construct_refund_router_data<'a, F>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
 
     Ok(router_data)
@@ -827,25 +994,44 @@ pub fn get_split_refunds(
                 (_, _) => (None, None),
             };
 
-            if let Some(charge_id) = charge_id_option {
-                let options = refunds_validator::validate_stripe_charge_refund(
-                    charge_type_option,
-                    &split_refund_input.refund_request,
-                )?;
-
-                Ok(Some(
-                    router_request_types::SplitRefundsRequest::StripeSplitRefund(
-                        router_request_types::StripeSplitRefund {
-                            charge_id,
-                            charge_type: stripe_payment.charge_type.clone(),
-                            transfer_account_id: stripe_payment.transfer_account_id.clone(),
-                            options,
-                        },
-                    ),
-                ))
-            } else {
-                Ok(None)
+            // Destination charges are created on the platform account, so a refund issued
+            // against the payment intent already reaches the right account with no split refund
+            // data; only direct charges need it, because only they carry the `Stripe-Account`
+            // header. Keeping the old `None` for destination also keeps the merchant-facing
+            // validation below off a path that used to work without `split_refunds`.
+            if charge_id_option.is_none()
+                && !matches!(
+                    stripe_payment.charge_type,
+                    api_models::enums::PaymentChargeType::Stripe(
+                        api_models::enums::StripeChargeType::Direct
+                    )
+                )
+            {
+                return Ok(None);
             }
+
+            let options = refunds_validator::validate_stripe_charge_refund(
+                charge_type_option,
+                &split_refund_input.refund_request,
+            )?;
+
+            // The charge id is only known once charge data has been persisted on the attempt,
+            // which does not happen for payments that reach a terminal state without a PSync.
+            // The Connect routing information lives on the payment intent and is always
+            // present, so the refund must still be built as a split refund - issued against
+            // the payment intent rather than the charge when the charge id is unknown.
+            // Returning `None` here instead would silently downgrade the refund to the
+            // non-Connect shape and send it to the platform account.
+            Ok(Some(
+                router_request_types::SplitRefundsRequest::StripeSplitRefund(
+                    router_request_types::StripeSplitRefund {
+                        charge_id: charge_id_option,
+                        charge_type: stripe_payment.charge_type.clone(),
+                        transfer_account_id: stripe_payment.transfer_account_id.clone(),
+                        options,
+                    },
+                ),
+            ))
         }
         Some(common_types::payments::SplitPaymentsRequest::AdyenSplitPayment(_)) => {
             match &split_refund_input.payment_charges {
@@ -930,7 +1116,7 @@ pub fn get_split_refunds(
 
                     if option_for_user_id.is_some() {
                         Err(errors::ApiErrorResponse::MissingRequiredField {
-                            field_name: "split_refunds.xendit_split_refund.for_user_id",
+                            field_name: "split_refunds.xendit_split_refund.for_user_id".into(),
                         })?
                     } else {
                         Ok(None)
@@ -1077,7 +1263,10 @@ pub fn validate_dispute_status(
             matches!(dispute_status, DisputeStatus::DisputeExpired)
         }
         DisputeStatus::DisputeAccepted => {
-            matches!(dispute_status, DisputeStatus::DisputeAccepted)
+            matches!(
+                dispute_status,
+                DisputeStatus::DisputeAccepted | DisputeStatus::DisputeLost
+            )
         }
         DisputeStatus::DisputeCancelled => {
             matches!(dispute_status, DisputeStatus::DisputeCancelled)
@@ -1211,6 +1400,7 @@ pub async fn construct_accept_dispute_router_data<'a>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1227,6 +1417,8 @@ pub async fn construct_accept_dispute_router_data<'a>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -1323,6 +1515,7 @@ pub async fn construct_submit_evidence_router_data<'a>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1339,6 +1532,8 @@ pub async fn construct_submit_evidence_router_data<'a>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -1444,6 +1639,7 @@ pub async fn construct_upload_file_router_data<'a>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1457,6 +1653,8 @@ pub async fn construct_upload_file_router_data<'a>(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -1523,6 +1721,7 @@ pub async fn construct_dispute_list_router_data<'a>(
         payment_method_status: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1536,6 +1735,8 @@ pub async fn construct_dispute_list_router_data<'a>(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     })
 }
 
@@ -1634,6 +1835,7 @@ pub async fn construct_dispute_sync_router_data<'a>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1650,6 +1852,8 @@ pub async fn construct_dispute_sync_router_data<'a>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -1705,7 +1909,7 @@ pub async fn construct_payments_dynamic_tax_calculation_router_data<F: Clone>(
                     data.to_owned()
                         .parse_value("OrderDetailsWithAmount")
                         .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                            field_name: "OrderDetailsWithAmount",
+                            field_name: "OrderDetailsWithAmount".into(),
                         })
                         .attach_printable("Unable to parse OrderDetailsWithAmount")
                 })
@@ -1771,6 +1975,7 @@ pub async fn construct_payments_dynamic_tax_calculation_router_data<F: Clone>(
         payment_method_status: None,
         minor_amount_captured: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1787,6 +1992,8 @@ pub async fn construct_payments_dynamic_tax_calculation_router_data<F: Clone>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -1886,6 +2093,7 @@ pub async fn construct_defend_dispute_router_data<'a>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -1902,6 +2110,8 @@ pub async fn construct_defend_dispute_router_data<'a>(
             .attach_printable("Failed to extract customer document details from payment_intent")?,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -1918,7 +2128,7 @@ pub async fn construct_retrieve_file_router_data<'a>(
         .profile_id
         .as_ref()
         .ok_or(errors::ApiErrorResponse::MissingRequiredField {
-            field_name: "profile_id",
+            field_name: "profile_id".into(),
         })
         .change_context(errors::ApiErrorResponse::InternalServerError)
         .attach_printable("profile_id is not set in file_metadata")?;
@@ -1994,6 +2204,7 @@ pub async fn construct_retrieve_file_router_data<'a>(
         payout_id: None,
         connector_response: None,
         integrity_check: Ok(()),
+        accept_amount_mismatch: None,
         additional_merchant_data: None,
         header_payload: None,
         connector_mandate_request_reference_id: None,
@@ -2007,6 +2218,8 @@ pub async fn construct_retrieve_file_router_data<'a>(
         customer_document_details: None,
         feature_data: None,
         sender_payment_instrument_id: None,
+        connector_returned_payment_method_details: None,
+        customer_date_of_birth: None,
     };
     Ok(router_data)
 }
@@ -2056,6 +2269,73 @@ pub fn get_connector_request_reference_id(
             is_config_enabled_to_send_payment_id_as_connector_request_id,
         );
     Ok(connector_request_reference_id)
+}
+
+#[cfg(feature = "payouts")]
+pub fn get_payout_connector_request_reference_id(
+    connector_data: &api::ConnectorData,
+    payout_attempt: &hyperswitch_domain_models::payouts::payout_attempt::PayoutAttempt,
+) -> String {
+    // If there's already a connector_request_reference_id stored in the payout_attempt,
+    // reuse it to maintain consistency across multiple connector calls
+    match &payout_attempt.connector_request_reference_id {
+        Some(id) => id.clone(),
+        None => connector_data
+            .connector
+            .generate_payout_connector_request_reference_id(payout_attempt),
+    }
+}
+
+#[cfg(feature = "frm")]
+pub fn get_gateway_frm_metadata(
+    connectors: &Connectors,
+    payment_attempt: &hyperswitch_domain_models::payments::payment_attempt::PaymentAttempt,
+) -> CustomResult<Option<common_utils::pii::SecretSerdeValue>, errors::ApiErrorResponse> {
+    match &payment_attempt.connector {
+        Some(connector_name) => {
+            let connector_data = api::ConnectorData::get_connector_by_name(
+                connectors,
+                connector_name,
+                api::GetToken::Connector,
+                payment_attempt.merchant_connector_id.clone(),
+            )
+            .change_context(errors::ApiErrorResponse::InternalServerError)
+            .attach_printable_lazy(|| "Failed to construct connector data")?;
+
+            connector_data
+                .connector
+                .get_payment_frm_metadata(payment_attempt)
+                .change_context(errors::ApiErrorResponse::InternalServerError)
+                .attach_printable_lazy(|| "Failed to construct FRM gateway metadata")
+        }
+        None => Ok(None),
+    }
+}
+
+#[cfg(feature = "frm")]
+pub fn get_payout_gateway_frm_metadata(
+    connectors: &Connectors,
+    payout_attempt: &hyperswitch_domain_models::payouts::payout_attempt::PayoutAttempt,
+) -> CustomResult<Option<common_utils::pii::SecretSerdeValue>, errors::ApiErrorResponse> {
+    match &payout_attempt.connector {
+        Some(connector_name) => {
+            let connector_data = api::ConnectorData::get_connector_by_name(
+                connectors,
+                connector_name,
+                api::GetToken::Connector,
+                payout_attempt.merchant_connector_id.clone(),
+            )
+            .change_context(errors::ApiErrorResponse::InternalServerError)
+            .attach_printable_lazy(|| "Failed to construct connector data")?;
+
+            connector_data
+                .connector
+                .get_payout_frm_metadata(payout_attempt)
+                .change_context(errors::ApiErrorResponse::InternalServerError)
+                .attach_printable_lazy(|| "Failed to construct FRM gateway metadata")
+        }
+        None => Ok(None),
+    }
 }
 
 // TODO: Based on the connector configuration, the connector_request_reference_id should be generated
@@ -2211,42 +2491,42 @@ pub fn get_connector_label(
 #[cfg(feature = "v1")]
 /// If profile_id is not passed, use default profile if available, or
 /// If business_details (business_country and business_label) are passed, get the business_profile
-/// or return a `MissingRequiredField` error
-#[allow(clippy::too_many_arguments)]
-pub async fn get_profile_id_from_business_details(
+/// or return a `MissingRequiredField` error.
+/// Both lookups are scoped to the merchant, so fetching the profile also validates that it belongs
+/// to the merchant.
+pub async fn get_profile_from_business_details(
     business_country: Option<api_models::enums::CountryAlpha2>,
     business_label: Option<&String>,
     processor: &domain::Processor,
     request_profile_id: Option<&common_utils::id_type::ProfileId>,
     db: &dyn StorageInterface,
-    should_validate: bool,
-) -> RouterResult<common_utils::id_type::ProfileId> {
+) -> RouterResult<domain::Profile> {
     match request_profile_id.or(processor.get_account().default_profile.as_ref()) {
-        Some(profile_id) => {
-            // Check whether this business profile belongs to the merchant
-            if should_validate {
-                let _ = validate_and_get_business_profile(db, processor, Some(profile_id)).await?;
-            }
-            Ok(profile_id.clone())
-        }
+        Some(profile_id) => db
+            .find_business_profile_by_merchant_id_profile_id(
+                processor.get_key_store(),
+                processor.get_account().get_id(),
+                profile_id,
+            )
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::ProfileNotFound {
+                id: profile_id.get_string_repr().to_owned(),
+            }),
         None => match business_country.zip(business_label) {
             Some((business_country, business_label)) => {
                 let profile_name = format!("{business_country}_{business_label}");
-                let business_profile = db
-                    .find_business_profile_by_profile_name_merchant_id(
-                        processor.get_key_store(),
-                        &profile_name,
-                        processor.get_account().get_id(),
-                    )
-                    .await
-                    .to_not_found_response(errors::ApiErrorResponse::ProfileNotFound {
-                        id: profile_name,
-                    })?;
-
-                Ok(business_profile.get_id().to_owned())
+                db.find_business_profile_by_profile_name_merchant_id(
+                    processor.get_key_store(),
+                    &profile_name,
+                    processor.get_account().get_id(),
+                )
+                .await
+                .to_not_found_response(errors::ApiErrorResponse::ProfileNotFound {
+                    id: profile_name,
+                })
             }
             _ => Err(report!(errors::ApiErrorResponse::MissingRequiredField {
-                field_name: "profile_id or business_country, business_label"
+                field_name: "profile_id or business_country, business_label".into()
             })),
         },
     }
@@ -2568,6 +2848,12 @@ impl GetProfileId for MerchantConnectorAccount {
     }
 }
 
+impl GetProfileId for MerchantConnectorAccountWithoutEncrypted {
+    fn get_profile_id(&self) -> Option<&common_utils::id_type::ProfileId> {
+        Some(&self.profile_id)
+    }
+}
+
 impl GetProfileId for storage::PaymentIntent {
     #[cfg(feature = "v1")]
     fn get_profile_id(&self) -> Option<&common_utils::id_type::ProfileId> {
@@ -2628,6 +2914,12 @@ impl GetProfileId for diesel_models::routing_algorithm::RoutingProfileMetadata {
 impl GetProfileId for domain::Profile {
     fn get_profile_id(&self) -> Option<&common_utils::id_type::ProfileId> {
         Some(self.get_id())
+    }
+}
+
+impl GetProfileId for hyperswitch_domain_models::authentication::Authentication {
+    fn get_profile_id(&self) -> Option<&common_utils::id_type::ProfileId> {
+        Some(&self.profile_id)
     }
 }
 
@@ -3060,4 +3352,122 @@ where
     .attach_printable_lazy(|| format!("Unable to encrypt data for table: {}", table_name))?;
 
     Ok(encrypted_data)
+}
+
+/// Reads a value cached in Redis under `redis_key`.
+///
+/// Never fatal: a miss, an unreachable Redis, or an entry that no longer deserializes all read as
+/// "not cached", and the caller rebuilds what it would have built without the cache. Only the
+/// failures are logged; a miss is the normal first-call case.
+pub async fn read_cached_value<T>(
+    state: &SessionState,
+    redis_key: &str,
+    type_name: &'static str,
+) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let lookup: CustomResult<T, RedisError> = async {
+        state
+            .store
+            .get_redis_conn()?
+            .get_and_deserialize_key::<T>(&redis_key.into(), type_name)
+            .await
+    }
+    .await;
+
+    match lookup {
+        Ok(cached) => Some(cached),
+        Err(err) if matches!(err.current_context(), RedisError::NotFound) => None,
+        Err(err) => {
+            router_env::logger::warn!(
+                ?err,
+                redis_key,
+                type_name,
+                "Failed to read the cached value; rebuilding it"
+            );
+            None
+        }
+    }
+}
+
+/// Caches `value` in Redis under `redis_key` for `ttl_seconds`.
+///
+/// Never fatal: a write failure only means later calls rebuild the value, so it is logged and
+/// otherwise ignored.
+pub async fn cache_value_with_expiry<T>(
+    state: &SessionState,
+    redis_key: &str,
+    type_name: &'static str,
+    value: &T,
+    ttl_seconds: i64,
+) where
+    T: serde::Serialize + std::fmt::Debug,
+{
+    let stored: CustomResult<(), RedisError> = async {
+        state
+            .store
+            .get_redis_conn()?
+            .serialize_and_set_key_with_expiry(&redis_key.into(), value, ttl_seconds)
+            .await
+    }
+    .await;
+
+    match stored {
+        Ok(()) => router_env::logger::info!(redis_key, type_name, ttl_seconds, "Cached the value"),
+        Err(err) => router_env::logger::warn!(
+            ?err,
+            redis_key,
+            type_name,
+            "Failed to cache the value; later calls will rebuild it"
+        ),
+    }
+}
+
+/// Pins `candidate` under `redis_key` and returns whichever value is pinned there.
+///
+/// The first writer wins: its value is stored and returned, and every later caller — including
+/// one racing it right now — gets that value back instead of its own. This is what makes a value
+/// that is freshly generated on each build stable across concurrent calls without a lock.
+///
+/// Never fatal: if Redis cannot be reached the caller falls back to its own candidate, which is
+/// what it would have used had the pin not existed.
+pub async fn pin_value(
+    state: &SessionState,
+    redis_key: &str,
+    type_name: &'static str,
+    candidate: String,
+    ttl_seconds: i64,
+) -> String {
+    let pinned: CustomResult<Option<String>, RedisError> = async {
+        let redis = state.store.get_redis_conn()?;
+        match redis
+            .serialize_and_set_key_if_not_exist(&redis_key.into(), &candidate, Some(ttl_seconds))
+            .await?
+        {
+            redis_interface::SetnxReply::KeySet => Ok(None),
+            redis_interface::SetnxReply::KeyNotSet => redis
+                .get_and_deserialize_key::<String>(&redis_key.into(), type_name)
+                .await
+                .map(Some),
+        }
+    }
+    .await;
+
+    match pinned {
+        Ok(None) => candidate,
+        Ok(Some(existing)) => {
+            router_env::logger::debug!(redis_key, type_name, "Reusing the pinned value");
+            existing
+        }
+        Err(err) => {
+            router_env::logger::warn!(
+                ?err,
+                redis_key,
+                type_name,
+                "Failed to pin the value; using the freshly generated one"
+            );
+            candidate
+        }
+    }
 }

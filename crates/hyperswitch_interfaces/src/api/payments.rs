@@ -7,11 +7,11 @@ use hyperswitch_domain_models::{
             CompleteAuthorize, CompleteRefundSurchrge, CompleteSurcharge, CreateConnectorCustomer,
             ExtendAuthorization, GenerateQr, IncrementalAuthorization, PSync, PaymentMethodToken,
             PostCaptureVoid, PostCaptureVoidSync, PostProcessing, PostSessionTokens,
-            PreAuthorizeVoid, PreProcessing, PushNotification, Reject, SdkSessionUpdate, Session,
+            PreAuthorizeVoid, PushNotification, Reject, SdkSessionUpdate, Session,
             SettlementSplitCreate, SetupMandate, UpdateMetadata, Void,
         },
         Authenticate, CreateOrder, ExternalVaultProxy, GiftCardBalanceCheck, PostAuthenticate,
-        PreAuthenticate,
+        PreAuthenticate, UpdatePostConfirm,
     },
     router_request_types::{
         AuthorizeSessionTokenData, CompleteAuthorizeData, ConnectorCustomerData,
@@ -22,9 +22,9 @@ use hyperswitch_domain_models::{
         PaymentsCompleteRefundSurchrgeData, PaymentsCompleteSurchargeData,
         PaymentsExtendAuthorizationData, PaymentsIncrementalAuthorizationData,
         PaymentsPostAuthenticateData, PaymentsPostProcessingData, PaymentsPostSessionTokensData,
-        PaymentsPreAuthenticateData, PaymentsPreAuthorizeCancelData, PaymentsPreProcessingData,
-        PaymentsRejectData, PaymentsSessionData, PaymentsSurchargeCalculationData,
-        PaymentsSyncData, PaymentsTaxCalculationData, PaymentsUpdateMetadataData,
+        PaymentsPreAuthenticateData, PaymentsPreAuthorizeCancelData, PaymentsRejectData,
+        PaymentsSessionData, PaymentsSurchargeCalculationData, PaymentsSyncData,
+        PaymentsTaxCalculationData, PaymentsUpdateMetadataData, PaymentsUpdatePostConfirmData,
         PushNotificationRequestData, SdkPaymentsSessionUpdateData, SettlementSplitRequestData,
         SetupMandateRequestData,
     },
@@ -72,6 +72,7 @@ pub trait Payment:
     + ExternalVaultProxyPaymentsCreateV1
     + PaymentsSettlementSplitCreate
     + PaymentsGiftCardBalanceCheck
+    + PaymentUpdate
 {
 }
 
@@ -231,6 +232,12 @@ pub trait PaymentUpdateMetadata:
 {
 }
 
+/// trait UpdatePostConfirm
+pub trait PaymentUpdate:
+    api::ConnectorIntegration<UpdatePostConfirm, PaymentsUpdatePostConfirmData, PaymentsResponseData>
+{
+}
+
 /// trait PaymentsCompleteAuthorize
 pub trait PaymentsCompleteAuthorize:
     api::ConnectorIntegration<CompleteAuthorize, CompleteAuthorizeData, PaymentsResponseData>
@@ -240,12 +247,6 @@ pub trait PaymentsCompleteAuthorize:
 /// trait ConnectorCustomer
 pub trait ConnectorCustomer:
     api::ConnectorIntegration<CreateConnectorCustomer, ConnectorCustomerData, PaymentsResponseData>
-{
-}
-
-/// trait PaymentsPreProcessing
-pub trait PaymentsPreProcessing:
-    api::ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>
 {
 }
 

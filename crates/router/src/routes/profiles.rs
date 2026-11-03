@@ -152,7 +152,12 @@ pub async fn profile_retrieve(
                     .get_account()
                     .get_id()
                     .clone(),
-                auth_data.platform.get_processor().get_key_store().clone(),
+                auth_data
+                    .platform
+                    .get_processor()
+                    .get_key_store()
+                    .inner()
+                    .clone(),
             )
         },
         auth::auth_type(
@@ -259,6 +264,7 @@ pub async fn profile_update(
         &req,
         payload,
         |state, auth_data, req, _| {
+            let provider_merchant_id = auth_data.platform.get_provider().get_provider_merchant_id();
             update_profile(
                 state,
                 &profile_id,
@@ -268,8 +274,14 @@ pub async fn profile_update(
                     .get_account()
                     .get_id()
                     .clone(),
-                auth_data.platform.get_processor().get_key_store().clone(),
+                auth_data
+                    .platform
+                    .get_processor()
+                    .get_key_store()
+                    .inner()
+                    .clone(),
                 req,
+                Some(provider_merchant_id),
             )
         },
         auth::auth_type(
@@ -330,6 +342,7 @@ pub async fn profile_update(
                 merchant_account.get_id().clone(),
                 key_store,
                 req,
+                None,
             )
         },
         auth::auth_type(
@@ -495,8 +508,14 @@ pub async fn toggle_connector_agnostic_mit(
         state,
         &req,
         json_payload.into_inner(),
-        |state, _: auth::AuthenticationData, req, _| {
-            connector_agnostic_mit_toggle(state, &merchant_id, &profile_id, req)
+        |state, auth_data: auth::AuthenticationData, req, _| {
+            connector_agnostic_mit_toggle(
+                state,
+                auth_data.platform.get_processor().clone(),
+                &merchant_id,
+                &profile_id,
+                req,
+            )
         },
         auth::auth_type(
             &auth::HeaderAuth(auth::ApiKeyAuth {

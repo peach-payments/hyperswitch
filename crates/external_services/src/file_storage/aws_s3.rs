@@ -1,108 +1,47 @@
-use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::{
-    operation::{
-        delete_object::DeleteObjectError, get_object::GetObjectError, put_object::PutObjectError,
-    },
-    Client,
-};
-use aws_sdk_sts::config::Region;
-use common_utils::{errors::CustomResult, ext_traits::ConfigExt};
+//! Hyperswitch adapter over the shared [`cloud_services`] S3 client.
+
+#[cfg(feature = "gcs_object_storage")]
+use cloud_services::storage::gcs::GcsObjectStorageConfig;
+#[cfg(feature = "oci_object_storage")]
+use cloud_services::storage::oci::OciObjectStorageConfig;
+use cloud_services::storage::s3::S3Storage;
+#[cfg(feature = "aws_s3")]
+pub use cloud_services::storage::s3::S3StorageConfig as AwsFileStorageConfig;
+use common_utils::errors::CustomResult;
 use error_stack::ResultExt;
 
-use super::InvalidFileStorageConfig;
 use crate::file_storage::{FileStorageError, FileStorageInterface};
-
-/// Configuration for AWS S3 file storage.
-#[derive(Debug, serde::Deserialize, Clone, Default)]
-#[serde(default)]
-pub struct AwsFileStorageConfig {
-    /// The AWS region to send file uploads
-    region: String,
-    /// The AWS s3 bucket to send file uploads
-    bucket_name: String,
-}
-
-impl AwsFileStorageConfig {
-    /// Validates the AWS S3 file storage configuration.
-    pub(super) fn validate(&self) -> Result<(), InvalidFileStorageConfig> {
-        use common_utils::fp_utils::when;
-
-        when(self.region.is_default_or_empty(), || {
-            Err(InvalidFileStorageConfig("aws s3 region must not be empty"))
-        })?;
-
-        when(self.bucket_name.is_default_or_empty(), || {
-            Err(InvalidFileStorageConfig(
-                "aws s3 bucket name must not be empty",
-            ))
-        })
-    }
-}
 
 /// AWS S3 file storage client.
 #[derive(Debug, Clone)]
 pub(super) struct AwsFileStorageClient {
-    /// AWS S3 client
-    inner_client: Client,
-    /// The name of the AWS S3 bucket.
-    bucket_name: String,
+    /// Shared S3 client
+    inner: S3Storage,
 }
 
 impl AwsFileStorageClient {
     /// Creates a new AWS S3 file storage client.
+    #[cfg(feature = "aws_s3")]
     pub(super) async fn new(config: &AwsFileStorageConfig) -> Self {
-        let region_provider = RegionProviderChain::first_try(Region::new(config.region.clone()));
-        let sdk_config = aws_config::from_env().region(region_provider).load().await;
         Self {
-            inner_client: Client::new(&sdk_config),
-            bucket_name: config.bucket_name.clone(),
+            inner: S3Storage::new(config).await,
         }
     }
 
-    /// Uploads a file to AWS S3.
-    async fn upload_file(
-        &self,
-        file_key: &str,
-        file: Vec<u8>,
-    ) -> CustomResult<(), AwsS3StorageError> {
-        self.inner_client
-            .put_object()
-            .bucket(&self.bucket_name)
-            .key(file_key)
-            .body(file.into())
-            .send()
-            .await
-            .map_err(AwsS3StorageError::UploadFailure)?;
-        Ok(())
+    /// Creates a file storage client for OCI Object Storage, through its S3 Compatibility API.
+    #[cfg(feature = "oci_object_storage")]
+    pub(super) async fn new_oci(config: &OciObjectStorageConfig) -> Self {
+        Self {
+            inner: S3Storage::new_oci(config).await,
+        }
     }
 
-    /// Deletes a file from AWS S3.
-    async fn delete_file(&self, file_key: &str) -> CustomResult<(), AwsS3StorageError> {
-        self.inner_client
-            .delete_object()
-            .bucket(&self.bucket_name)
-            .key(file_key)
-            .send()
-            .await
-            .map_err(AwsS3StorageError::DeleteFailure)?;
-        Ok(())
-    }
-
-    /// Retrieves a file from AWS S3.
-    async fn retrieve_file(&self, file_key: &str) -> CustomResult<Vec<u8>, AwsS3StorageError> {
-        Ok(self
-            .inner_client
-            .get_object()
-            .bucket(&self.bucket_name)
-            .key(file_key)
-            .send()
-            .await
-            .map_err(AwsS3StorageError::RetrieveFailure)?
-            .body
-            .collect()
-            .await
-            .map_err(AwsS3StorageError::UnknownError)?
-            .to_vec())
+    /// Creates a file storage client for Google Cloud Storage, through its XML API.
+    #[cfg(feature = "gcs_object_storage")]
+    pub(super) async fn new_gcs(config: &GcsObjectStorageConfig) -> Self {
+        Self {
+            inner: S3Storage::new_gcs(config).await,
+        }
     }
 }
 
@@ -114,45 +53,232 @@ impl FileStorageInterface for AwsFileStorageClient {
         file_key: &str,
         file: Vec<u8>,
     ) -> CustomResult<(), FileStorageError> {
-        self.upload_file(file_key, file)
+        self.inner
+            .upload_file(file_key, file)
             .await
-            .change_context(FileStorageError::UploadFailed)?;
-        Ok(())
+            .change_context(FileStorageError::UploadFailed)
     }
 
     /// Deletes a file from AWS S3.
     async fn delete_file(&self, file_key: &str) -> CustomResult<(), FileStorageError> {
-        self.delete_file(file_key)
+        self.inner
+            .delete_file(file_key)
             .await
-            .change_context(FileStorageError::DeleteFailed)?;
-        Ok(())
+            .change_context(FileStorageError::DeleteFailed)
     }
 
     /// Retrieves a file from AWS S3.
     async fn retrieve_file(&self, file_key: &str) -> CustomResult<Vec<u8>, FileStorageError> {
-        Ok(self
+        self.inner
             .retrieve_file(file_key)
             .await
-            .change_context(FileStorageError::RetrieveFailed)?)
+            .change_context(FileStorageError::RetrieveFailed)
+    }
+
+    /// Begins a multipart upload on AWS S3.
+    async fn create_multipart_upload(
+        &self,
+        file_key: &str,
+    ) -> CustomResult<String, FileStorageError> {
+        self.inner
+            .create_multipart_upload(file_key)
+            .await
+            .change_context(FileStorageError::MultipartCreateFailed)
+    }
+
+    /// Uploads a single part of an in-progress multipart upload to AWS S3.
+    async fn upload_part(
+        &self,
+        file_key: &str,
+        upload_id: &str,
+        part_number: i32,
+        body: Vec<u8>,
+    ) -> CustomResult<String, FileStorageError> {
+        self.inner
+            .upload_part(file_key, upload_id, part_number, body)
+            .await
+            .change_context(FileStorageError::MultipartUploadPartFailed)
+    }
+
+    /// Assembles the uploaded parts into a single S3 object.
+    async fn complete_multipart_upload(
+        &self,
+        file_key: &str,
+        upload_id: &str,
+        parts: Vec<(i32, String)>,
+    ) -> CustomResult<Option<String>, FileStorageError> {
+        self.inner
+            .complete_multipart_upload(file_key, upload_id, parts)
+            .await
+            .change_context(FileStorageError::MultipartCompleteFailed)
+    }
+
+    /// Discards an in-progress multipart upload on AWS S3.
+    async fn abort_multipart_upload(
+        &self,
+        file_key: &str,
+        upload_id: &str,
+    ) -> CustomResult<(), FileStorageError> {
+        self.inner
+            .abort_multipart_upload(file_key, upload_id)
+            .await
+            .change_context(FileStorageError::MultipartAbortFailed)
+    }
+
+    /// Signs a time-limited GET for an object in AWS S3.
+    async fn get_presigned_download_url(
+        &self,
+        file_key: &str,
+        expires_in: std::time::Duration,
+        download_file_name: Option<&str>,
+    ) -> CustomResult<url::Url, FileStorageError> {
+        self.inner
+            .get_presigned_download_url(file_key, expires_in, download_file_name)
+            .await
+            .change_context(FileStorageError::PresignFailed)
     }
 }
 
-/// Enum representing errors that can occur during AWS S3 file storage operations.
-#[derive(Debug, thiserror::Error)]
-enum AwsS3StorageError {
-    /// Error indicating that file upload to S3 failed.
-    #[error("File upload to S3 failed: {0:?}")]
-    UploadFailure(aws_sdk_s3::error::SdkError<PutObjectError>),
+#[cfg(test)]
+mod tests {
+    use crate::file_storage::FileStorageConfig;
 
-    /// Error indicating that file retrieval from S3 failed.
-    #[error("File retrieve from S3 failed: {0:?}")]
-    RetrieveFailure(aws_sdk_s3::error::SdkError<GetObjectError>),
+    fn file_storage_config(value: serde_json::Value) -> FileStorageConfig {
+        #[allow(clippy::expect_used)]
+        serde_json::from_value(value).expect("file storage config should deserialize")
+    }
 
-    /// Error indicating that file deletion from S3 failed.
-    #[error("File delete from S3 failed: {0:?}")]
-    DeleteFailure(aws_sdk_s3::error::SdkError<DeleteObjectError>),
+    #[cfg(feature = "aws_s3")]
+    #[test]
+    fn aws_s3_backend_config_deserializes_and_validates() {
+        let config = file_storage_config(serde_json::json!({
+            "file_storage_backend": "aws_s3",
+            "aws_s3": {
+                "region": "us-east-1",
+                "bucket_name": "bucket",
+            },
+        }));
 
-    /// Unknown error occurred.
-    #[error("Unknown error occurred: {0:?}")]
-    UnknownError(aws_sdk_s3::primitives::ByteStreamError),
+        assert!(matches!(config, FileStorageConfig::AwsS3 { .. }));
+        assert!(config.validate().is_ok());
+    }
+
+    #[cfg(feature = "aws_s3")]
+    #[test]
+    fn aws_s3_backend_reports_invalid_config() {
+        for (aws_s3, message) in [
+            (
+                serde_json::json!({ "bucket_name": "bucket" }),
+                "file_storage: aws s3 region must not be empty",
+            ),
+            (
+                serde_json::json!({ "region": "us-east-1", "bucket_name": "  " }),
+                "file_storage: aws s3 bucket name must not be empty",
+            ),
+        ] {
+            let config = file_storage_config(serde_json::json!({
+                "file_storage_backend": "aws_s3",
+                "aws_s3": aws_s3,
+            }));
+
+            assert_eq!(
+                config.validate().map_err(|error| error.to_string()),
+                Err(message.to_owned())
+            );
+        }
+    }
+
+    #[cfg(feature = "aws_s3")]
+    #[test]
+    fn invalid_config_keeps_the_validation_error_as_its_source() {
+        let config = file_storage_config(serde_json::json!({
+            "file_storage_backend": "aws_s3",
+            "aws_s3": { "region": "us-east-1" },
+        }));
+
+        let source = config
+            .validate()
+            .err()
+            .as_ref()
+            .and_then(std::error::Error::source)
+            .map(ToString::to_string);
+
+        assert_eq!(
+            source.as_deref(),
+            Some("aws s3 bucket name must not be empty")
+        );
+    }
+
+    #[cfg(feature = "oci_object_storage")]
+    #[test]
+    fn oci_object_storage_backend_config_deserializes_and_validates() {
+        let config = file_storage_config(serde_json::json!({
+            "file_storage_backend": "oci_object_storage",
+            "oci_object_storage": {
+                "namespace": "namespace",
+                "region": "ap-hyderabad-1",
+                "bucket_name": "bucket",
+            },
+        }));
+
+        assert!(matches!(config, FileStorageConfig::OciObjectStorage { .. }));
+        assert!(config.validate().is_ok());
+    }
+
+    #[cfg(feature = "oci_object_storage")]
+    #[test]
+    fn oci_object_storage_backend_reports_invalid_config() {
+        let config = file_storage_config(serde_json::json!({
+            "file_storage_backend": "oci_object_storage",
+            "oci_object_storage": {
+                "namespace": "namespace",
+                "region": "ap-hyderabad-1",
+            },
+        }));
+
+        assert_eq!(
+            config.validate().map_err(|error| error.to_string()),
+            Err("file_storage: oci object storage bucket name must not be empty".to_owned())
+        );
+    }
+
+    #[cfg(feature = "gcs_object_storage")]
+    #[test]
+    fn gcs_object_storage_backend_config_deserializes_and_validates() {
+        for gcs_object_storage in [
+            serde_json::json!({
+                "bucket_name": "bucket",
+                "hmac_access_id": "GOOG1EXAMPLEACCESSID",
+                "hmac_secret": "secret",
+            }),
+            serde_json::json!({
+                "bucket_name": "bucket",
+                "hmac_access_id": "GOOG1EXAMPLEACCESSID",
+                "hmac_secret": "secret",
+                "region": "asia-south1",
+            }),
+        ] {
+            let config = file_storage_config(serde_json::json!({
+                "file_storage_backend": "gcs_object_storage",
+                "gcs_object_storage": gcs_object_storage,
+            }));
+
+            assert!(matches!(config, FileStorageConfig::GcsObjectStorage { .. }));
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    #[cfg(feature = "gcs_object_storage")]
+    #[test]
+    fn gcs_object_storage_backend_reports_invalid_config() {
+        let config = file_storage_config(serde_json::json!({
+            "file_storage_backend": "gcs_object_storage",
+            "gcs_object_storage": {},
+        }));
+
+        assert_eq!(
+            config.validate().map_err(|error| error.to_string()),
+            Err("file_storage: gcs object storage bucket name must not be empty".to_owned())
+        );
+    }
 }

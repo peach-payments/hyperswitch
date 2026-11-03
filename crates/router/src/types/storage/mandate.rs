@@ -1,18 +1,17 @@
-use async_bb8_diesel::AsyncRunQueryDsl;
 use common_utils::errors::CustomResult;
 use diesel::{associations::HasTable, ExpressionMethods, QueryDsl};
 pub use diesel_models::mandate::{
     Mandate, MandateNew, MandateUpdate, MandateUpdateInternal, SingleUseMandate,
 };
-use diesel_models::{errors, schema::mandate::dsl};
+use diesel_models::{errors, query::generics::db_metrics, schema::mandate::dsl};
 use error_stack::ResultExt;
 
-use crate::{connection::PgPooledConn, logger};
+use crate::connection::DatabaseConnectionWithContext;
 
 #[async_trait::async_trait]
 pub trait MandateDbExt: Sized {
     async fn filter_by_constraints(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         mandate_list_constraints: api_models::mandates::MandateListConstraints,
     ) -> CustomResult<Vec<Self>, errors::DatabaseError>;
@@ -21,14 +20,15 @@ pub trait MandateDbExt: Sized {
 #[async_trait::async_trait]
 impl MandateDbExt for Mandate {
     async fn filter_by_constraints(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         mandate_list_constraints: api_models::mandates::MandateListConstraints,
     ) -> CustomResult<Vec<Self>, errors::DatabaseError> {
-        let mut filter = <Self as HasTable>::table()
-            .filter(dsl::merchant_id.eq(merchant_id.to_owned()))
-            .order(dsl::created_at.desc())
-            .into_boxed();
+        let mut filter = diesel_models::list::into_boxed_list(
+            <Self as HasTable>::table()
+                .filter(dsl::merchant_id.eq(merchant_id.to_owned()))
+                .order(dsl::created_at.desc()),
+        );
 
         if let Some(created_time) = mandate_list_constraints.created_time {
             filter = filter.filter(dsl::created_at.eq(created_time));
@@ -58,14 +58,14 @@ impl MandateDbExt for Mandate {
             filter = filter.offset(offset);
         }
 
-        logger::debug!(query = %diesel::debug_query::<diesel::pg::Pg, _>(&filter).to_string());
-
-        filter
-            .get_results_async(conn)
-            .await
-            // The query built here returns an empty Vec when no records are found, and if any error does occur,
-            // it would be an internal database error, due to which we are raising a DatabaseError::Unknown error
-            .change_context(errors::DatabaseError::Others)
-            .attach_printable("Error filtering mandates by specified constraints")
+        conn.track_get_results::<<Self as HasTable>::Table, _, _>(
+            db_metrics::DatabaseOperation::Filter,
+            filter,
+        )
+        .await
+        // The query built here returns an empty Vec when no records are found, and if any error does occur,
+        // it would be an internal database error, due to which we are raising a DatabaseError::Unknown error
+        .change_context(errors::DatabaseError::Others)
+        .attach_printable("Error filtering mandates by specified constraints")
     }
 }

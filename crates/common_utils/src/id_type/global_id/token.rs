@@ -14,7 +14,9 @@ Example: `0a_tok_uu1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p`"
 );
 
 // Database related implementations so that this field can be used directly in the database tables
+#[cfg(feature = "diesel")]
 crate::impl_queryable_id_type!(GlobalTokenId);
+#[cfg(feature = "diesel")]
 crate::impl_to_sql_from_sql_global_id_type!(GlobalTokenId);
 
 impl GlobalTokenId {
@@ -27,7 +29,7 @@ impl GlobalTokenId {
     pub fn from_string(token_string: &str) -> CustomResult<Self, ValidationError> {
         let token = super::GlobalId::from_string(Cow::Owned(token_string.to_string()))
             .change_context(ValidationError::IncorrectValueProvided {
-                field_name: "GlobalTokenId",
+                field_name: "GlobalTokenId".into(),
             })?;
         Ok(Self(token))
     }

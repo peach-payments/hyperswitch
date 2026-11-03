@@ -12,10 +12,8 @@ use hyperswitch_domain_models::{
     router_flow_types, router_request_types, router_response_types,
 };
 use hyperswitch_interfaces::{
-    api as api_interface,
-    api::{gateway, ConnectorSpecifications},
-    consts as interface_consts, errors as interface_errors,
-    unified_connector_service::transformers as ucs_transformers,
+    api as api_interface, api::ConnectorSpecifications, consts as interface_consts,
+    errors as interface_errors, unified_connector_service::transformers as ucs_transformers,
 };
 use hyperswitch_masking::{self, ExposeInterface};
 use unified_connector_service_client::payments as payments_grpc;
@@ -25,8 +23,8 @@ use crate::{
     core::{
         errors::{ApiErrorResponse, ConnectorErrorExt, RouterResult},
         payments::{
-            self, access_token, gateway as payments_gateway, gateway::context as gateway_context,
-            helpers, transformers, PaymentData,
+            self, access_token, gateway, gateway as payments_gateway,
+            gateway::context as gateway_context, helpers, transformers, PaymentData,
         },
         unified_connector_service as ucs_core,
     },
@@ -50,6 +48,7 @@ impl
         state: &SessionState,
         connector_id: &str,
         processor: &domain::Processor,
+        business_profile: &domain::Profile,
         merchant_connector_account: &helpers::MerchantConnectorAccountType,
         merchant_recipient_data: Option<types::MerchantRecipientData>,
         header_payload: Option<hyperswitch_domain_models::payments::HeaderPayload>,
@@ -70,6 +69,7 @@ impl
             self.clone(),
             connector_id,
             processor,
+            business_profile,
             merchant_connector_account,
             merchant_recipient_data,
             header_payload,
@@ -509,6 +509,8 @@ impl Feature<api::CompleteAuthorize, types::CompleteAuthorizeData>
                 );
             // check if redirection is not present in the response and attempt status is not AuthenticationFailed
             // if condition does not satisfy, then we don't need to proceed further
+            // Also treat Charged/Authorized as terminal: PostAuthenticate may itself complete
+            // the payment (e.g. APM confirmation), so CompleteAuthorize must not be re-fired.
             let should_continue = matches!(
                 complete_authorize_router_data.response,
                 Ok(types::PaymentsResponseData::TransactionResponse {
@@ -519,6 +521,7 @@ impl Feature<api::CompleteAuthorize, types::CompleteAuthorizeData>
                 complete_authorize_router_data.status,
                 common_enums::AttemptStatus::AuthenticationFailed
                     | common_enums::AttemptStatus::Failure
+                    | common_enums::AttemptStatus::Charged
             );
             Ok((complete_authorize_router_data, should_continue))
         } else {
@@ -671,7 +674,7 @@ fn transform_redirection_response_for_authenticate_flow(
         ) => {
             let access_token = form_fields.get("access_token").cloned().ok_or(
                 ucs_transformers::UnifiedConnectorServiceError::MissingRequiredField {
-                    field_name: "access_token",
+                    field_name: "access_token".into(),
                 },
             )?;
             let step_up_url = form_fields.get("step_up_url").unwrap_or(endpoint).clone();
@@ -712,6 +715,7 @@ fn transform_response_for_authenticate_flow(
                 network_txn_id,
                 network_txn_link_id,
                 connector_response_reference_id,
+                payment_account_reference,
                 incremental_authorization_allowed,
                 authentication_data,
                 charges,
@@ -737,6 +741,7 @@ fn transform_response_for_authenticate_flow(
                     network_txn_id,
                     network_txn_link_id,
                     connector_response_reference_id,
+                    payment_account_reference,
                     incremental_authorization_allowed,
                     authentication_data,
                     charges,
@@ -761,7 +766,7 @@ pub async fn call_unified_connector_service_authenticate(
     #[cfg(feature = "v2")] merchant_connector_account: domain::MerchantConnectorAccountTypeDetails,
     processor: &domain::Processor,
     connector: connector_enums::Connector,
-    unified_connector_service_execution_mode: common_enums::ExecutionMode,
+    rollout_settings: crate::core::unified_connector_service::kill_switch::RolloutSettings,
 ) -> errors::CustomResult<
     types::RouterData<
         api::Authenticate,
@@ -805,7 +810,9 @@ pub async fn call_unified_connector_service_authenticate(
         .ok()
         .map(ucs_types::UcsResourceId::PaymentAttempt);
     let headers_builder = state
-        .get_grpc_headers_ucs(unified_connector_service_execution_mode)
+        .get_grpc_headers_ucs(rollout_settings.execution_mode)
+        .payment_method(Some(router_data.payment_method))
+        .payment_method_type(router_data.payment_method_type)
         .external_vault_proxy_metadata(None)
         .merchant_reference_id(merchant_reference_id)
         .resource_id(resource_id)
@@ -815,7 +822,169 @@ pub async fn call_unified_connector_service_authenticate(
         state,
         payment_authenticate_request,
         headers_builder,
-        unified_connector_service_execution_mode,
+        rollout_settings,
+        |mut router_data, payment_authenticate_request, grpc_headers| async move {
+            let response = Box::pin(client.payment_authenticate(
+                payment_authenticate_request,
+                connector_auth_metadata,
+                grpc_headers,
+            ))
+            .await
+            .attach_printable("Failed to authenticate payment")?;
+
+            let payment_authenticate_response = response.into_inner();
+
+            let (router_data_response, status_code) =
+                ucs_core::handle_unified_connector_service_response_for_payment_authenticate(
+                    payment_authenticate_response.clone(),
+                    router_data.status,
+                )
+                .attach_printable("Failed to deserialize UCS response")?;
+
+            let router_data_response = match router_data_response {
+                Ok((response, status)) => {
+                    router_data.status = status;
+                    Ok(transform_response_for_authenticate_flow(
+                        connector, response,
+                    )?)
+                }
+                Err(err) => {
+                    if let Some(attempt_status) = err.attempt_status {
+                        router_data.status = attempt_status;
+                    }
+                    Err(err)
+                }
+            };
+
+            router_data.response = router_data_response;
+            router_data.raw_connector_response = payment_authenticate_response
+                .raw_connector_response
+                .clone()
+                .map(|raw_connector_response| raw_connector_response.expose().into());
+            router_data.connector_http_status_code = Some(status_code);
+
+            Ok((router_data, (), payment_authenticate_response))
+        },
+    ))
+    .await
+    .change_context(interface_errors::ConnectorError::ResponseHandlingFailed)?;
+
+    Ok(router_data)
+}
+
+/// External-vault-proxy variant of [`call_unified_connector_service_authenticate`] above: the
+/// request is built from the resolved `ExternalVaultPaymentMethodData` alias (via the
+/// `(router_data, external_vault_pmd)` `ForeignTryFrom` impl) instead of a real
+/// `payment_method_data`, carries `force_3ds_challenge`/notification-url/acquirer metadata merged
+/// into `connector_feature_data`, and carries `external_vault_proxy_metadata` so the outbound
+/// call is routed through the vault's proxy (e.g. VGS).
+// TODO: fold proxy-vs-direct UCS dispatch into the `Gateway`/`FlowGateway` abstraction
+// (gateway/authenticate_gateway.rs) instead of core/authentication.rs calling this directly.
+#[cfg(feature = "v1")]
+#[allow(clippy::too_many_arguments)]
+pub async fn call_unified_connector_service_authenticate_proxy(
+    router_data: &types::RouterData<
+        api::Authenticate,
+        types::PaymentsAuthenticateData,
+        types::PaymentsResponseData,
+    >,
+    external_vault_pmd: &domain::ExternalVaultPaymentMethodData,
+    state: &SessionState,
+    header_payload: &hyperswitch_domain_models::payments::HeaderPayload,
+    lineage_ids: grpc_client::LineageIds,
+    merchant_connector_account: helpers::MerchantConnectorAccountType,
+    external_vault_merchant_connector_account: helpers::MerchantConnectorAccountType,
+    processor: &domain::Processor,
+    rollout_settings: crate::core::unified_connector_service::kill_switch::RolloutSettings,
+    force_3ds_challenge: Option<bool>,
+    notification_url: Option<common_utils::types::Url>,
+    acquirer_metadata: Option<serde_json::Value>,
+) -> errors::CustomResult<
+    types::RouterData<
+        api::Authenticate,
+        types::PaymentsAuthenticateData,
+        types::PaymentsResponseData,
+    >,
+    interface_errors::ConnectorError,
+> {
+    let client = state
+        .grpc_client
+        .unified_connector_service_client
+        .clone()
+        .ok_or(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to fetch Unified Connector Service client")?;
+
+    let mut payment_authenticate_request =
+        payments_grpc::PaymentMethodAuthenticationServiceAuthenticateRequest::foreign_try_from((
+            router_data,
+            external_vault_pmd,
+        ))
+        .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to construct external-vault Payment Authenticate Request")?;
+
+    let results_response_notification_url = merchant_connector_account.get_mca_id().map(|mca_id| {
+        helpers::create_webhook_url(
+            &state.base_url,
+            processor.get_account().get_id(),
+            mca_id.get_string_repr(),
+        )
+    });
+
+    payment_authenticate_request.connector_feature_data =
+        ucs_core::build_connector_feature_data_from_auth_mca(
+            &merchant_connector_account,
+            force_3ds_challenge,
+            results_response_notification_url,
+            notification_url,
+            acquirer_metadata,
+        )
+        .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to build connector_feature_data from authentication MCA")?;
+
+    let connector_auth_metadata = ucs_core::build_unified_connector_service_auth_metadata(
+        merchant_connector_account,
+        processor.get_account().get_id(),
+        router_data.connector.clone(),
+    )
+    .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+    .attach_printable("Failed to construct request metadata")?;
+
+    let external_vault_proxy_metadata =
+        ucs_core::build_unified_connector_service_external_vault_proxy_metadata_v1(
+            external_vault_merchant_connector_account,
+            &state.conf.connectors,
+            &state.conf.proxy,
+        )
+        .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to construct external vault proxy metadata")?;
+
+    let merchant_reference_id = ucs_core::parse_merchant_reference_id(
+        header_payload
+            .x_reference_id
+            .as_deref()
+            .unwrap_or(router_data.payment_id.as_str()),
+    )
+    .map(ucs_types::UcsReferenceId::Payment);
+    let resource_id = id_type::PaymentResourceId::from_str(router_data.attempt_id.as_str())
+        .inspect_err(
+            |err| logger::warn!(error=?err, "Invalid Payment AttemptId for UCS resource id"),
+        )
+        .ok()
+        .map(ucs_types::UcsResourceId::PaymentAttempt);
+    let headers_builder = state
+        .get_grpc_headers_ucs(rollout_settings.execution_mode)
+        .payment_method(Some(router_data.payment_method))
+        .payment_method_type(router_data.payment_method_type)
+        .external_vault_proxy_metadata(Some(external_vault_proxy_metadata))
+        .merchant_reference_id(merchant_reference_id)
+        .resource_id(resource_id)
+        .lineage_ids(lineage_ids);
+    let (updated_router_data, _) = Box::pin(ucs_core::ucs_logging_wrapper_granular(
+        router_data.clone(),
+        state,
+        payment_authenticate_request,
+        headers_builder,
+        rollout_settings,
         |mut router_data, payment_authenticate_request, grpc_headers| async move {
             let response = Box::pin(client.payment_authenticate(
                 payment_authenticate_request,
@@ -838,13 +1007,6 @@ pub async fn call_unified_connector_service_authenticate(
                 router_data.status = status;
                 response
             });
-            let router_data_response = match router_data_response {
-                Ok(response) => Ok(transform_response_for_authenticate_flow(
-                    connector, response,
-                )?),
-                Err(err) => Err(err),
-            };
-
             router_data.response = router_data_response;
             router_data.raw_connector_response = payment_authenticate_response
                 .raw_connector_response
@@ -858,7 +1020,7 @@ pub async fn call_unified_connector_service_authenticate(
     .await
     .change_context(interface_errors::ConnectorError::ResponseHandlingFailed)?;
 
-    Ok(router_data)
+    Ok(updated_router_data)
 }
 
 #[allow(dead_code, clippy::too_many_arguments)]
@@ -874,7 +1036,7 @@ pub async fn call_unified_connector_service_post_authenticate(
     #[cfg(feature = "v1")] merchant_connector_account: helpers::MerchantConnectorAccountType,
     #[cfg(feature = "v2")] merchant_connector_account: domain::MerchantConnectorAccountTypeDetails,
     processor: &domain::Processor,
-    unified_connector_service_execution_mode: common_enums::ExecutionMode,
+    rollout_settings: crate::core::unified_connector_service::kill_switch::RolloutSettings,
 ) -> errors::CustomResult<
     types::RouterData<
         api::PostAuthenticate,
@@ -918,7 +1080,9 @@ pub async fn call_unified_connector_service_post_authenticate(
         .ok()
         .map(ucs_types::UcsResourceId::PaymentAttempt);
     let headers_builder = state
-        .get_grpc_headers_ucs(unified_connector_service_execution_mode)
+        .get_grpc_headers_ucs(rollout_settings.execution_mode)
+        .payment_method(Some(router_data.payment_method))
+        .payment_method_type(router_data.payment_method_type)
         .external_vault_proxy_metadata(None)
         .merchant_reference_id(merchant_reference_id)
         .resource_id(resource_id)
@@ -928,7 +1092,153 @@ pub async fn call_unified_connector_service_post_authenticate(
         state,
         payment_post_authenticate_request,
         headers_builder,
-        unified_connector_service_execution_mode,
+        rollout_settings,
+        |mut router_data, payment_post_authenticate_request, grpc_headers| async move {
+            let response = Box::pin(client.payment_post_authenticate(
+                payment_post_authenticate_request,
+                connector_auth_metadata,
+                grpc_headers,
+            ))
+            .await
+            .attach_printable("Failed to post authenticate payment")?;
+
+            let payment_post_authenticate_response = response.into_inner();
+
+            let (router_data_response, status_code) =
+                ucs_core::handle_unified_connector_service_response_for_payment_post_authenticate(
+                    payment_post_authenticate_response.clone(),
+                    router_data.status,
+                )
+                .attach_printable("Failed to deserialize UCS response")?;
+
+            let router_data_response = match router_data_response {
+                Ok((response, status)) => {
+                    router_data.status = status;
+                    Ok(response)
+                }
+                Err(err) => {
+                    if let Some(attempt_status) = err.attempt_status {
+                        router_data.status = attempt_status;
+                    }
+                    Err(err)
+                }
+            };
+            router_data.response = router_data_response;
+            router_data.raw_connector_response = payment_post_authenticate_response
+                .raw_connector_response
+                .clone()
+                .map(|raw_connector_response| raw_connector_response.expose().into());
+            router_data.connector_http_status_code = Some(status_code);
+
+            Ok((router_data, (), payment_post_authenticate_response))
+        },
+    ))
+    .await
+    .change_context(interface_errors::ConnectorError::ResponseHandlingFailed)?;
+
+    Ok(router_data)
+}
+
+/// External-vault-proxy variant of [`call_unified_connector_service_post_authenticate`] above:
+/// the request is built from the resolved `ExternalVaultPaymentMethodData` alias (via the
+/// `(router_data, external_vault_pmd)` `ForeignTryFrom` impl) instead of a real
+/// `payment_method_data`, and carries `external_vault_proxy_metadata` so the outbound call is
+/// routed through the vault's proxy (e.g. VGS).
+// TODO: fold proxy-vs-direct UCS dispatch into the `Gateway`/`FlowGateway` abstraction
+// (gateway/post_authenticate_gateway.rs) instead of core/authentication.rs calling this directly.
+#[cfg(feature = "v1")]
+#[allow(clippy::too_many_arguments)]
+pub async fn call_unified_connector_service_post_authenticate_proxy(
+    router_data: &types::RouterData<
+        api::PostAuthenticate,
+        types::PaymentsPostAuthenticateData,
+        types::PaymentsResponseData,
+    >,
+    external_vault_pmd: &domain::ExternalVaultPaymentMethodData,
+    state: &SessionState,
+    header_payload: &hyperswitch_domain_models::payments::HeaderPayload,
+    lineage_ids: grpc_client::LineageIds,
+    merchant_connector_account: helpers::MerchantConnectorAccountType,
+    external_vault_merchant_connector_account: helpers::MerchantConnectorAccountType,
+    processor: &domain::Processor,
+    rollout_settings: crate::core::unified_connector_service::kill_switch::RolloutSettings,
+) -> errors::CustomResult<
+    types::RouterData<
+        api::PostAuthenticate,
+        types::PaymentsPostAuthenticateData,
+        types::PaymentsResponseData,
+    >,
+    interface_errors::ConnectorError,
+> {
+    let client = state
+        .grpc_client
+        .unified_connector_service_client
+        .clone()
+        .ok_or(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to fetch Unified Connector Service client")?;
+
+    let mut payment_post_authenticate_request =
+        payments_grpc::PaymentMethodAuthenticationServicePostAuthenticateRequest::foreign_try_from(
+            (router_data, external_vault_pmd),
+        )
+        .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to construct external-vault Payment Post Authenticate Request")?;
+
+    payment_post_authenticate_request.connector_feature_data =
+        ucs_core::build_connector_feature_data_from_auth_mca(
+            &merchant_connector_account,
+            None,
+            None,
+            None,
+            None,
+        )
+        .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to build connector_feature_data from authentication MCA")?;
+
+    let connector_auth_metadata = ucs_core::build_unified_connector_service_auth_metadata(
+        merchant_connector_account,
+        processor.get_account().get_id(),
+        router_data.connector.clone(),
+    )
+    .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+    .attach_printable("Failed to construct request metadata")?;
+
+    let external_vault_proxy_metadata =
+        ucs_core::build_unified_connector_service_external_vault_proxy_metadata_v1(
+            external_vault_merchant_connector_account,
+            &state.conf.connectors,
+            &state.conf.proxy,
+        )
+        .change_context(interface_errors::ConnectorError::RequestEncodingFailed)
+        .attach_printable("Failed to construct external vault proxy metadata")?;
+
+    let merchant_reference_id = ucs_core::parse_merchant_reference_id(
+        header_payload
+            .x_reference_id
+            .as_deref()
+            .unwrap_or(router_data.payment_id.as_str()),
+    )
+    .map(ucs_types::UcsReferenceId::Payment);
+    let resource_id = id_type::PaymentResourceId::from_str(router_data.attempt_id.as_str())
+        .inspect_err(
+            |err| logger::warn!(error=?err, "Invalid Payment AttemptId for UCS resource id"),
+        )
+        .ok()
+        .map(ucs_types::UcsResourceId::PaymentAttempt);
+    let headers_builder = state
+        .get_grpc_headers_ucs(rollout_settings.execution_mode)
+        .payment_method(Some(router_data.payment_method))
+        .payment_method_type(router_data.payment_method_type)
+        .external_vault_proxy_metadata(Some(external_vault_proxy_metadata))
+        .merchant_reference_id(merchant_reference_id)
+        .resource_id(resource_id)
+        .lineage_ids(lineage_ids);
+    let (updated_router_data, _) = Box::pin(ucs_core::ucs_logging_wrapper_granular(
+        router_data.clone(),
+        state,
+        payment_post_authenticate_request,
+        headers_builder,
+        rollout_settings,
         |mut router_data, payment_post_authenticate_request, grpc_headers| async move {
             let response = Box::pin(client.payment_post_authenticate(
                 payment_post_authenticate_request,
@@ -964,7 +1274,7 @@ pub async fn call_unified_connector_service_post_authenticate(
     .await
     .change_context(interface_errors::ConnectorError::ResponseHandlingFailed)?;
 
-    Ok(router_data)
+    Ok(updated_router_data)
 }
 
 impl<F>
@@ -996,15 +1306,25 @@ impl<F>
             multiple_capture_data: None,
             connector_meta: types::PaymentsResponseData::get_connector_metadata(&response)
                 .map(|secret| secret.expose()),
+            connector_intent_metadata: item.request.connector_intent_metadata,
+            payment_feature_metadata: item.request.feature_metadata,
+            // Full automatic capture uses the original payment settlement values.
+            feature_metadata: None,
             browser_info: None,
             metadata: None,
             capture_method: item.request.capture_method,
             minor_payment_amount: item.request.minor_amount,
             minor_amount_to_capture: item.request.minor_amount,
+            order_tax_amount: None,
             integrity_object: None,
             split_payments: None,
             webhook_url: None,
             merchant_order_reference_id: item.request.merchant_order_reference_id,
+            is_overcapture_enabled: item.request.enable_overcapture.map(|enable_overcapture| {
+                common_types::primitive_wrappers::OvercaptureEnabledBool::new(*enable_overcapture)
+            }),
+            payment_method_data: None,
+            mandate_id: item.request.mandate_id,
         })
     }
 }
@@ -1038,7 +1358,7 @@ async fn process_capture_flow(
     );
 
     // Call capture request
-    let post_capture_router_data = super::call_capture_request(
+    let post_capture_router_data = Box::pin(super::call_capture_request(
         capture_router_data,
         state,
         connector,
@@ -1046,7 +1366,7 @@ async fn process_capture_flow(
         business_profile,
         header_payload,
         gateway_context,
-    )
+    ))
     .await;
 
     // Process capture response

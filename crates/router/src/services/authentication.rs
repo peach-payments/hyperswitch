@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, str::FromStr};
 
-use actix_web::http::header::HeaderMap;
+use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
 #[cfg(feature = "v2")]
 use api_models::payment_methods::PaymentMethodIntentConfirm;
 #[cfg(feature = "v1")]
@@ -66,6 +66,7 @@ pub mod blacklist;
 pub mod cookies;
 pub mod decision;
 pub mod embedded;
+pub mod idle_session;
 
 #[cfg(feature = "partial-auth")]
 mod detached;
@@ -245,6 +246,29 @@ impl AuthenticationType {
             | Self::NoAuth => None,
         }
     }
+
+    pub fn get_user_id(&self) -> Option<String> {
+        match self {
+            Self::OrganizationJwt { user_id, .. }
+            | Self::MerchantJwtWithProfileId { user_id, .. }
+            | Self::UserJwt { user_id, .. }
+            | Self::SinglePurposeJwt { user_id, .. }
+            | Self::SinglePurposeOrLoginJwt { user_id, .. } => Some(user_id.clone()),
+            Self::MerchantJwt { user_id, .. } => user_id.clone(),
+            Self::ApiKey { .. }
+            | Self::AdminApiKey
+            | Self::AdminApiAuthWithMerchantId { .. }
+            | Self::BasicAuth { .. }
+            | Self::MerchantId { .. }
+            | Self::PublishableKey { .. }
+            | Self::SdkAuthorization { .. }
+            | Self::WebhookAuth { .. }
+            | Self::InternalMerchantIdProfileId { .. }
+            | Self::EmbeddedJwt { .. }
+            | Self::InternalApiKey
+            | Self::NoAuth => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, serde::Deserialize, strum::Display)]
@@ -361,7 +385,11 @@ pub struct SinglePurposeOrLoginToken {
     pub tenant_id: Option<id_type::TenantId>,
 }
 
-#[derive(serde::Deserialize)]
+// `Serialize` so the decode boundary can record the claims it reconstructs.
+// The untagged round-trip is unambiguous in this direction: `EmbeddedToken`
+// carries neither `user_id` nor `role_id`, both of which `AuthToken` requires,
+// so an embedded token's JSON cannot deserialize as an `AuthToken`.
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum AuthOrEmbeddedClaims {
     AuthToken(AuthToken),
@@ -742,7 +770,7 @@ where
                 .map(id_type::ProfileId::from_str)
                 .transpose()
                 .change_context(errors::ValidationError::IncorrectValueProvided {
-                    field_name: "X-Profile-Id",
+                    field_name: "X-Profile-Id".into(),
                 })
                 .change_context(errors::ApiErrorResponse::Unauthorized)?;
 
@@ -1307,7 +1335,7 @@ where
         let profile_id = HeaderMapStruct::new(request_headers)
             .get_id_type_from_header_if_present::<id_type::ProfileId>(headers::X_PROFILE_ID)
             .change_context(errors::ValidationError::IncorrectValueProvided {
-                field_name: "X-Profile-Id",
+                field_name: "X-Profile-Id".into(),
             })
             .change_context(errors::ApiErrorResponse::Unauthorized)?;
 
@@ -1609,6 +1637,9 @@ where
         if payload.check_in_blacklist(state).await? {
             return Err(errors::ApiErrorResponse::InvalidJwtToken.into());
         }
+        if payload.role_id.is_some() {
+            idle_session::check_idle_session(&state.session_state(), &payload.user_id).await?;
+        }
         authorization::check_tenant(
             payload.tenant_id.clone(),
             &state.session_state().tenant.tenant_id,
@@ -1695,18 +1726,9 @@ where
         request_headers: &HeaderMap,
         state: &A,
     ) -> RouterResult<((), AuthenticationType)> {
-        let request_admin_api_key =
-            get_api_key(request_headers).change_context(errors::ApiErrorResponse::Unauthorized)?;
-        let conf = state.conf();
-
-        let admin_api_key = &conf.secrets.get_inner().admin_api_key;
-
-        if request_admin_api_key != admin_api_key.peek() {
-            Err(report!(errors::ApiErrorResponse::Unauthorized)
-                .attach_printable("Admin Authentication Failure"))?;
-        }
-
-        Ok(((), AuthenticationType::AdminApiKey))
+        V2AdminApiAuth
+            .authenticate_and_fetch(request_headers, state)
+            .await
     }
 }
 
@@ -1936,16 +1958,18 @@ where
         request_headers: &HeaderMap,
         state: &A,
     ) -> RouterResult<(Option<AuthenticationDataWithOrg>, AuthenticationType)> {
-        let request_api_key =
-            get_api_key(request_headers).change_context(errors::ApiErrorResponse::Unauthorized)?;
-
-        let conf = state.conf();
-
-        let admin_api_key = &conf.secrets.get_inner().admin_api_key;
-
-        if request_api_key == admin_api_key.peek() {
+        if AdminApiAuth
+            .authenticate_and_fetch(request_headers, state)
+            .await
+            .is_ok()
+        {
             return Ok((None, AuthenticationType::AdminApiKey));
         }
+
+        let request_api_key =
+            get_api_key(request_headers).change_context(errors::ApiErrorResponse::Unauthorized)?;
+        let conf = state.conf();
+
         let Some(fallback_merchant_ids) = conf.fallback_merchant_ids_api_key_auth.as_ref() else {
             return Err(report!(errors::ApiErrorResponse::Unauthorized)).attach_printable(
                 "Api Key Authentication Failure: fallback merchant set not configured",
@@ -2063,14 +2087,11 @@ where
         state: &A,
     ) -> RouterResult<(AuthenticationData, AuthenticationType)> {
         let merchant_id_from_route: id_type::MerchantId = self.0.clone();
-        let request_api_key =
-            get_api_key(request_headers).change_context(errors::ApiErrorResponse::Unauthorized)?;
-        let conf = state.conf();
-
-        let admin_api_key: &hyperswitch_masking::Secret<String> =
-            &conf.secrets.get_inner().admin_api_key;
-
-        if request_api_key == admin_api_key.peek() {
+        if AdminApiAuth
+            .authenticate_and_fetch(request_headers, state)
+            .await
+            .is_ok()
+        {
             let (key_store, merchant) =
                 Self::fetch_merchant_key_store_and_account(&merchant_id_from_route, state).await?;
 
@@ -2096,6 +2117,10 @@ where
                 },
             ));
         }
+
+        let request_api_key =
+            get_api_key(request_headers).change_context(errors::ApiErrorResponse::Unauthorized)?;
+        let conf = state.conf();
 
         let Some(fallback_merchant_ids) = conf.fallback_merchant_ids_api_key_auth.as_ref() else {
             return Err(report!(errors::ApiErrorResponse::Unauthorized)).attach_printable(
@@ -2190,7 +2215,7 @@ impl<'a> HeaderMapStruct<'a> {
             .attach_printable(format!("Failed to find header key: {key}"))?
             .to_str()
             .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                field_name: "`{key}` in headers",
+                field_name: "`{key}` in headers".into(),
             })
             .attach_printable(format!(
                 "Failed to convert header value to string for header key: {key}",
@@ -2241,7 +2266,7 @@ impl<'a> HeaderMapStruct<'a> {
             .get_required_value(headers::AUTHORIZATION)?
             .to_str()
             .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                field_name: headers::AUTHORIZATION,
+                field_name: headers::AUTHORIZATION.into(),
             })
             .attach_printable("Failed to convert authorization header to string")
     }
@@ -2258,7 +2283,7 @@ impl<'a> HeaderMapStruct<'a> {
             .map(|value| value.to_str())
             .transpose()
             .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                field_name: "`{key}` in headers",
+                field_name: "`{key}` in headers".into(),
             })
             .attach_printable(format!(
                 "Failed to convert header value to string for header key: {key}",
@@ -2534,6 +2559,47 @@ where
 }
 
 #[derive(Debug)]
+#[cfg(feature = "v1")]
+pub struct ApiKeyBasicAuthWithMerchantIdFromRoute {
+    pub merchant_id: id_type::MerchantId,
+    pub profile_id: Option<id_type::ProfileId>,
+}
+
+#[cfg(feature = "v1")]
+#[async_trait]
+impl<A> AuthenticateAndFetch<AuthenticationData, A> for ApiKeyBasicAuthWithMerchantIdFromRoute
+where
+    A: SessionStateInfo + Sync,
+{
+    async fn authenticate_and_fetch(
+        &self,
+        request_headers: &HeaderMap,
+        state: &A,
+    ) -> RouterResult<(AuthenticationData, AuthenticationType)> {
+        let (_username, api_key) = parse_basic_auth_credentials(request_headers)?;
+
+        let mut api_key = HeaderValue::from_str(api_key.peek())
+            .change_context(errors::ApiErrorResponse::InvalidBasicAuth)
+            .attach_printable("API key in the Basic auth password is not a valid header value")?;
+        // Keeps the key out of any debug rendering of the header map.
+        api_key.set_sensitive(true);
+
+        let mut request_headers = request_headers.clone();
+        request_headers.insert(HeaderName::from_static("api-key"), api_key);
+
+        if let Some(profile_id) = &self.profile_id {
+            let profile_id = HeaderValue::from_str(profile_id.get_string_repr())
+                .change_context(errors::ApiErrorResponse::InvalidBasicAuth)
+                .attach_printable("Profile ID is not a valid header value")?;
+            request_headers.insert(HeaderName::from_static("x-profile-id"), profile_id);
+        }
+
+        api_key_auth_with_merchant_id_from_route(&self.merchant_id, false, &request_headers, state)
+            .await
+    }
+}
+
+#[derive(Debug)]
 #[cfg(feature = "v2")]
 pub struct MerchantIdAuth;
 
@@ -2643,11 +2709,9 @@ impl<F> InternalMerchantIdProfileIdAuth<F> {
             (internal_api_key, merchant_id, profile_id)
         {
             let config = state.conf();
-            if internal_api_key
-                != *config
-                    .internal_merchant_id_profile_id_auth
-                    .internal_api_key
-                    .peek()
+            if !config
+                .internal_merchant_id_profile_id_auth
+                .accepts_api_key(&internal_api_key)
             {
                 return Err(errors::ApiErrorResponse::Unauthorized)
                     .attach_printable("Internal API key authentication failed");
@@ -2790,12 +2854,10 @@ where
 
         match internal_api_key {
             Some(key) => {
-                if key
-                    == *state
-                        .conf()
-                        .internal_merchant_id_profile_id_auth
-                        .internal_api_key
-                        .peek()
+                if state
+                    .conf()
+                    .internal_merchant_id_profile_id_auth
+                    .accepts_api_key(&key)
                 {
                     Ok(((), AuthenticationType::InternalApiKey))
                 } else {
@@ -3126,7 +3188,8 @@ where
             ) => {
                 fp_utils::when(self_id != db_id, || {
                     Err::<(), errors::ApiErrorResponse>(errors::ApiErrorResponse::Unauthorized)
-                });
+                })
+                .attach_printable("Client secret resource ID mismatch")?;
             }
 
             (
@@ -3135,7 +3198,8 @@ where
             ) => {
                 fp_utils::when(self_id != db_id, || {
                     Err::<(), errors::ApiErrorResponse>(errors::ApiErrorResponse::Unauthorized)
-                });
+                })
+                .attach_printable("Client secret resource ID mismatch")?;
             }
 
             (
@@ -3144,7 +3208,8 @@ where
             ) => {
                 fp_utils::when(self_id != db_id, || {
                     Err::<(), errors::ApiErrorResponse>(errors::ApiErrorResponse::Unauthorized)
-                });
+                })
+                .attach_printable("Client secret resource ID mismatch")?;
             }
 
             _ => {
@@ -3865,7 +3930,8 @@ where
             ) => {
                 fp_utils::when(self_id != db_id, || {
                     Err::<(), errors::ApiErrorResponse>(errors::ApiErrorResponse::Unauthorized)
-                });
+                })
+                .attach_printable("Client secret resource ID mismatch")?;
             }
             (
                 common_utils::types::authentication::ResourceId::Customer(self_id),
@@ -3873,7 +3939,8 @@ where
             ) => {
                 fp_utils::when(self_id != db_id, || {
                     Err::<(), errors::ApiErrorResponse>(errors::ApiErrorResponse::Unauthorized)
-                });
+                })
+                .attach_printable("Client secret resource ID mismatch")?;
             }
             (
                 common_utils::types::authentication::ResourceId::PaymentMethodSession(self_id),
@@ -3881,7 +3948,8 @@ where
             ) => {
                 fp_utils::when(self_id != db_id, || {
                     Err::<(), errors::ApiErrorResponse>(errors::ApiErrorResponse::Unauthorized)
-                });
+                })
+                .attach_printable("Client secret resource ID mismatch")?;
             }
             _ => {
                 return Err(errors::ApiErrorResponse::Unauthorized.into());
@@ -4841,6 +4909,11 @@ where
             .to_not_found_response(errors::ApiErrorResponse::InvalidJwtToken)
             .attach_printable("Failed to fetch merchant account for the merchant id")?;
 
+        fp_utils::when(merchant.get_org_id() != &payload.org_id, || {
+            Err(report!(errors::ApiErrorResponse::InvalidJwtToken))
+                .attach_printable("JWT merchant does not belong to JWT organization")
+        })?;
+
         fp_utils::when(payload.profile_id != self.profile_id, || {
             Err(report!(errors::ApiErrorResponse::InvalidJwtToken))
                 .attach_printable("Profile id in JWT does not match profile id in route")
@@ -4977,7 +5050,7 @@ where
 
 pub async fn parse_jwt_payload<A, T>(headers: &HeaderMap, state: &A) -> RouterResult<T>
 where
-    T: serde::de::DeserializeOwned,
+    T: Serialize + serde::de::DeserializeOwned,
     A: SessionStateInfo + Sync,
 {
     let cookie_token_result =
@@ -5043,6 +5116,11 @@ where
             .await
             .to_not_found_response(errors::ApiErrorResponse::InvalidJwtToken)
             .attach_printable("Failed to fetch merchant account for the merchant id")?;
+
+        fp_utils::when(merchant.get_org_id() != &payload.org_id, || {
+            Err(report!(errors::ApiErrorResponse::InvalidJwtToken))
+                .attach_printable("JWT merchant does not belong to JWT organization")
+        })?;
 
         let profile = state
             .store()
@@ -5179,6 +5257,34 @@ where
 
 pub type AuthenticationDataWithUserId = (AuthenticationData, Option<String>);
 
+/// Auth data paired with the dashboard user behind the request. Unlike
+/// `AuthenticationDataWithUserId`, it carries the whole token identity — a user holds different
+/// roles in different lineages, so the role backing *this* session has to be resolvable.
+#[cfg(feature = "v1")]
+pub type AuthenticationDataWithUser = (AuthenticationData, UserFromToken);
+
+#[cfg(feature = "v1")]
+#[async_trait]
+impl<A> AuthenticateAndFetch<AuthenticationDataWithUser, A> for JWTAuth
+where
+    A: SessionStateInfo + Sync,
+{
+    async fn authenticate_and_fetch(
+        &self,
+        request_headers: &HeaderMap,
+        state: &A,
+    ) -> RouterResult<(AuthenticationDataWithUser, AuthenticationType)> {
+        // Both halves are delegated rather than reimplemented, so the permission and tenant checks
+        // stay in one place and this cannot drift from them.
+        let (auth_data, auth_type): (AuthenticationData, AuthenticationType) =
+            self.authenticate_and_fetch(request_headers, state).await?;
+        let (user, _): (UserFromToken, AuthenticationType) =
+            self.authenticate_and_fetch(request_headers, state).await?;
+
+        Ok(((auth_data, user), auth_type))
+    }
+}
+
 #[cfg(feature = "v1")]
 #[async_trait]
 impl<A> AuthenticateAndFetch<AuthenticationDataWithUserId, A> for JWTAuth
@@ -5256,7 +5362,7 @@ where
             (auth.clone(), Some(payload.user_id.clone())),
             AuthenticationType::MerchantJwt {
                 merchant_id: payload.merchant_id,
-                user_id: None,
+                user_id: Some(payload.user_id),
             },
         ))
     }
@@ -5440,6 +5546,9 @@ where
         state: &A,
     ) -> RouterResult<(AuthenticationData, AuthenticationType)> {
         let payload = parse_jwt_payload::<A, AuthToken>(request_headers, state).await?;
+        if payload.check_in_blacklist(state).await? {
+            return Err(errors::ApiErrorResponse::InvalidJwtToken.into());
+        }
         authorization::check_tenant(
             payload.tenant_id.clone(),
             &state.session_state().tenant.tenant_id,
@@ -5623,6 +5732,125 @@ where
     }
 }
 
+#[cfg(feature = "v2")]
+#[async_trait]
+impl<A> AuthenticateAndFetch<AuthenticationData, A> for JWTAndEmbeddedAuth
+where
+    A: SessionStateInfo + Sync,
+{
+    async fn authenticate_and_fetch(
+        &self,
+        request_headers: &HeaderMap,
+        state: &A,
+    ) -> RouterResult<(AuthenticationData, AuthenticationType)> {
+        let payload = parse_jwt_payload::<A, AuthOrEmbeddedClaims>(request_headers, state).await?;
+
+        if let AuthOrEmbeddedClaims::AuthToken(ref auth_payload) = payload {
+            if auth_payload.check_in_blacklist(state).await? {
+                return Err(errors::ApiErrorResponse::InvalidJwtToken.into());
+            }
+            if let Some(required_permission) = self.permission {
+                let role_info = authorization::get_role_info(state, auth_payload).await?;
+                authorization::check_permission(required_permission, &role_info)?;
+            }
+        }
+
+        authorization::check_tenant(
+            payload.get_tenant_id().cloned(),
+            &state.session_state().tenant.tenant_id,
+        )?;
+
+        let profile_id = match &payload {
+            AuthOrEmbeddedClaims::AuthToken(_) => {
+                HeaderMapStruct::new(request_headers)
+                    .get_id_type_from_header::<id_type::ProfileId>(headers::X_PROFILE_ID)?
+            }
+            AuthOrEmbeddedClaims::EmbeddedToken(embedded_payload) => {
+                embedded_payload.profile_id.clone()
+            }
+        };
+
+        let key_store = state
+            .store()
+            .get_merchant_key_store_by_merchant_id(
+                payload.get_merchant_id(),
+                &state.store().get_master_key().to_vec().into(),
+            )
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::InvalidJwtToken)
+            .attach_printable("Failed to fetch merchant key store for the merchant id")?;
+
+        let profile = state
+            .store()
+            .find_business_profile_by_merchant_id_profile_id(
+                &key_store,
+                payload.get_merchant_id(),
+                &profile_id,
+            )
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::Unauthorized)?;
+
+        let merchant = state
+            .store()
+            .find_merchant_account_by_merchant_id(payload.get_merchant_id(), &key_store)
+            .await
+            .to_not_found_response(errors::ApiErrorResponse::InvalidJwtToken)
+            .attach_printable("Failed to fetch merchant account for the merchant id")?;
+
+        fp_utils::when(
+            self.merchant_id_from_route
+                .as_ref()
+                .is_some_and(|mid_from_route| payload.get_merchant_id() != mid_from_route),
+            || Err(report!(errors::ApiErrorResponse::InvalidJwtToken)),
+        )?;
+
+        check_merchant_access_for_jwt(
+            state,
+            merchant.merchant_account_type,
+            self.allow_connected,
+            self.allow_platform,
+        )?;
+
+        let initiator = if let AuthOrEmbeddedClaims::AuthToken(ref auth_payload) = payload {
+            Some(domain::Initiator::Jwt {
+                user_id: auth_payload.user_id.clone(),
+            })
+        } else {
+            Some(domain::Initiator::EmbeddedToken {
+                merchant_id: payload.get_merchant_id().clone(),
+            })
+        };
+
+        let platform = resolve_platform(
+            state,
+            request_headers,
+            merchant.clone(),
+            key_store,
+            initiator,
+        )
+        .await?;
+
+        let auth = AuthenticationData {
+            platform,
+            profile,
+            client_secret: None,
+        };
+        let auth_type = match payload {
+            AuthOrEmbeddedClaims::AuthToken(auth_payload) => AuthenticationType::MerchantJwt {
+                merchant_id: auth_payload.merchant_id,
+                user_id: Some(auth_payload.user_id),
+            },
+            AuthOrEmbeddedClaims::EmbeddedToken(embedded_payload) => {
+                AuthenticationType::EmbeddedJwt {
+                    merchant_id: embedded_payload.merchant_id,
+                    profile_id: embedded_payload.profile_id,
+                }
+            }
+        };
+        Ok((auth, auth_type))
+    }
+}
+
 pub trait ClientSecretFetch {
     fn get_client_secret(&self) -> Option<&String>;
 }
@@ -5655,13 +5883,6 @@ impl ClientSecretFetch for payments::PaymentsEligibilityRequest {
         self.client_secret
             .as_ref()
             .map(|client_secret| client_secret.peek())
-    }
-}
-
-#[cfg(feature = "v1")]
-impl ClientSecretFetch for api_models::blocklist::ListBlocklistQuery {
-    fn get_client_secret(&self) -> Option<&String> {
-        self.client_secret.as_ref()
     }
 }
 
@@ -5750,6 +5971,13 @@ impl ClientSecretFetch for api_models::subscription::ConfirmSubscriptionRequest 
 
 #[cfg(feature = "v1")]
 impl ClientSecretFetch for api_models::subscription::GetSubscriptionItemsQuery {
+    fn get_client_secret(&self) -> Option<&String> {
+        self.client_secret.as_ref().map(|s| s.as_string())
+    }
+}
+
+#[cfg(feature = "v1")]
+impl ClientSecretFetch for api_models::subscription::EstimateSubscriptionQuery {
     fn get_client_secret(&self) -> Option<&String> {
         self.client_secret.as_ref().map(|s| s.as_string())
     }
@@ -5868,7 +6096,7 @@ where
             .get_client_secret()
             .check_value_present("client_secret")
             .map_err(|_| errors::ApiErrorResponse::MissingRequiredField {
-                field_name: "client_secret",
+                field_name: "client_secret".into(),
             })?;
         return Ok((
             Box::new(HeaderAuth(PublishableKeyAuth {
@@ -5960,7 +6188,7 @@ where
                     api::AuthFlow::Client,
                 )),
                 (true, false) => Err(errors::ApiErrorResponse::MissingRequiredField {
-                    field_name: "client_secret",
+                    field_name: "client_secret".into(),
                 }
                 .into()),
                 (false, _) => Err(errors::ApiErrorResponse::Unauthorized.into()),
@@ -6154,23 +6382,116 @@ where
     }
 }
 
-pub async fn decode_jwt<T>(token: &str, state: &impl SessionStateInfo) -> RouterResult<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let conf = state.conf();
-    let secret = conf.secrets.get_inner().jwt_secret.peek().as_bytes();
+/// The decision `jsonwebtoken` reaches about a token, as something that can be
+/// recorded.
+///
+/// [`errors::ApiErrorResponse`] cannot be: it derives neither `Serialize` nor
+/// `Deserialize`, and it carries a hundred variants that have nothing to do with
+/// this call. `decode_jwt` collapses every `jsonwebtoken` failure into two of
+/// them anyway, so these are those two and nothing else crosses the boundary.
+/// The mapping back to the public error type stays in `decode_jwt`, unchanged.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error,
+)]
+pub enum JwtDecodeOutcome {
+    /// The token parsed and verified, but `exp` had passed.
+    #[error("expired JWT token")]
+    Expired,
+    /// Anything else: malformed, wrong algorithm, bad signature, absent claims.
+    #[error("invalid JWT token")]
+    Invalid,
+}
 
+/// Names a token to the recorder without putting the token in the tape.
+///
+/// A recording lives in object storage for weeks and is read by anyone who can
+/// read the bucket; a dashboard JWT stays valid for two days
+/// (`consts::JWT_TOKEN_TIME_IN_SECS`). The digest is enough to pair a replayed
+/// call with its recorded outcome and cannot be presented as a credential.
+#[cfg(feature = "deja")]
+fn token_digest(token: &str) -> String {
+    blake3::hash(token.as_bytes()).to_hex().to_string()
+}
+
+/// Verifies `token` and returns its claims, or which of the two failures it hit.
+///
+/// This is a boundary because the clock that decides the answer is not one deja
+/// can reach. `Validation::new` defaults `validate_exp` to true and
+/// `jsonwebtoken` reads `SystemTime::now()` itself, so the instrumented
+/// `date_time::now` boundary never sees it — the same bypass already recorded
+/// on the issuing side in `services::jwt::generate_exp`. API-key expiry has no
+/// such problem: it compares against `date_time::now()` and so already replays
+/// deterministically. Recording the decode outcome takes the clock out of the
+/// replay path entirely, rather than trying to hold it still.
+///
+/// The seam is deliberately this narrow. Recording the whole authentication
+/// result instead would also swallow the merchant-key-store, merchant-account,
+/// business-profile and decrypt calls that follow it, which are exactly the
+/// calls a replay exists to compare.
+///
+/// A token absent from the recording is decoded with only `validate_exp` off;
+/// the signature and required claims are still checked. Only a replay miss
+/// reaches this arm, so live traffic never accepts an expired token.
+///
+/// `pub` only so the boundary can be exercised from an integration test:
+/// `set_global_runtime_hook` is a one-shot `OnceLock`, so record and replay
+/// each need their own test binary, and a test binary cannot reach a private
+/// item. Callers should use [`decode_jwt`].
+#[doc(hidden)]
+#[cfg_attr(
+    feature = "deja",
+    deja::time(
+        component = "router::authentication",
+        operation = "decode_jwt",
+        codec = deja::codec::ResultCodec::<T, JwtDecodeOutcome>,
+        args = {
+            serde_json::json!({
+                "token_digest": token_digest(token),
+                // Two call sites may present the same token for different
+                // claims, and their recorded shapes differ. Identity says which.
+                "claims_type": std::any::type_name::<T>(),
+            })
+        },
+        on_miss = {
+            let mut without_the_clock = Validation::new(Algorithm::HS256);
+            without_the_clock.validate_exp = false;
+            let key = DecodingKey::from_secret(secret);
+            decode::<T>(token, &key, &without_the_clock)
+                .map(|decoded| decoded.claims)
+                .map_err(|_| report!(JwtDecodeOutcome::Invalid))
+        },
+    )
+)]
+pub fn decode_jwt_verified<T>(
+    token: &str,
+    secret: &[u8],
+) -> common_utils::errors::CustomResult<T, JwtDecodeOutcome>
+where
+    T: Serialize + serde::de::DeserializeOwned,
+{
     let key = DecodingKey::from_secret(secret);
     decode::<T>(token, &key, &Validation::new(Algorithm::HS256))
         .map(|decoded| decoded.claims)
         .map_err(|e| {
             if e.kind() == &ExpiredSignature {
-                report!(errors::ApiErrorResponse::ExpiredJwtToken)
+                report!(JwtDecodeOutcome::Expired)
             } else {
-                report!(errors::ApiErrorResponse::InvalidJwtToken)
+                report!(JwtDecodeOutcome::Invalid)
             }
         })
+}
+
+pub async fn decode_jwt<T>(token: &str, state: &impl SessionStateInfo) -> RouterResult<T>
+where
+    T: Serialize + serde::de::DeserializeOwned,
+{
+    let conf = state.conf();
+    let secret = conf.secrets.get_inner().jwt_secret.peek().as_bytes();
+
+    decode_jwt_verified::<T>(token, secret).map_err(|report| match report.current_context() {
+        JwtDecodeOutcome::Expired => report!(errors::ApiErrorResponse::ExpiredJwtToken),
+        JwtDecodeOutcome::Invalid => report!(errors::ApiErrorResponse::InvalidJwtToken),
+    })
 }
 
 pub fn get_api_key(headers: &HeaderMap) -> RouterResult<&str> {

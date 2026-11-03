@@ -21,6 +21,7 @@ use error_stack::{report, ResultExt};
 use hyperswitch_domain_models::payment_method_data::{
     NetworkTokenDetails, NetworkTokenDetailsPaymentMethod,
 };
+use hyperswitch_interfaces::consts::USER_AGENT;
 use hyperswitch_masking::{ErasedMaskSerialize, ExposeInterface, Mask, PeekInterface, Secret};
 use josekit::jwe;
 
@@ -87,6 +88,7 @@ async fn call_network_token_service(
     url: &str,
     body: Option<RequestContent>,
     operation_tag: &str,
+    option_timeout_secs: Option<u64>,
 ) -> CustomResult<Result<Response, Response>, errors::NetworkTokenizationError> {
     let mut request = services::Request::new(method, url);
     request.add_header(headers::CONTENT_TYPE, "application/json".into());
@@ -98,6 +100,7 @@ async fn call_network_token_service(
             .clone()
             .into_masked(),
     );
+    request.add_header(headers::USER_AGENT, USER_AGENT.to_string().into());
     request.add_default_headers();
 
     if let Some(body_content) = body {
@@ -110,7 +113,7 @@ async fn call_network_token_service(
         request
     );
 
-    services::call_connector_api(state, request, operation_tag)
+    services::call_connector_api(state, request, operation_tag, option_timeout_secs)
         .await
         .change_context(errors::NetworkTokenizationError::ApiError)
 }
@@ -140,7 +143,7 @@ pub async fn mk_tokenization_req(
     .attach_printable("Error on jwe encrypt")?;
 
     let order_data = pm_types::OrderData {
-        consent_id: uuid::Uuid::new_v4().to_string(),
+        consent_id: common_utils::generate_uuid_v4().to_string(),
         customer_id,
     };
 
@@ -164,6 +167,7 @@ pub async fn mk_tokenization_req(
         tokenization_service.generate_token_url.as_str(),
         Some(RequestContent::Json(Box::new(api_payload))),
         "generate_token",
+        None,
     )
     .await;
 
@@ -244,6 +248,7 @@ pub async fn make_nt_eligibility_call(
         &url_string,
         None,
         "fetch_nt_eligibility",
+        None,
     )
     .await;
 
@@ -310,7 +315,7 @@ pub async fn generate_network_token(
     .attach_printable("Error on jwe encrypt")?;
 
     let order_data = pm_types::OrderData {
-        consent_id: uuid::Uuid::new_v4().to_string(),
+        consent_id: common_utils::generate_uuid_v4().to_string(),
         customer_id,
     };
 
@@ -334,6 +339,7 @@ pub async fn generate_network_token(
         tokenization_service.generate_token_url.as_str(),
         Some(RequestContent::Json(Box::new(api_payload))),
         "generate_token",
+        None,
     )
     .await;
 
@@ -413,7 +419,7 @@ pub async fn make_card_network_tokenization_request(
 
     let payload_bytes = payload.as_bytes();
     if let Some(network_tokenization_service) = &state.conf.network_tokenization_service {
-        record_operation_time(
+        Box::pin(record_operation_time(
             async {
                 mk_tokenization_req(
                     state,
@@ -428,7 +434,7 @@ pub async fn make_card_network_tokenization_request(
             },
             &metrics::GENERATE_NETWORK_TOKEN_TIME,
             router_env::metric_attributes!(("locker", "rust")),
-        )
+        ))
         .await
     } else {
         Err(errors::NetworkTokenizationError::NetworkTokenizationServiceNotConfigured)
@@ -465,7 +471,7 @@ pub async fn make_card_network_tokenization_request(
         )),
     }?;
 
-    let (resp, network_token_req_ref_id) = record_operation_time(
+    let (resp, network_token_req_ref_id) = Box::pin(record_operation_time(
         async {
             generate_network_token(
                 state,
@@ -478,7 +484,7 @@ pub async fn make_card_network_tokenization_request(
         },
         &metrics::GENERATE_NETWORK_TOKEN_TIME,
         router_env::metric_attributes!(("locker", "rust")),
-    )
+    ))
     .await?;
 
     let network_token_details = NetworkTokenDetails {
@@ -515,6 +521,12 @@ pub async fn get_network_token(
         .unwrap_or(serde_json::json!({ "error": "failed to mask serialize"}));
     logger::info!(raw_network_token_service_request=?masked_request_body);
 
+    // Bound the fetch so a slow tokenization service does not block the payment; on timeout the
+    // caller falls back to the card details from the locker. The budget is resolved from
+    // superposition (`network_token_fetch_timeout_in_secs`) with database fallback.
+    let fetch_timeout_in_secs =
+        payment_methods::utils::get_network_token_fetch_timeout_in_secs(state).await;
+
     let response = call_network_token_service(
         state,
         tokenization_service,
@@ -522,6 +534,7 @@ pub async fn get_network_token(
         tokenization_service.fetch_token_url.as_str(),
         Some(RequestContent::Json(Box::new(payload))),
         "get_network_token",
+        Some(fetch_timeout_in_secs),
     )
     .await;
 
@@ -582,6 +595,7 @@ pub async fn get_network_token(
         tokenization_service.fetch_token_url.as_str(),
         Some(RequestContent::Json(Box::new(payload))),
         "get_network_token",
+        None,
     )
     .await;
 
@@ -623,34 +637,35 @@ pub async fn get_token_from_tokenization_service(
     network_token_requestor_ref_id: String,
     pm_data: &domain::PaymentMethod,
 ) -> errors::RouterResult<domain::NetworkTokenData> {
-    let token_response =
-        if let Some(network_tokenization_service) = &state.conf.network_tokenization_service {
-            record_operation_time(
+    let token_response = if let Some(network_tokenization_service) =
+        &state.conf.network_tokenization_service
+    {
+        Box::pin(record_operation_time(
                 async {
                     get_network_token(
-                state,
-                pm_data.customer_id.clone().get_required_value("customer_id")?,
-                network_token_requestor_ref_id,
-                network_tokenization_service.get_inner(),
-            )
-            .await
-            .inspect_err(
-                |e| logger::error!(error=?e, "Error while fetching token from tokenization service")
-            )
-            .change_context(errors::ApiErrorResponse::InternalServerError)
-            .attach_printable("Fetch network token failed")
+                        state,
+                        pm_data.customer_id.clone().get_required_value("customer_id")?,
+                        network_token_requestor_ref_id,
+                        network_tokenization_service.get_inner(),
+                    )
+                    .await
+                    .inspect_err(|e| {
+                        logger::error!(error=?e, "Error while fetching token from tokenization service")
+                    })
+                    .change_context(errors::ApiErrorResponse::InternalServerError)
+                    .attach_printable("Fetch network token failed")
                 },
                 &metrics::FETCH_NETWORK_TOKEN_TIME,
                 &[],
-            )
+            ))
             .await
-        } else {
-            Err(errors::NetworkTokenizationError::NetworkTokenizationServiceNotConfigured)
-                .inspect_err(|err| {
-                    logger::error!(error=? err);
-                })
-                .change_context(errors::ApiErrorResponse::InternalServerError)
-        }?;
+    } else {
+        Err(errors::NetworkTokenizationError::NetworkTokenizationServiceNotConfigured)
+            .inspect_err(|err| {
+                logger::error!(error=? err);
+            })
+            .change_context(errors::ApiErrorResponse::InternalServerError)
+    }?;
 
     let token_decrypted = pm_data
         .network_token_payment_method_data
@@ -860,6 +875,7 @@ pub async fn check_token_status_with_tokenization_service(
         tokenization_service.check_token_status_url.as_str(),
         Some(RequestContent::Json(Box::new(payload))),
         "check_token_status",
+        None,
     )
     .await;
     let res = response
@@ -927,6 +943,7 @@ pub async fn check_token_status_with_tokenization_service(
         tokenization_service.check_token_status_url.as_str(),
         Some(RequestContent::Json(Box::new(payload))),
         "check_token_status",
+        None,
     )
     .await;
     let res = response
@@ -1086,6 +1103,7 @@ pub async fn delete_network_token_from_tokenization_service(
         tokenization_service.delete_token_url.as_str(),
         Some(RequestContent::Json(Box::new(payload))),
         "delete_network_token",
+        None,
     )
     .await;
     let res = response
@@ -1186,6 +1204,7 @@ pub async fn fetch_altid_and_cryptogram(
         tokenization_service.fetch_altid_url.as_str(),
         Some(RequestContent::Json(Box::new(payload))),
         "fetch_altid",
+        None,
     )
     .await;
 
@@ -1277,7 +1296,7 @@ pub async fn get_altid_for_card(
                 auth_ref_number,
             };
 
-            let altid_response = record_operation_time(
+            let altid_response = Box::pin(record_operation_time(
                 async {
                     fetch_altid_and_cryptogram(
                         state,
@@ -1290,7 +1309,7 @@ pub async fn get_altid_for_card(
                 },
                 &metrics::FETCH_ALTID_TIME,
                 router_env::metric_attributes!(("service", "altid")),
-            )
+            ))
             .await?;
 
             Ok(altid_response.into())
@@ -1315,11 +1334,13 @@ pub async fn evaluate_and_fetch_altid(
         (payment_method_data, currency, is_guest_checkout)
     {
         match AltIdDecision::evaluate(state, card, business_profile, *connector) {
-            AltIdDecision::Proceed => get_altid_for_card(state, card, amount, currency, None)
-                .await
-                .change_context(errors::ApiErrorResponse::InternalServerError)
-                .attach_printable("Failed to fetch Alt-ID for guest checkout")
-                .map(Some),
+            AltIdDecision::Proceed => {
+                Box::pin(get_altid_for_card(state, card, amount, currency, None))
+                    .await
+                    .change_context(errors::ApiErrorResponse::InternalServerError)
+                    .attach_printable("Failed to fetch Alt-ID for guest checkout")
+                    .map(Some)
+            }
             AltIdDecision::Skip => Ok(None),
             AltIdDecision::Error => Err(report!(errors::ApiErrorResponse::InternalServerError))
                 .attach_printable(

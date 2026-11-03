@@ -2,6 +2,7 @@ use api_models::{enums::FrmSuggestion, payments::PaymentsConfirmIntentRequest};
 use async_trait::async_trait;
 use common_utils::{ext_traits::Encode, fp_utils::when, id_type, types::keymanager::ToEncryptable};
 use error_stack::ResultExt;
+use futures::FutureExt;
 use hyperswitch_domain_models::{mandates, payments::PaymentConfirmData};
 use hyperswitch_interfaces::api::ConnectorSpecifications;
 use hyperswitch_masking::{ExposeOptionInterface, PeekInterface};
@@ -62,7 +63,7 @@ impl ValidateStatusForOperation for PaymentIntentConfirm {
             | common_enums::IntentStatus::Review => {
                 Err(errors::ApiErrorResponse::PaymentUnexpectedState {
                     current_flow: format!("{self:?}"),
-                    field_name: "status".to_string(),
+                    field_name: "status".into(),
                     current_value: intent_status.to_string(),
                     states: ["requires_payment_method".to_string()].join(", "),
                 })
@@ -166,7 +167,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, PaymentConfirmData<F>, PaymentsConfir
         let db = &*state.store;
         let key_manager_state = &state.into();
 
-        let storage_scheme = platform.get_processor().get_account().storage_scheme;
+        let storage_scheme = platform.get_processor().get_storage_scheme();
 
         let payment_intent = db
             .find_payment_intent_by_id(
@@ -210,7 +211,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, PaymentConfirmData<F>, PaymentsConfir
             hyperswitch_domain_models::payments::payment_attempt::PaymentAttempt::create_domain_model(
                 &payment_intent,
                 cell_id,
-                storage_scheme,
+                storage_scheme.inner(),
                 request,
                 encrypted_data,
                 platform.get_initiator(),
@@ -241,7 +242,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, PaymentConfirmData<F>, PaymentsConfir
                 ),
                 || {
                     Err(errors::ApiErrorResponse::InvalidDataValue {
-                        field_name: "payment_method_data",
+                        field_name: "payment_method_data".into(),
                     })
                     .attach_printable(
                         "payment_method_data should be card_token when a token is passed",
@@ -304,7 +305,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, PaymentConfirmData<F>, PaymentsConfir
         let db = &*state.store;
         let key_manager_state = &state.into();
 
-        let storage_scheme = platform.get_processor().get_account().storage_scheme;
+        let storage_scheme = platform.get_processor().get_storage_scheme();
 
         let payment_intent = db
             .find_payment_intent_by_id(
@@ -348,7 +349,7 @@ impl<F: Send + Clone + Sync> GetTracker<F, PaymentConfirmData<F>, PaymentsConfir
             crate::core::split_payments::create_domain_model_for_split_payment(
                 &payment_intent,
                 cell_id,
-                storage_scheme,
+                storage_scheme.inner(),
                 request,
                 encrypted_data,
                 pm_split_amount_data.split_amount,
@@ -452,24 +453,27 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsConfirmIntentRequest, PaymentConf
         provider: &domain::Provider,
         customer: Option<domain::Customer>,
         updated_customer: Option<storage::CustomerUpdate>,
-    ) -> RouterResult<()> {
-        if let Some((customer, updated_customer)) = customer.zip(updated_customer) {
-            let customer_id = customer.get_id().clone();
+    ) -> RouterResult<Option<domain::Customer>> {
+        match (customer, updated_customer) {
+            (Some(customer), Some(updated_customer)) => {
+                let customer_id = customer.get_id().clone();
 
-            let _updated_customer = state
-                .store
-                .update_customer_by_global_id(
-                    &customer_id,
-                    customer,
-                    updated_customer,
-                    provider.get_key_store(),
-                    provider.get_account().storage_scheme,
-                )
-                .await
-                .change_context(errors::ApiErrorResponse::InternalServerError)
-                .attach_printable("Failed to update customer during `update_customer`")?;
+                state
+                    .store
+                    .update_customer_by_global_id(
+                        &customer_id,
+                        customer,
+                        updated_customer,
+                        provider.get_key_store(),
+                        provider.get_account().storage_scheme,
+                    )
+                    .await
+                    .change_context(errors::ApiErrorResponse::InternalServerError)
+                    .attach_printable("Failed to update customer during `update_customer`")
+                    .map(Some)
+            }
+            (customer, _) => Ok(customer),
         }
-        Ok(())
     }
 
     async fn run_decision_manager<'a>(
@@ -561,18 +565,18 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsConfirmIntentRequest, PaymentConf
                 Some(domain::payment_method_data::PaymentMethodData::CardToken(card_token)),
                 None,
             ) => {
-                let (payment_method, vault_data) = Box::pin(
+                let (payment_method, vault_data) =
                     payment_methods::vault::retrieve_payment_method_from_vault_using_payment_token(
                         state,
                         platform,
                         business_profile,
                         payment_token,
                         &payment_data.payment_attempt.payment_method_type,
-                    ),
-                )
-                .await
-                .change_context(errors::ApiErrorResponse::InternalServerError)
-                .attach_printable("Failed to retrieve payment method from vault")?;
+                    )
+                    .boxed()
+                    .await
+                    .change_context(errors::ApiErrorResponse::InternalServerError)
+                    .attach_printable("Failed to retrieve payment method from vault")?;
 
                 let (card_cvc, card_holder_name) = {
                     (
@@ -580,16 +584,16 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsConfirmIntentRequest, PaymentConf
                             .card_cvc
                             .clone()
                             .ok_or(errors::ApiErrorResponse::InvalidDataValue {
-                                field_name: "card_cvc",
+                                field_name: "card_cvc".into(),
                             })
-                            .or(
-                                payment_methods::vault::retrieve_and_delete_cvc_from_payment_token(
-                                    state,
-                                    &payment_method.get_id().get_string_repr().to_string(),
-                                    platform.get_processor().get_key_store(),
-                                )
-                                .await,
+                            .or(payment_methods::vault::retrieve_cvc_from_payment_token(
+                                state,
+                                &payment_method.get_id().get_string_repr().to_string(),
+                                platform.get_processor().get_key_store(),
+                                payment_methods::vault::CvcReadMode::ReadAndDelete,
                             )
+                            .boxed()
+                            .await)
                             .attach_printable("card_cvc not provided")?,
                         card_token.card_holder_name.clone(),
                     )
@@ -617,7 +621,7 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsConfirmIntentRequest, PaymentConf
             }
 
             (Some(_payment_token), _, _) => Err(errors::ApiErrorResponse::InvalidDataValue {
-                field_name: "payment_method_data",
+                field_name: "payment_method_data".into(),
             })
             .attach_printable("payment_method_data should be card_token when a token is passed")?,
 
@@ -626,7 +630,7 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsConfirmIntentRequest, PaymentConf
                     Some(customer_id) => customer_id.clone(),
                     None => {
                         return Err(errors::ApiErrorResponse::InvalidDataValue {
-                            field_name: "customer_id",
+                            field_name: "customer_id".into(),
                         })
                         .attach_printable("customer_id not provided");
                     }
@@ -646,15 +650,16 @@ impl<F: Clone + Send + Sync> Domain<F, PaymentsConfirmIntentRequest, PaymentConf
                     storage_type: common_enums::StorageType::Persistent, //since customer acceptance is present, we always store it persistently
                 };
 
-                let (_pm_response, payment_method) =
-                    Box::pin(payment_methods::create_payment_method_core(
-                        state,
-                        &state.get_req_state(),
-                        req,
-                        platform,
-                        business_profile,
-                    ))
-                    .await?;
+                let (_pm_response, payment_method) = payment_methods::create_payment_method_core(
+                    state,
+                    &state.get_req_state(),
+                    req,
+                    platform,
+                    business_profile,
+                    None,
+                )
+                .boxed()
+                .await?;
 
                 // Don't modify payment_method_data in this case, only the payment_method and payment_method_id
                 (Some(payment_method), None)
@@ -765,7 +770,7 @@ impl<F: Clone + Sync> UpdateTracker<F, PaymentConfirmData<F>, PaymentsConfirmInt
         F: 'b + Send,
     {
         let db = &*state.store;
-        let storage_scheme = processor.get_account().storage_scheme;
+        let storage_scheme = processor.get_storage_scheme();
         let key_store = processor.get_key_store();
 
         let intent_status = common_enums::IntentStatus::Processing;
@@ -796,7 +801,7 @@ impl<F: Clone + Sync> UpdateTracker<F, PaymentConfirmData<F>, PaymentsConfirmInt
         let payment_intent_update =
             hyperswitch_domain_models::payments::payment_intent::PaymentIntentUpdate::ConfirmIntent {
                 status: intent_status,
-                updated_by: storage_scheme.to_string(),
+                updated_by: storage_scheme.inner().to_string(),
                 active_attempt_id: Some(payment_data.payment_attempt.id.clone()),
             };
 
@@ -818,7 +823,7 @@ impl<F: Clone + Sync> UpdateTracker<F, PaymentConfirmData<F>, PaymentsConfirmInt
             Some(payment_method) => {
                 hyperswitch_domain_models::payments::payment_attempt::PaymentAttemptUpdate::ConfirmIntentTokenized {
                     status: attempt_status,
-                    updated_by: storage_scheme.to_string(),
+                    updated_by: storage_scheme.inner().to_string(),
                     connector,
                     merchant_connector_id: merchant_connector_id.ok_or_else( || {
                         error_stack::report!(errors::ApiErrorResponse::InternalServerError)
@@ -832,7 +837,7 @@ impl<F: Clone + Sync> UpdateTracker<F, PaymentConfirmData<F>, PaymentsConfirmInt
             None => {
                 hyperswitch_domain_models::payments::payment_attempt::PaymentAttemptUpdate::ConfirmIntent {
                     status: attempt_status,
-                    updated_by: storage_scheme.to_string(),
+                    updated_by: storage_scheme.inner().to_string(),
                     connector,
                     merchant_connector_id,
                     authentication_type,

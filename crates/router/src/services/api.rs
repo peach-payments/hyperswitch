@@ -22,13 +22,14 @@ pub use common_utils::request::{ContentType, Method, Request, RequestBuilder};
 use common_utils::{
     consts::{DEFAULT_TENANT, TENANT_HEADER, X_HS_LATENCY},
     errors::{ErrorSwitch, ReportSwitchExt},
+    link_utils::CspNonce,
 };
 use error_stack::{Report, ResultExt};
 use hyperswitch_domain_models::router_data_v2::flow_common_types as common_types;
 pub use hyperswitch_domain_models::{
     api::{
         ApplicationResponse, GenericExpiredLinkData, GenericLinkFormData, GenericLinkStatusData,
-        GenericLinks, PaymentLinkAction, RedirectionFormData,
+        GenericLinks, GenericLinksData, PaymentLinkAction, RedirectionFormData, WebhookResponse,
     },
     payment_method_data::PaymentMethodData,
     router_response_types::RedirectForm,
@@ -99,6 +100,8 @@ pub type BoxedFilesConnectorIntegrationInterface<T, Req, Resp> =
     BoxedConnectorIntegrationInterface<T, common_types::FilesFlowData, Req, Resp>;
 pub type BoxedRevenueRecoveryRecordBackInterface<T, Req, Res> =
     BoxedConnectorIntegrationInterface<T, common_types::InvoiceRecordBackData, Req, Res>;
+pub type BoxedRevenueRecoveryDisputeRecordBackInterface<T, Req, Res> =
+    BoxedConnectorIntegrationInterface<T, common_types::DisputeRecordBackData, Req, Res>;
 pub type BoxedGetSubscriptionPlansInterface<T, Req, Res> =
     BoxedConnectorIntegrationInterface<T, common_types::GetSubscriptionItemsData, Req, Res>;
 pub type BoxedGetSubscriptionPlanPricesInterface<T, Req, Res> =
@@ -190,7 +193,7 @@ where
     let mut app_state = state.get_ref().clone();
 
     let start_instant = Instant::now();
-    let serialized_request = hyperswitch_masking::masked_serialize(&payload)
+    let mut serialized_request = hyperswitch_masking::masked_serialize(&payload)
         .attach_printable("Failed to serialize json request")
         .change_context(errors::ApiErrorResponse::InternalServerError.switch())?;
 
@@ -236,6 +239,7 @@ where
             .switch()
         })?;
     session_state.add_request_id(request_id.clone());
+    session_state.start_read_ledger(flow.to_string());
     let mut request_state = session_state.get_req_state();
 
     request_state.event_context.record_info(request_id.clone());
@@ -316,6 +320,24 @@ where
                     .conf
                     .proxy_status_mapping
                     .extract_connector_http_status_code(headers);
+            } else if let ApplicationResponse::IncomingWebhookEvent { response, metadata } = res {
+                serialized_request = metadata.serialized_request.peek().clone();
+
+                if let Some(tracker_data) = &metadata.webhook_tracker_data {
+                    serialized_response = Some(tracker_data.clone());
+                }
+
+                if let WebhookResponse::JsonWithHeaders((_, headers)) = response.as_ref() {
+                    if let Some((_, value)) = headers.iter().find(|(key, _)| key == X_HS_LATENCY) {
+                        if let Ok(external_latency) = value.clone().into_inner().parse::<u128>() {
+                            overhead_latency.replace(external_latency);
+                        }
+                    }
+                    extracted_status_code = state
+                        .conf
+                        .proxy_status_mapping
+                        .extract_connector_http_status_code(headers);
+                }
             }
             event_type = res.get_api_event_type().or(event_type);
 
@@ -347,6 +369,13 @@ where
         state.infra_components.as_ref(),
     );
 
+    let auth_user_id = auth_type.get_user_id();
+
+    // The header still holds raw connector time here; it is only turned into Hyperswitch's own
+    // overhead later, on the wire.
+    let hs_latency =
+        overhead_latency.map(|overhead_latency| request_duration.saturating_sub(overhead_latency));
+
     let api_event = ApiEvent::new(
         tenant_id,
         Some(merchant_id.clone()),
@@ -356,8 +385,9 @@ where
         status_code,
         serialized_request,
         serialized_response,
-        overhead_latency,
+        hs_latency,
         auth_type,
+        auth_user_id,
         error,
         event_type.unwrap_or(ApiEventsType::Miscellaneous),
         request,
@@ -432,6 +462,12 @@ where
     )
     .await
     .map(|response| {
+        let response = match response {
+            ApplicationResponse::IncomingWebhookEvent {
+                response: inner, ..
+            } => ApplicationResponse::from(*inner),
+            other => other,
+        };
         logger::info!(api_response =? response);
         response
     });
@@ -479,22 +515,32 @@ where
 
         Ok(ApplicationResponse::GenericLinkForm(boxed_generic_link_data)) => {
             let link_type = boxed_generic_link_data.data.to_string();
+            let is_secure_payment_link = matches!(
+                boxed_generic_link_data.data,
+                GenericLinksData::SecurePaymentLink(_)
+            );
+            let csp_nonce = CspNonce::generate();
             match build_generic_link_html(
                 boxed_generic_link_data.data,
                 boxed_generic_link_data.locale,
+                &csp_nonce,
             ) {
                 Ok(rendered_html) => {
-                    let headers = if !boxed_generic_link_data.allowed_domains.is_empty() {
+                    let mut csp_directives = Vec::new();
+                    if !boxed_generic_link_data.allowed_domains.is_empty() {
                         let domains_str = boxed_generic_link_data
                             .allowed_domains
                             .into_iter()
                             .collect::<Vec<String>>()
                             .join(" ");
-                        let csp_header = format!("frame-ancestors 'self' {domains_str};");
-                        Some(HashSet::from([("content-security-policy", csp_header)]))
-                    } else {
-                        None
-                    };
+                        csp_directives.push(format!("frame-ancestors 'self' {domains_str};"));
+                    }
+                    if is_secure_payment_link {
+                        csp_directives.push(get_payment_link_csp(&csp_nonce));
+                    }
+                    let headers = (!csp_directives.is_empty()).then(|| {
+                        HashSet::from([("content-security-policy", csp_directives.join(" "))])
+                    });
                     http_response_html_data(rendered_html, headers)
                 }
                 Err(_) => http_response_err(format!("Error while rendering {link_type} HTML page")),
@@ -502,10 +548,13 @@ where
         }
 
         Ok(ApplicationResponse::PaymentLinkForm(boxed_payment_link_data)) => {
+            let csp_nonce = CspNonce::generate();
+            let mut headers = HashSet::new();
+            headers.insert(("content-security-policy", get_payment_link_csp(&csp_nonce)));
             match *boxed_payment_link_data {
                 PaymentLinkAction::PaymentLinkFormData(payment_link_data) => {
-                    match build_payment_link_html(payment_link_data) {
-                        Ok(rendered_html) => http_response_html_data(rendered_html, None),
+                    match build_payment_link_html(payment_link_data, &csp_nonce) {
+                        Ok(rendered_html) => http_response_html_data(rendered_html, Some(headers)),
                         Err(_) => http_response_err(
                             r#"{
                                 "error": {
@@ -516,8 +565,8 @@ where
                     }
                 }
                 PaymentLinkAction::PaymentLinkStatus(payment_link_data) => {
-                    match get_payment_link_status(payment_link_data) {
-                        Ok(rendered_html) => http_response_html_data(rendered_html, None),
+                    match get_payment_link_status(payment_link_data, &csp_nonce) {
+                        Ok(rendered_html) => http_response_html_data(rendered_html, Some(headers)),
                         Err(_) => http_response_err(
                             r#"{
                                 "error": {
@@ -558,6 +607,7 @@ where
                 ),
             }
         }
+        Ok(ApplicationResponse::IncomingWebhookEvent { .. }) => http_response_ok(),
         Err(error) => log_and_return_error_response(error),
     };
 
@@ -608,7 +658,9 @@ pub fn http_response_json_with_headers<T: body::MessageBody + 'static>(
         if header_name == X_HS_LATENCY {
             if let Some(request_duration) = request_duration {
                 if let Ok(external_latency) = header_value.parse::<u128>() {
-                    let updated_duration = request_duration.as_millis() - external_latency;
+                    let updated_duration = request_duration
+                        .as_millis()
+                        .saturating_sub(external_latency);
                     header_value = updated_duration.to_string();
                 }
             }
@@ -1684,52 +1736,55 @@ pub fn build_redirection_form(
                                 form.submit();
                             }}
 
+                            var allowedHost = new URL("{base_url}").origin;
                             window.addEventListener("message", function(event) {{
-                                try {{
-                                    var data = JSON.parse(event.data);
-                                    var responseForm = document.createElement('form');
-                                    responseForm.action=window.location.pathname.replace(
-                                        new RegExp("payments/redirect/(\\w+)/(\\w+)/\\w+"),
-                                        "payments/$1/$2/redirect/complete/worldpayxml"
-                                    );
-                                    responseForm.method='POST';
+                                if (event.origin === allowedHost) {{
+                                    try {{
+                                        var data = JSON.parse(event.data);
+                                        var responseForm = document.createElement('form');
+                                        responseForm.action=window.location.pathname.replace(
+                                            new RegExp("payments/redirect/([^/]+)/([^/]+)/[^/]+"),
+                                            "payments/$1/$2/redirect/complete/worldpayxml"
+                                        );
+                                        responseForm.method='POST';
 
-                                    var item1=document.createElement('input');
-                                    item1.type='hidden';
-                                    item1.name='SessionId';
-                                    item1.value=data.Payload.SessionId;
-                                    responseForm.appendChild(item1);
+                                        var item1=document.createElement('input');
+                                        item1.type='hidden';
+                                        item1.name='SessionId';
+                                        item1.value=data.Payload.SessionId;
+                                        responseForm.appendChild(item1);
 
-                                    var item2=document.createElement('input');
-                                    item2.type='hidden';
-                                    item2.name='ActionCode';
-                                    item2.value=data.Payload.ActionCode;
-                                    responseForm.appendChild(item2);
+                                        var item2=document.createElement('input');
+                                        item2.type='hidden';
+                                        item2.name='ActionCode';
+                                        item2.value=data.Payload.ActionCode;
+                                        responseForm.appendChild(item2);
 
-                                    document.body.appendChild(responseForm);
-                                    responseForm.submit();
-                                }} catch (e) {{
-                                    var responseForm = document.createElement('form');
-                                    responseForm.action=window.location.pathname.replace(
-                                        new RegExp("payments/redirect/(\\w+)/(\\w+)/\\w+"),
-                                        "payments/$1/$2/redirect/complete/worldpayxml"
-                                    );
-                                    responseForm.method='POST';
+                                        document.body.appendChild(responseForm);
+                                        responseForm.submit();
+                                    }} catch (e) {{
+                                        var responseForm = document.createElement('form');
+                                        responseForm.action=window.location.pathname.replace(
+                                            new RegExp("payments/redirect/([^/]+)/([^/]+)/[^/]+"),
+                                            "payments/$1/$2/redirect/complete/worldpayxml"
+                                        );
+                                        responseForm.method='POST';
 
-                                    var item1=document.createElement('input');
-                                    item1.type='hidden';
-                                    item1.name='SessionId';
-                                    item1.value=null;
-                                    responseForm.appendChild(item1);
+                                        var item1=document.createElement('input');
+                                        item1.type='hidden';
+                                        item1.name='SessionId';
+                                        item1.value=null;
+                                        responseForm.appendChild(item1);
 
-                                    var item2=document.createElement('input');
-                                    item2.type='hidden';
-                                    item2.name='ActionCode';
-                                    item2.value="FAILURE";
-                                    responseForm.appendChild(item2);
+                                        var item2=document.createElement('input');
+                                        item2.type='hidden';
+                                        item2.name='ActionCode';
+                                        item2.value="FAILURE";
+                                        responseForm.appendChild(item2);
 
-                                    document.body.appendChild(responseForm);
-                                    responseForm.submit();
+                                        document.body.appendChild(responseForm);
+                                        responseForm.submit();
+                                    }}
                                 }}
                             }}, false);
                         </script>"#)))
@@ -1790,10 +1845,28 @@ pub fn build_redirection_form(
     }
 }
 
+/// Only nonced scripts and the scripts they load may run; `https:` is a fallback for browsers
+/// without `'strict-dynamic'`.
+fn get_payment_link_csp(csp_nonce: &CspNonce) -> String {
+    let csp_nonce = csp_nonce.peek();
+    format!(
+        "default-src 'self' https:; \
+         script-src 'nonce-{csp_nonce}' 'strict-dynamic' https:; \
+         style-src 'self' 'unsafe-inline' https:; \
+         img-src * data: blob:; \
+         font-src * data:; \
+         connect-src *; \
+         frame-src *; \
+         object-src 'none'; \
+         base-uri 'none';"
+    )
+}
+
 pub fn build_payment_link_html(
     payment_link_data: PaymentLinkFormData,
+    csp_nonce: &CspNonce,
 ) -> CustomResult<String, errors::ApiErrorResponse> {
-    payment_link::build_payment_link_html(payment_link_data)
+    payment_link::build_payment_link_html(payment_link_data, Some(csp_nonce))
         .map_err(|e| {
             logger::error!("Failed to build payment link HTML: {:?}", e);
             errors::ApiErrorResponse::InternalServerError
@@ -1803,8 +1876,9 @@ pub fn build_payment_link_html(
 
 pub fn build_secure_payment_link_html(
     payment_link_data: PaymentLinkFormData,
+    csp_nonce: &CspNonce,
 ) -> CustomResult<String, errors::ApiErrorResponse> {
-    payment_link::build_secure_payment_link_html(payment_link_data)
+    payment_link::build_secure_payment_link_html(payment_link_data, Some(csp_nonce))
         .map_err(|e| {
             logger::error!("Failed to build secure payment link HTML: {:?}", e);
             errors::ApiErrorResponse::InternalServerError
@@ -1814,8 +1888,9 @@ pub fn build_secure_payment_link_html(
 
 pub fn get_payment_link_status(
     payment_link_data: PaymentLinkStatusData,
+    csp_nonce: &CspNonce,
 ) -> CustomResult<String, errors::ApiErrorResponse> {
-    payment_link::get_payment_link_status(payment_link_data)
+    payment_link::get_payment_link_status(payment_link_data, Some(csp_nonce))
         .map_err(|e| {
             logger::error!("Failed to get payment link status: {:?}", e);
             errors::ApiErrorResponse::InternalServerError

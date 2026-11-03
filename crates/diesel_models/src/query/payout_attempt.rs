@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use async_bb8_diesel::AsyncRunQueryDsl;
 use diesel::{
     associations::HasTable,
     query_dsl::methods::{DistinctDsl, FilterDsl, SelectDsl},
@@ -8,7 +7,7 @@ use diesel::{
 };
 use error_stack::{report, ResultExt};
 
-use super::generics;
+use super::generics::{self, db_metrics::DatabaseOperation};
 use crate::{
     enums,
     errors::DatabaseError,
@@ -17,29 +16,34 @@ use crate::{
         PayoutAttempt, PayoutAttemptNew, PayoutAttemptUpdate, PayoutAttemptUpdateInternal,
     },
     schema::{payout_attempt::dsl, payouts as payout_dsl},
-    Payouts, PgPooledConn, StorageResult,
+    DatabaseConnectionWithContext, Payouts, StorageResult,
 };
 
 impl PayoutAttemptNew {
-    pub async fn insert(self, conn: &PgPooledConn) -> StorageResult<PayoutAttempt> {
+    pub async fn insert(
+        self,
+        conn: &DatabaseConnectionWithContext<'_>,
+    ) -> StorageResult<PayoutAttempt> {
         generics::generic_insert(conn, self).await
     }
 
     pub async fn generate_drainer_insert_query(
         self,
-        conn: &mut PgPooledConn,
+        conn: &mut DatabaseConnectionWithContext<'_>,
     ) -> StorageResult<kv::SerializableQuery> {
-        kv::generate_insert_query(conn, self).await
+        kv::generate_insert_query(conn, self)
+            .await
+            .attach_printable("Failed to generate insert query for payout attempt")
     }
 }
 
 impl PayoutAttempt {
     pub async fn update_with_attempt_id(
         self,
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         payout_attempt_update: PayoutAttemptUpdate,
     ) -> StorageResult<Self> {
-        match generics::generic_update_with_unique_predicate_get_result::<
+        match Box::pin(generics::generic_update_with_unique_predicate_get_result::<
             <Self as HasTable>::Table,
             _,
             _,
@@ -50,7 +54,7 @@ impl PayoutAttempt {
                 .eq(self.payout_attempt_id.to_owned())
                 .and(dsl::merchant_id.eq(self.merchant_id.to_owned())),
             PayoutAttemptUpdateInternal::from(payout_attempt_update),
-        )
+        ))
         .await
         {
             Err(error) => match error.current_context() {
@@ -62,7 +66,7 @@ impl PayoutAttempt {
     }
 
     pub async fn find_by_merchant_id_payout_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         payout_id: &common_utils::id_type::PayoutId,
     ) -> StorageResult<Vec<Self>> {
@@ -84,7 +88,7 @@ impl PayoutAttempt {
     }
 
     pub async fn find_by_merchant_id_payout_id_payout_attempt_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         payout_id: &common_utils::id_type::PayoutId,
         payout_attempt_id: &str,
@@ -100,7 +104,7 @@ impl PayoutAttempt {
     }
 
     pub async fn find_by_merchant_id_payout_attempt_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         payout_attempt_id: &str,
     ) -> StorageResult<Self> {
@@ -114,7 +118,7 @@ impl PayoutAttempt {
     }
 
     pub async fn find_by_merchant_id_connector_payout_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         connector_payout_id: &str,
     ) -> StorageResult<Self> {
@@ -128,7 +132,7 @@ impl PayoutAttempt {
     }
 
     pub async fn find_by_merchant_id_merchant_order_reference_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id_input: &common_utils::id_type::MerchantId,
         merchant_order_reference_id_input: &str,
     ) -> StorageResult<Self> {
@@ -142,18 +146,23 @@ impl PayoutAttempt {
     }
 
     pub async fn update_by_merchant_id_payout_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         payout_id: &common_utils::id_type::PayoutId,
         payout: PayoutAttemptUpdate,
     ) -> StorageResult<Self> {
-        generics::generic_update_with_results::<<Self as HasTable>::Table, _, _, _>(
+        Box::pin(generics::generic_update_with_results::<
+            <Self as HasTable>::Table,
+            _,
+            _,
+            _,
+        >(
             conn,
             dsl::merchant_id
                 .eq(merchant_id.to_owned())
                 .and(dsl::payout_id.eq(payout_id.to_owned())),
             PayoutAttemptUpdateInternal::from(payout),
-        )
+        ))
         .await?
         .first()
         .cloned()
@@ -163,18 +172,23 @@ impl PayoutAttempt {
     }
 
     pub async fn update_by_merchant_id_payout_attempt_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         payout_attempt_id: &str,
         payout: PayoutAttemptUpdate,
     ) -> StorageResult<Self> {
-        generics::generic_update_with_results::<<Self as HasTable>::Table, _, _, _>(
+        Box::pin(generics::generic_update_with_results::<
+            <Self as HasTable>::Table,
+            _,
+            _,
+            _,
+        >(
             conn,
             dsl::merchant_id
                 .eq(merchant_id.to_owned())
                 .and(dsl::payout_attempt_id.eq(payout_attempt_id.to_owned())),
             PayoutAttemptUpdateInternal::from(payout),
-        )
+        ))
         .await?
         .first()
         .cloned()
@@ -184,7 +198,7 @@ impl PayoutAttempt {
     }
 
     pub async fn get_filters_for_payouts(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         payouts: &[Payouts],
         merchant_id: &common_utils::id_type::MerchantId,
     ) -> StorageResult<(
@@ -224,11 +238,11 @@ impl PayoutAttempt {
             .into_iter()
             .collect();
 
-        let filter_connector = filter
-            .clone()
-            .select(dsl::connector)
-            .distinct()
-            .get_results_async::<Option<String>>(conn)
+        let filter_connector = conn
+            .track_get_results::<<Self as HasTable>::Table, _, Option<String>>(
+                DatabaseOperation::Filter,
+                filter.clone().select(dsl::connector).distinct(),
+            )
             .await
             .change_context(DatabaseError::Others)
             .attach_printable("Error filtering records by connector")?
@@ -236,22 +250,28 @@ impl PayoutAttempt {
             .flatten()
             .collect::<Vec<String>>();
 
-        let filter_currency = payouts_filter
-            .clone()
-            .select(payout_dsl::destination_currency)
-            .distinct()
-            .get_results_async::<enums::Currency>(conn)
+        let filter_currency = conn
+            .track_get_results::<<Payouts as HasTable>::Table, _, enums::Currency>(
+                DatabaseOperation::Filter,
+                payouts_filter
+                    .clone()
+                    .select(payout_dsl::destination_currency)
+                    .distinct(),
+            )
             .await
             .change_context(DatabaseError::Others)
             .attach_printable("Error filtering records by currency")?
             .into_iter()
             .collect::<Vec<enums::Currency>>();
 
-        let filter_payout_method = payouts_filter
-            .clone()
-            .select(payout_dsl::payout_type)
-            .distinct()
-            .get_results_async::<Option<enums::PayoutType>>(conn)
+        let filter_payout_method = conn
+            .track_get_results::<<Payouts as HasTable>::Table, _, Option<enums::PayoutType>>(
+                DatabaseOperation::Filter,
+                payouts_filter
+                    .clone()
+                    .select(payout_dsl::payout_type)
+                    .distinct(),
+            )
             .await
             .change_context(DatabaseError::Others)
             .attach_printable("Error filtering records by payout type")?
@@ -271,7 +291,7 @@ impl PayoutAttempt {
 impl PayoutAttemptUpdate {
     pub async fn generate_drainer_update_query(
         self,
-        conn: &mut PgPooledConn,
+        conn: &mut DatabaseConnectionWithContext<'_>,
         payout_attempt_id: String,
         merchant_id: common_utils::id_type::MerchantId,
     ) -> StorageResult<kv::SerializableQuery> {
@@ -283,5 +303,6 @@ impl PayoutAttemptUpdate {
             PayoutAttemptUpdateInternal::from(self),
         )
         .await
+        .attach_printable("Failed to generate update query for payout attempt")
     }
 }

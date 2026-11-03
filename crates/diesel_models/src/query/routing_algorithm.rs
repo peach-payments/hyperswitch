@@ -1,4 +1,3 @@
-use async_bb8_diesel::AsyncRunQueryDsl;
 use diesel::{associations::HasTable, BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use error_stack::{report, ResultExt};
 use time::PrimitiveDateTime;
@@ -6,19 +5,19 @@ use time::PrimitiveDateTime;
 use crate::{
     enums,
     errors::DatabaseError,
-    query::generics,
+    query::generics::{self, db_metrics::DatabaseOperation},
     routing_algorithm::{RoutingAlgorithm, RoutingProfileMetadata},
     schema::routing_algorithm::dsl,
-    PgPooledConn, StorageResult,
+    DatabaseConnectionWithContext, StorageResult,
 };
 
 impl RoutingAlgorithm {
-    pub async fn insert(self, conn: &PgPooledConn) -> StorageResult<Self> {
+    pub async fn insert(self, conn: &DatabaseConnectionWithContext<'_>) -> StorageResult<Self> {
         generics::generic_insert(conn, self).await
     }
 
     pub async fn find_by_algorithm_id_merchant_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         algorithm_id: &common_utils::id_type::RoutingId,
         merchant_id: &common_utils::id_type::MerchantId,
     ) -> StorageResult<Self> {
@@ -32,7 +31,7 @@ impl RoutingAlgorithm {
     }
 
     pub async fn find_by_algorithm_id_processor_merchant_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         algorithm_id: &common_utils::id_type::RoutingId,
         processor_merchant_id: &common_utils::id_type::MerchantId,
     ) -> StorageResult<Self> {
@@ -46,7 +45,7 @@ impl RoutingAlgorithm {
     }
 
     pub async fn find_by_algorithm_id_profile_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         algorithm_id: &common_utils::id_type::RoutingId,
         profile_id: &common_utils::id_type::ProfileId,
     ) -> StorageResult<Self> {
@@ -60,11 +59,11 @@ impl RoutingAlgorithm {
     }
 
     pub async fn find_metadata_by_algorithm_id_profile_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         algorithm_id: &common_utils::id_type::RoutingId,
         profile_id: &common_utils::id_type::ProfileId,
     ) -> StorageResult<RoutingProfileMetadata> {
-        Self::table()
+        let query = Self::table()
             .select((
                 dsl::profile_id,
                 dsl::algorithm_id,
@@ -80,17 +79,17 @@ impl RoutingAlgorithm {
                     .eq(algorithm_id.to_owned())
                     .and(dsl::profile_id.eq(profile_id.to_owned())),
             )
-            .limit(1)
-            .load_async::<(
-                common_utils::id_type::ProfileId,
-                common_utils::id_type::RoutingId,
-                String,
-                Option<String>,
-                enums::RoutingAlgorithmKind,
-                PrimitiveDateTime,
-                PrimitiveDateTime,
-                enums::TransactionType,
-            )>(conn)
+            .limit(1);
+        conn.track_load::<Self, _, (
+            common_utils::id_type::ProfileId,
+            common_utils::id_type::RoutingId,
+            String,
+            Option<String>,
+            enums::RoutingAlgorithmKind,
+            PrimitiveDateTime,
+            PrimitiveDateTime,
+            enums::TransactionType,
+        )>(DatabaseOperation::Filter, query)
             .await
             .change_context(DatabaseError::Others)?
             .into_iter()
@@ -122,12 +121,12 @@ impl RoutingAlgorithm {
     }
 
     pub async fn list_metadata_by_profile_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         profile_id: &common_utils::id_type::ProfileId,
         limit: i64,
         offset: i64,
     ) -> StorageResult<Vec<RoutingProfileMetadata>> {
-        Ok(Self::table()
+        let query = Self::table()
             .select((
                 dsl::algorithm_id,
                 dsl::profile_id,
@@ -139,9 +138,13 @@ impl RoutingAlgorithm {
                 dsl::algorithm_for,
             ))
             .filter(dsl::profile_id.eq(profile_id.to_owned()))
+            // `algorithm_id` breaks ties on `modified_at`, which bulk-created rules share. Without
+            // a total order the pages of one limit/offset walk overlap and leave rules unvisited.
+            .order((dsl::modified_at.desc(), dsl::algorithm_id.asc()))
             .limit(limit)
-            .offset(offset)
-            .load_async::<(
+            .offset(offset);
+        Ok(conn
+            .track_load::<Self, _, (
                 common_utils::id_type::RoutingId,
                 common_utils::id_type::ProfileId,
                 String,
@@ -150,7 +153,7 @@ impl RoutingAlgorithm {
                 PrimitiveDateTime,
                 PrimitiveDateTime,
                 enums::TransactionType,
-            )>(conn)
+            )>(DatabaseOperation::Filter, query)
             .await
             .change_context(DatabaseError::Others)?
             .into_iter()
@@ -181,12 +184,12 @@ impl RoutingAlgorithm {
     }
 
     pub async fn list_metadata_by_merchant_id(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         limit: i64,
         offset: i64,
     ) -> StorageResult<Vec<RoutingProfileMetadata>> {
-        Ok(Self::table()
+        let query = Self::table()
             .select((
                 dsl::profile_id,
                 dsl::algorithm_id,
@@ -206,8 +209,10 @@ impl RoutingAlgorithm {
             )
             .limit(limit)
             .offset(offset)
-            .order(dsl::modified_at.desc())
-            .load_async::<(
+            // `algorithm_id` breaks ties on `modified_at`, so the pages of one walk stay disjoint.
+            .order((dsl::modified_at.desc(), dsl::algorithm_id.asc()));
+        Ok(conn
+            .track_load::<Self, _, (
                 common_utils::id_type::ProfileId,
                 common_utils::id_type::RoutingId,
                 String,
@@ -216,7 +221,7 @@ impl RoutingAlgorithm {
                 PrimitiveDateTime,
                 PrimitiveDateTime,
                 enums::TransactionType,
-            )>(conn)
+            )>(DatabaseOperation::Filter, query)
             .await
             .change_context(DatabaseError::Others)?
             .into_iter()
@@ -247,13 +252,13 @@ impl RoutingAlgorithm {
     }
 
     pub async fn list_metadata_by_merchant_id_transaction_type(
-        conn: &PgPooledConn,
+        conn: &DatabaseConnectionWithContext<'_>,
         merchant_id: &common_utils::id_type::MerchantId,
         transaction_type: &enums::TransactionType,
         limit: i64,
         offset: i64,
     ) -> StorageResult<Vec<RoutingProfileMetadata>> {
-        Ok(Self::table()
+        let query = Self::table()
             .select((
                 dsl::profile_id,
                 dsl::algorithm_id,
@@ -274,8 +279,10 @@ impl RoutingAlgorithm {
             .filter(dsl::algorithm_for.eq(transaction_type.to_owned()))
             .limit(limit)
             .offset(offset)
-            .order(dsl::modified_at.desc())
-            .load_async::<(
+            // `algorithm_id` breaks ties on `modified_at`, so the pages of one walk stay disjoint.
+            .order((dsl::modified_at.desc(), dsl::algorithm_id.asc()));
+        Ok(conn
+            .track_load::<Self, _, (
                 common_utils::id_type::ProfileId,
                 common_utils::id_type::RoutingId,
                 String,
@@ -284,7 +291,7 @@ impl RoutingAlgorithm {
                 PrimitiveDateTime,
                 PrimitiveDateTime,
                 enums::TransactionType,
-            )>(conn)
+            )>(DatabaseOperation::Filter, query)
             .await
             .change_context(DatabaseError::Others)?
             .into_iter()
@@ -312,5 +319,87 @@ impl RoutingAlgorithm {
                 },
             )
             .collect())
+    }
+
+    /// Every rule id held by the given profiles, with the merchant that owns each profile —
+    /// taken from here rather than `business_profile`, which is encrypted and needs the merchant
+    /// to read. The kind rides along so callers can tell which rules a migration is expected to
+    /// carry.
+    ///
+    /// The owner is `processor_merchant_id`, falling back to `merchant_id`. A rule written
+    /// through a platform records the provider that made the call in `merchant_id` and the
+    /// merchant the profile hangs off in `processor_merchant_id`; callers resolve the business
+    /// profile under what this returns, and under the provider there is no such profile. The
+    /// column is null on rules written before platform support, where the two are the same.
+    pub async fn rule_ids_for_profiles(
+        conn: &DatabaseConnectionWithContext<'_>,
+        profile_ids: &[common_utils::id_type::ProfileId],
+    ) -> StorageResult<
+        Vec<(
+            common_utils::id_type::ProfileId,
+            common_utils::id_type::MerchantId,
+            common_utils::id_type::RoutingId,
+            enums::RoutingAlgorithmKind,
+        )>,
+    > {
+        let query = Self::table()
+            .select((
+                dsl::profile_id,
+                dsl::processor_merchant_id,
+                dsl::merchant_id,
+                dsl::algorithm_id,
+                dsl::kind,
+            ))
+            .filter(dsl::profile_id.eq_any(profile_ids.to_vec()))
+            .order((dsl::profile_id.asc(), dsl::algorithm_id.asc()));
+        conn.track_load::<Self, _, (
+            common_utils::id_type::ProfileId,
+            Option<common_utils::id_type::MerchantId>,
+            common_utils::id_type::MerchantId,
+            common_utils::id_type::RoutingId,
+            enums::RoutingAlgorithmKind,
+        )>(DatabaseOperation::Filter, query)
+            .await
+            .change_context(DatabaseError::Others)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(
+                        |(profile_id, processor_merchant_id, merchant_id, algorithm_id, kind)| {
+                            (
+                                profile_id,
+                                processor_merchant_id.unwrap_or(merchant_id),
+                                algorithm_id,
+                                kind,
+                            )
+                        },
+                    )
+                    .collect()
+            })
+    }
+
+    /// A page of the profiles that hold routing rules. Grouped so the page is of profiles —
+    /// paginating per rule would split one across pages. Ordered so paging is stable.
+    pub async fn list_scope_page(
+        conn: &DatabaseConnectionWithContext<'_>,
+        limit: i64,
+        offset: i64,
+    ) -> StorageResult<
+        Vec<(
+            common_utils::id_type::ProfileId,
+            common_utils::id_type::MerchantId,
+        )>,
+    > {
+        let query = Self::table()
+            .group_by((dsl::merchant_id, dsl::profile_id))
+            .select((dsl::profile_id, dsl::merchant_id))
+            .order((dsl::merchant_id.asc(), dsl::profile_id.asc()))
+            .limit(limit)
+            .offset(offset);
+        conn.track_load::<Self, _, (
+            common_utils::id_type::ProfileId,
+            common_utils::id_type::MerchantId,
+        )>(DatabaseOperation::Filter, query)
+            .await
+            .change_context(DatabaseError::Others)
     }
 }

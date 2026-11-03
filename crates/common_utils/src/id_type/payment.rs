@@ -16,7 +16,9 @@ crate::impl_default_id_type!(PaymentId, "pay");
 crate::impl_try_from_cow_str_id_type!(PaymentId, "payment_id");
 
 // Database related implementations so that this field can be used directly in the database tables
+#[cfg(feature = "diesel")]
 crate::impl_queryable_id_type!(PaymentId);
+#[cfg(feature = "diesel")]
 crate::impl_to_sql_from_sql_id_type!(PaymentId);
 
 impl PaymentId {
@@ -63,6 +65,29 @@ impl PaymentId {
         )
     }
 
+    /// Get the Redis key under which the payment-method vault session for this payment is cached
+    pub fn get_pm_vault_session_redis_key(&self, merchant_id: &super::MerchantId) -> String {
+        format!(
+            "{}_{}_pm_vault_session",
+            merchant_id.get_string_repr(),
+            self.get_string_repr()
+        )
+    }
+
+    /// Get the Redis key under which this payment's token for one saved payment method is pinned
+    pub fn get_pm_token_redis_key(
+        &self,
+        merchant_id: &super::MerchantId,
+        payment_method_id: &str,
+    ) -> String {
+        format!(
+            "{}_{}_{}_pm_token",
+            merchant_id.get_string_repr(),
+            self.get_string_repr(),
+            payment_method_id
+        )
+    }
+
     /// Generate a test payment id with prefix test_
     pub fn generate_test_payment_id_for_sample_data() -> Self {
         let id = generate_id_with_default_len("test");
@@ -85,7 +110,9 @@ crate::impl_debug_id_type!(PaymentReferenceId);
 crate::impl_try_from_cow_str_id_type!(PaymentReferenceId, "payment_reference_id");
 
 // Database related implementations so that this field can be used directly in the database tables
+#[cfg(feature = "diesel")]
 crate::impl_queryable_id_type!(PaymentReferenceId);
+#[cfg(feature = "diesel")]
 crate::impl_to_sql_from_sql_id_type!(PaymentReferenceId);
 
 crate::id_type!(PaymentResourceId, "A type for payment_resource_id");
@@ -96,7 +123,9 @@ crate::impl_debug_id_type!(PaymentResourceId);
 crate::impl_try_from_cow_str_id_type!(PaymentResourceId, "payment_resource_id");
 
 // Database related implementations so that this field can be used directly in the database tables
+#[cfg(feature = "diesel")]
 crate::impl_queryable_id_type!(PaymentResourceId);
+#[cfg(feature = "diesel")]
 crate::impl_to_sql_from_sql_id_type!(PaymentResourceId);
 
 // This is implemented so that we can use payment id directly as attribute in metrics

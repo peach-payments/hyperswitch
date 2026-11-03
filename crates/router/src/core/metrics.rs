@@ -1,4 +1,4 @@
-use router_env::{counter_metric, global_meter};
+use router_env::{counter_metric, global_meter, histogram_metric_f64};
 
 global_meter!(GLOBAL_METER, "ROUTER_API");
 
@@ -44,6 +44,14 @@ counter_metric!(
 counter_metric!(WEBHOOK_INCOMING_COUNT, GLOBAL_METER);
 counter_metric!(WEBHOOK_INCOMING_FILTERED_COUNT, GLOBAL_METER);
 counter_metric!(WEBHOOK_SOURCE_VERIFIED_COUNT, GLOBAL_METER);
+// No. of unverified incoming webhooks checked against the rate limits
+counter_metric!(WEBHOOK_UNVERIFIED_RATE_LIMIT_CHECKED_COUNT, GLOBAL_METER);
+// No. of unverified incoming webhooks rejected for exceeding a rate limit
+counter_metric!(WEBHOOK_UNVERIFIED_RATE_LIMITED_COUNT, GLOBAL_METER);
+// No. of unverified incoming webhooks let through because the rate limit check failed
+counter_metric!(WEBHOOK_UNVERIFIED_RATE_LIMITER_ERROR_COUNT, GLOBAL_METER);
+counter_metric!(WEBHOOK_MTLS_VERIFICATION_FAILURE_COUNT, GLOBAL_METER);
+counter_metric!(WEBHOOK_IP_VERIFICATION_FAILURE_COUNT, GLOBAL_METER);
 counter_metric!(WEBHOOK_OUTGOING_COUNT, GLOBAL_METER);
 counter_metric!(WEBHOOK_OUTGOING_RECEIVED_COUNT, GLOBAL_METER);
 counter_metric!(WEBHOOK_OUTGOING_NOT_RECEIVED_COUNT, GLOBAL_METER);
@@ -89,6 +97,15 @@ counter_metric!(
 counter_metric!(DYNAMIC_SUCCESS_BASED_ROUTING, GLOBAL_METER);
 counter_metric!(DYNAMIC_CONTRACT_BASED_ROUTING, GLOBAL_METER);
 
+histogram_metric_f64!(DECISION_ENGINE_REQUEST_TIME, GLOBAL_METER);
+counter_metric!(DECISION_ENGINE_REQUESTS, GLOBAL_METER);
+
+// Qualifying UCS failures seen by the kill switch, emitted whether or not it is turned on so the
+// classifier can be validated against real traffic before the switch is turned on.
+counter_metric!(UCS_KILL_SWITCH_FAILURE, GLOBAL_METER);
+// Scopes tripped back to the direct integration.
+counter_metric!(UCS_KILL_SWITCH_TRIPPED, GLOBAL_METER);
+
 #[cfg(feature = "partial-auth")]
 counter_metric!(PARTIAL_AUTH_FAILURE, GLOBAL_METER);
 
@@ -105,3 +122,5 @@ counter_metric!(POST_AUTHENTICATION_TOKEN_PUSHED_TO_VGS, GLOBAL_METER);
 counter_metric!(SDK_AUTH_LEGACY_FLOW_TOTAL, GLOBAL_METER); // No. of SDK auth requests without session_id (legacy flow) - tracked per merchant_id
 counter_metric!(SDK_AUTH_SESSION_VALIDATED_TOTAL, GLOBAL_METER); // No. of SDK auth requests with valid session_id - tracked per merchant_id
 counter_metric!(SDK_AUTH_INVALID_SESSION_TOTAL, GLOBAL_METER); // No. of SDK auth requests with invalid session_id - tracked per merchant_id
+
+counter_metric!(FINGERPRINT_SECRET_SUPERPOSITION_FETCH_COUNT, GLOBAL_METER); // No. of fingerprint secret fetches from Superposition during migration fallback

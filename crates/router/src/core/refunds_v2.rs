@@ -12,6 +12,7 @@ use hyperswitch_domain_models::{
 use hyperswitch_interfaces::{
     api::{Connector as ConnectorTrait, ConnectorIntegration},
     connector_integration_v2::{ConnectorIntegrationV2, ConnectorV2},
+    errors::not_supported_message,
     integrity::{CheckIntegrity, FlowIntegrity, GetIntegrityObject},
 };
 use router_env::{instrument, tracing};
@@ -20,7 +21,10 @@ use crate::{
     consts,
     core::{
         errors::{self, ConnectorErrorExt, StorageErrorExt},
-        payments::{self, access_token, gateway::context as gateway_context, helpers},
+        payments::{
+            self, access_token, gateway::context as gateway_context, helpers,
+            multi_currency_processing,
+        },
         utils::{self as core_utils, refunds_validator},
     },
     db, logger,
@@ -50,7 +54,7 @@ pub async fn refund_create_core(
         .find_payment_intent_by_id(
             &req.payment_id,
             platform.get_processor().get_key_store(),
-            platform.get_processor().get_account().storage_scheme,
+            platform.get_processor().get_storage_scheme(),
         )
         .await
         .to_not_found_response(errors::ApiErrorResponse::PaymentNotFound)?;
@@ -79,7 +83,7 @@ pub async fn refund_create_core(
 
     utils::when(amount <= common_utils_types::MinorUnit::new(0), || {
         Err(report!(errors::ApiErrorResponse::InvalidDataFormat {
-            field_name: "amount".to_string(),
+            field_name: "amount".into(),
             expected_format: "positive integer".to_string()
         })
         .attach_printable("amount less than or equal to zero"))
@@ -89,7 +93,7 @@ pub async fn refund_create_core(
         .find_payment_attempt_last_successful_or_partially_captured_attempt_by_payment_id(
             platform.get_processor().get_key_store(),
             &req.payment_id,
-            platform.get_processor().get_account().storage_scheme,
+            platform.get_processor().get_storage_scheme(),
         )
         .await
         .to_not_found_response(errors::ApiErrorResponse::SuccessfulPaymentNotFound)?;
@@ -603,9 +607,7 @@ impl ForeignFrom<(&errors::ConnectorError, enums::MerchantStorageScheme)>
             errors::ConnectorError::NotSupported { message, connector } => {
                 Some(diesel_refund::RefundUpdate::ErrorUpdate {
                     refund_status: Some(enums::RefundStatus::Failure),
-                    refund_error_message: Some(format!(
-                        "{message} is not supported by {connector}"
-                    )),
+                    refund_error_message: Some(not_supported_message(message, connector)),
                     refund_error_code: Some("NOT_SUPPORTED".to_string()),
                     updated_by: storage_scheme.to_string(),
                     connector_refund_id: None,
@@ -632,7 +634,11 @@ where
         .map(|resp_data| resp_data.connector_refund_id.clone())
         .ok();
 
-    request.check_integrity(request, connector_refund_id.to_owned())
+    request.check_integrity(
+        request,
+        connector_refund_id.to_owned(),
+        common_types::primitive_wrappers::AcceptAmountMismatchBool::default(),
+    )
 }
 
 // ********************************************** REFUND UPDATE **********************************************
@@ -719,7 +725,7 @@ pub async fn refund_retrieve_core(
         .find_payment_intent_by_id(
             payment_id,
             processor.get_key_store(),
-            processor.get_account().storage_scheme,
+            processor.get_storage_scheme(),
         )
         .await
         .to_not_found_response(errors::ApiErrorResponse::PaymentNotFound)?;
@@ -734,7 +740,7 @@ pub async fn refund_retrieve_core(
         .find_payment_attempt_by_id(
             processor.get_key_store(),
             &active_attempt_id,
-            processor.get_account().storage_scheme,
+            processor.get_storage_scheme(),
         )
         .await
         .to_not_found_response(errors::ApiErrorResponse::InternalServerError)?;
@@ -769,7 +775,7 @@ pub async fn refund_retrieve_core(
                 Some(details) => details,
                 None => {
                     return Err(report!(errors::ApiErrorResponse::MissingRequiredField {
-                        field_name: "merchant_connector_details"
+                        field_name: "merchant_connector_details".into()
                     }));
                 }
             };
@@ -1102,8 +1108,8 @@ pub async fn refund_list(
     req: refunds::RefundListRequest,
 ) -> errors::RouterResponse<refunds::RefundListResponse> {
     let db = state.store;
-    let limit = refunds_validator::validate_refund_list(req.limit)?;
-    let offset = req.offset.unwrap_or_default();
+    let limit = req.limit;
+    let offset = req.offset;
 
     let refund_list = db
         .filter_refund_by_constraints(
@@ -1166,7 +1172,7 @@ pub async fn validate_and_create_refund(
 
     utils::when(predicate.unwrap_or(false), || {
         Err(report!(errors::ApiErrorResponse::InvalidDataFormat {
-            field_name: "merchant_id".to_string(),
+            field_name: "merchant_id".into(),
             expected_format: "merchant_id from merchant account".to_string()
         })
         .attach_printable("invalid merchant_id in request"))
@@ -1193,7 +1199,7 @@ pub async fn validate_and_create_refund(
         state.conf.refund.max_age,
     )
     .change_context(errors::ApiErrorResponse::InvalidDataFormat {
-        field_name: "created_at".to_string(),
+        field_name: "created_at".into(),
         expected_format: format!(
             "created_at not older than {} days",
             state.conf.refund.max_age,
@@ -1224,6 +1230,17 @@ pub async fn validate_and_create_refund(
         .attach_printable("No connector populated in payment attempt")?;
     let (connector_transaction_id, processor_transaction_data) =
         common_utils_types::ConnectorTransactionId::form_id_and_data(connector_payment_id);
+    let payment_feature_metadata = payment_intent
+        .feature_metadata
+        .as_ref()
+        .map(api_models::payments::FeatureMetadata::foreign_from);
+    let refund_feature_metadata =
+        multi_currency_processing::validate_multi_currency_processing_refund_settlement(
+            &connector,
+            payment_feature_metadata.as_ref(),
+            req.feature_metadata,
+            &all_refunds,
+        )?;
     let refund_create_req = diesel_refund::RefundNew {
         id: global_refund_id,
         merchant_reference_id: merchant_reference_id.clone(),
@@ -1240,6 +1257,7 @@ pub async fn validate_and_create_refund(
         modified_at: common_utils::date_time::now(),
         refund_status: enums::RefundStatus::Pending,
         metadata: req.metadata,
+        feature_metadata: refund_feature_metadata,
         description: req.reason.clone(),
         attempt_id: payment_attempt.id.clone(),
         refund_reason: req.reason,
@@ -1265,26 +1283,14 @@ pub async fn validate_and_create_refund(
             .map(|created_by| created_by.to_string()),
     };
 
-    let (refund, raw_connector_response) = match db
+    let refund = match db
         .insert_refund(
             refund_create_req,
             platform.get_processor().get_account().storage_scheme,
         )
         .await
     {
-        Ok(refund) => {
-            Box::pin(schedule_refund_execution(
-                state,
-                refund.clone(),
-                refund_type,
-                platform.get_processor(),
-                payment_attempt,
-                payment_intent,
-                merchant_connector_details,
-                req.return_raw_connector_response,
-            ))
-            .await?
-        }
+        Ok(refund) => refund,
         Err(err) => {
             if err.current_context().is_db_unique_violation() {
                 Err(errors::ApiErrorResponse::DuplicateRefundRequest)?
@@ -1295,6 +1301,17 @@ pub async fn validate_and_create_refund(
             }
         }
     };
+    let (refund, raw_connector_response) = Box::pin(schedule_refund_execution(
+        state,
+        refund,
+        refund_type,
+        platform.get_processor(),
+        payment_attempt,
+        payment_intent,
+        merchant_connector_details,
+        req.return_raw_connector_response,
+    ))
+    .await?;
 
     let unified_translated_message =
         match (refund.unified_code.clone(), refund.unified_message.clone()) {
@@ -1335,7 +1352,7 @@ impl ForeignTryFrom<diesel_refund::Refund> for api::RefundResponse {
         let connector = Connector::from_str(&connector_name)
             .change_context(errors::ConnectorError::InvalidConnectorName)
             .change_context(errors::ApiErrorResponse::InvalidDataValue {
-                field_name: "connector",
+                field_name: "connector".into(),
             })
             .attach_printable_lazy(|| {
                 format!("unable to parse connector name {connector_name:?}")
@@ -1350,6 +1367,7 @@ impl ForeignTryFrom<diesel_refund::Refund> for api::RefundResponse {
             status: refunds::RefundStatus::foreign_from(refund.refund_status),
             profile_id,
             metadata: refund.metadata,
+            feature_metadata: refund.feature_metadata,
             created_at: refund.created_at,
             updated_at: refund.modified_at,
             connector,
@@ -1416,7 +1434,7 @@ pub async fn schedule_refund_execution(
                                             None => {
                                                 return Err(report!(
                                             errors::ApiErrorResponse::MissingRequiredField {
-                                                field_name: "merchant_connector_details"
+                                                field_name: "merchant_connector_details".into()
                                             }
                                         ));
                                             }

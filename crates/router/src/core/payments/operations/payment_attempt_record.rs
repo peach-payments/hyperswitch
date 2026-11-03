@@ -95,7 +95,7 @@ impl ValidateStatusForOperation for PaymentAttemptRecord {
             | common_enums::IntentStatus::Review => {
                 Err(errors::ApiErrorResponse::PaymentUnexpectedState {
                     current_flow: format!("{self:?}"),
-                    field_name: "status".to_string(),
+                    field_name: "status".into(),
                     current_value: intent_status.to_string(),
                     states: [
                         common_enums::IntentStatus::RequiresPaymentMethod,
@@ -127,7 +127,7 @@ impl<F: Send + Clone + Sync>
         let db = &*state.store;
         let key_manager_state = &state.into();
 
-        let storage_scheme = platform.get_processor().get_account().storage_scheme;
+        let storage_scheme = platform.get_processor().get_storage_scheme();
 
         let payment_intent = db
             .find_payment_intent_by_id(
@@ -180,7 +180,7 @@ impl<F: Send + Clone + Sync>
             hyperswitch_domain_models::payments::payment_attempt::PaymentAttempt::create_domain_model_using_record_request(
                 &payment_intent,
                 cell_id,
-                storage_scheme,
+                storage_scheme.inner(),
                 request,
                 encrypted_data,
                 platform.get_initiator(),
@@ -202,6 +202,7 @@ impl<F: Send + Clone + Sync>
             connector_customer_id: request.connector_customer_id.clone(),
             retry_count: request.retry_count,
             invoice_next_billing_time: request.invoice_next_billing_time,
+            invoice_billing_started_at_time: request.invoice_billing_started_at_time,
             triggered_by: request.triggered_by,
             card_network: request.card_network.clone(),
             card_issuer: request.card_issuer.clone(),
@@ -257,7 +258,7 @@ impl<F: Clone + Sync> UpdateTracker<F, PaymentAttemptRecordData<F>, PaymentsAtte
     where
         F: 'b + Send,
     {
-        let storage_scheme = processor.get_account().storage_scheme;
+        let storage_scheme = processor.get_storage_scheme();
         let key_store = processor.get_key_store();
         let feature_metadata = payment_data.get_updated_feature_metadata()?;
         let active_attempt_id = match payment_data.revenue_recovery_data.triggered_by {
@@ -279,7 +280,7 @@ impl<F: Clone + Sync> UpdateTracker<F, PaymentAttemptRecordData<F>, PaymentsAtte
         {
             status,
             feature_metadata: Box::new(feature_metadata),
-            updated_by: storage_scheme.to_string(),
+            updated_by: storage_scheme.inner().to_string(),
             active_attempt_id,
             active_attempts_group_id,
         }

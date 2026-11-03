@@ -6,31 +6,54 @@
 use actix_web::{web, HttpRequest, Responder};
 use api_models::{
     enums,
-    routing::{
-        self as routing_types, RoutingEvaluateRequest, RoutingEvaluateResponse,
-        RoutingRetrieveQuery,
-    },
+    routing::{self as routing_types, RoutingRetrieveQuery},
 };
-use error_stack::ResultExt;
-use hyperswitch_domain_models::platform::MerchantKeyStore;
-use payment_methods::core::errors::ApiErrorResponse;
 use router_env::{
     tracing::{self, instrument},
     Flow,
 };
 
 use crate::{
-    core::{
-        api_locking, conditional_config,
-        payments::routing::utils::{DecisionEngineApiHandler, EuclidApiClient},
-        routing, surcharge_decision_config,
-    },
-    db::errors::StorageErrorExt,
+    core::{api_locking, conditional_config, routing, surcharge_decision_config},
     routes::AppState,
     services,
     services::{api as oss_api, authentication as auth, authorization::permissions::Permission},
-    types::domain,
 };
+
+/// Dashboard routing entry: returns the profile's routing source and, with `?target`, a DE deep-link.
+#[cfg(all(feature = "olap", feature = "v1"))]
+#[instrument(skip_all)]
+pub async fn routing_entry(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<routing_types::RoutingEntryRequest>,
+) -> impl Responder {
+    let flow = Flow::DecisionEngineSsoRedirect;
+    let target = query.into_inner().target;
+    Box::pin(oss_api::server_wrap(
+        flow,
+        state,
+        &req,
+        (),
+        // The user is carried alongside so the handoff can be scoped to what their Hyperswitch role
+        // actually reaches.
+        move |state, (auth, user): auth::AuthenticationDataWithUser, _, _| {
+            let platform = auth.platform;
+            let profile_id = auth.profile.map(|profile| profile.get_id().clone());
+            routing::routing_entry(state, platform, user, profile_id, target)
+        },
+        // Dashboard-only: the response is a deep link for a browser to follow, so there is no
+        // API-key caller to serve — and the handoff is scoped by the user's role, which a service
+        // credential does not have.
+        &auth::JWTAuth {
+            permission: Permission::ProfileRoutingRead,
+            allow_connected: true,
+            allow_platform: false,
+        },
+        api_locking::LockAction::NotApplicable,
+    ))
+    .await
+}
 #[cfg(all(feature = "olap", feature = "v1"))]
 #[instrument(skip_all)]
 pub async fn routing_create_config(
@@ -140,7 +163,7 @@ pub async fn routing_link_config(
             let profile_id = auth.profile.map(|profile| profile.get_id().clone());
             routing::link_routing_config(
                 state,
-                auth.platform.get_processor().clone(),
+                auth.platform.clone(),
                 profile_id,
                 algorithm,
                 transaction_type
@@ -238,7 +261,7 @@ pub async fn routing_retrieve_config(
             let profile_id = auth.profile.map(|profile| profile.get_id().clone());
             routing::retrieve_routing_algorithm_from_algorithm_id(
                 state,
-                auth.platform.get_processor().clone(),
+                auth.platform.clone(),
                 profile_id,
                 algorithm_id,
             )
@@ -457,7 +480,7 @@ pub async fn routing_unlink_config(
             let profile_id = auth.profile.map(|profile| profile.get_id().clone());
             routing::unlink_routing_config(
                 state,
-                auth.platform.get_processor().clone(),
+                auth.platform.clone(),
                 payload_req.clone(),
                 profile_id,
                 transaction_type
@@ -844,6 +867,7 @@ pub async fn upsert_decision_manager_config(
                     .get_processor()
                     .clone()
                     .get_key_store()
+                    .inner()
                     .clone(),
                 update_decision,
                 auth.profile,
@@ -935,6 +959,7 @@ pub async fn retrieve_decision_manager_config(
                     .get_processor()
                     .clone()
                     .get_key_store()
+                    .inner()
                     .clone(),
                 auth.profile,
             )
@@ -1294,98 +1319,6 @@ pub async fn create_success_based_routing(
 
 #[cfg(all(feature = "olap", feature = "v1", feature = "dynamic_routing"))]
 #[instrument(skip_all)]
-pub async fn success_based_routing_update_configs(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    path: web::Path<routing_types::DynamicRoutingUpdateConfigQuery>,
-    json_payload: web::Json<routing_types::SuccessBasedRoutingConfig>,
-) -> impl Responder {
-    let flow = Flow::UpdateDynamicRoutingConfigs;
-    let routing_payload_wrapper = routing_types::SuccessBasedRoutingPayloadWrapper {
-        updated_config: json_payload.into_inner(),
-        algorithm_id: path.clone().algorithm_id,
-        profile_id: path.clone().profile_id,
-    };
-    Box::pin(oss_api::server_wrap(
-        flow,
-        state,
-        &req,
-        routing_payload_wrapper.clone(),
-        |state, _, wrapper: routing_types::SuccessBasedRoutingPayloadWrapper, _| async {
-            Box::pin(routing::success_based_routing_update_configs(
-                state,
-                wrapper.updated_config,
-                wrapper.algorithm_id,
-                wrapper.profile_id,
-            ))
-            .await
-        },
-        auth::auth_type(
-            &auth::HeaderAuth(auth::ApiKeyAuth {
-                allow_connected_scope_operation: true,
-                allow_platform_self_operation: false,
-            }),
-            &auth::JWTAuthProfileFromRoute {
-                profile_id: routing_payload_wrapper.profile_id,
-                required_permission: Permission::ProfileRoutingWrite,
-                allow_connected: true,
-                allow_platform: false,
-            },
-            req.headers(),
-        ),
-        api_locking::LockAction::NotApplicable,
-    ))
-    .await
-}
-
-#[cfg(all(feature = "olap", feature = "v1", feature = "dynamic_routing"))]
-#[instrument(skip_all)]
-pub async fn elimination_routing_update_configs(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    path: web::Path<routing_types::DynamicRoutingUpdateConfigQuery>,
-    json_payload: web::Json<routing_types::EliminationRoutingConfig>,
-) -> impl Responder {
-    let flow = Flow::UpdateDynamicRoutingConfigs;
-    let routing_payload_wrapper = routing_types::EliminationRoutingPayloadWrapper {
-        updated_config: json_payload.into_inner(),
-        algorithm_id: path.clone().algorithm_id,
-        profile_id: path.clone().profile_id,
-    };
-    Box::pin(oss_api::server_wrap(
-        flow,
-        state,
-        &req,
-        routing_payload_wrapper.clone(),
-        |state, _, wrapper: routing_types::EliminationRoutingPayloadWrapper, _| async {
-            Box::pin(routing::elimination_routing_update_configs(
-                state,
-                wrapper.updated_config,
-                wrapper.algorithm_id,
-                wrapper.profile_id,
-            ))
-            .await
-        },
-        auth::auth_type(
-            &auth::HeaderAuth(auth::ApiKeyAuth {
-                allow_connected_scope_operation: true,
-                allow_platform_self_operation: false,
-            }),
-            &auth::JWTAuthProfileFromRoute {
-                profile_id: routing_payload_wrapper.profile_id,
-                required_permission: Permission::ProfileRoutingWrite,
-                allow_connected: true,
-                allow_platform: false,
-            },
-            req.headers(),
-        ),
-        api_locking::LockAction::NotApplicable,
-    ))
-    .await
-}
-
-#[cfg(all(feature = "olap", feature = "v1", feature = "dynamic_routing"))]
-#[instrument(skip_all)]
 pub async fn contract_based_routing_setup_config(
     state: web::Data<AppState>,
     req: HttpRequest,
@@ -1427,56 +1360,6 @@ pub async fn contract_based_routing_setup_config(
                 allow_platform: false,
                 profile_id: routing_payload_wrapper.profile_id,
                 required_permission: Permission::ProfileRoutingWrite,
-            },
-            req.headers(),
-        ),
-        api_locking::LockAction::NotApplicable,
-    ))
-    .await
-}
-
-#[cfg(all(feature = "olap", feature = "v1", feature = "dynamic_routing"))]
-#[instrument(skip_all)]
-pub async fn contract_based_routing_update_configs(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    path: web::Path<routing_types::DynamicRoutingUpdateConfigQuery>,
-    json_payload: web::Json<routing_types::ContractBasedRoutingConfig>,
-) -> impl Responder {
-    let flow = Flow::UpdateDynamicRoutingConfigs;
-    let routing_payload_wrapper = routing_types::ContractBasedRoutingPayloadWrapper {
-        updated_config: json_payload.into_inner(),
-        algorithm_id: path.algorithm_id.clone(),
-        profile_id: path.profile_id.clone(),
-    };
-    Box::pin(oss_api::server_wrap(
-        flow,
-        state,
-        &req,
-        routing_payload_wrapper.clone(),
-        |state,
-         auth: auth::AuthenticationData,
-         wrapper: routing_types::ContractBasedRoutingPayloadWrapper,
-         _| async move {
-            Box::pin(routing::contract_based_routing_update_configs(
-                state,
-                wrapper.updated_config,
-                auth.platform.get_processor().clone(),
-                wrapper.algorithm_id,
-                wrapper.profile_id,
-            ))
-            .await
-        },
-        auth::auth_type(
-            &auth::HeaderAuth(auth::ApiKeyAuth {
-                allow_connected_scope_operation: true,
-                allow_platform_self_operation: false,
-            }),
-            &auth::JWTAuthProfileFromRoute {
-                profile_id: routing_payload_wrapper.profile_id,
-                required_permission: Permission::ProfileRoutingWrite,
-                allow_connected: true,
-                allow_platform: false,
             },
             req.headers(),
         ),
@@ -1631,78 +1514,24 @@ pub async fn get_dynamic_routing_volume_split(
     ))
     .await
 }
-const EUCLID_API_TIMEOUT: u64 = 5;
-#[cfg(all(feature = "olap", feature = "v1"))]
-#[instrument(skip_all)]
-pub async fn evaluate_routing_rule(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    json_payload: web::Json<RoutingEvaluateRequest>,
-) -> impl Responder {
-    let json_payload = json_payload.into_inner();
-    let flow = Flow::RoutingEvaluateRule;
-    Box::pin(oss_api::server_wrap(
-        flow,
-        state,
-        &req,
-        json_payload.clone(),
-        |state, _auth: auth::AuthenticationData, payload, _| async move {
-            let euclid_response: RoutingEvaluateResponse =
-                EuclidApiClient::send_decision_engine_request(
-                    &state,
-                    services::Method::Post,
-                    "routing/evaluate",
-                    Some(payload),
-                    Some(EUCLID_API_TIMEOUT),
-                    None,
-                )
-                .await
-                .change_context(ApiErrorResponse::InternalServerError)?
-                .response
-                .ok_or(ApiErrorResponse::InternalServerError)
-                .attach_printable("Failed to evaluate routing rule")?;
-
-            Ok(services::ApplicationResponse::Json(euclid_response))
-        },
-        &auth::ApiKeyAuth {
-            allow_connected_scope_operation: true,
-            allow_platform_self_operation: false,
-        },
-        api_locking::LockAction::NotApplicable,
-    ))
-    .await
-}
-
 use actix_web::HttpResponse;
-#[instrument(skip_all, fields(flow = ?Flow::DecisionEngineRuleMigration))]
-pub async fn migrate_routing_rules_for_profile(
+
+/// Where every profile holding a routing rule stands in the migration, a page at a time.
+/// Read-only; paging bounds the work.
+#[instrument(skip_all, fields(flow = ?Flow::DecisionEngineMigrationStatus))]
+pub async fn routing_migration_status(
     state: web::Data<AppState>,
     req: HttpRequest,
-    query: web::Query<routing_types::RuleMigrationQuery>,
-) -> HttpResponse {
-    let flow = Flow::DecisionEngineRuleMigration;
-
+    query: web::Query<routing_types::RoutingMigrationStatusQuery>,
+) -> impl Responder {
+    let flow = Flow::DecisionEngineMigrationStatus;
     Box::pin(oss_api::server_wrap(
         flow,
         state,
         &req,
         query.into_inner(),
         |state, _, query_params, _| async move {
-            let merchant_id = query_params.merchant_id.clone();
-            let (key_store, merchant_account) = get_merchant_account(&state, &merchant_id).await?;
-            let platform = domain::Platform::new(
-                merchant_account.clone(),
-                key_store.clone(),
-                merchant_account,
-                key_store,
-                None,
-            );
-            let res = Box::pin(routing::migrate_rules_for_profile(
-                state,
-                platform.get_processor().clone(),
-                query_params,
-            ))
-            .await?;
+            let res = Box::pin(routing::routing_migration_status(state, query_params)).await?;
             Ok(services::ApplicationResponse::Json(res))
         },
         &auth::AdminApiAuth,
@@ -1711,73 +1540,24 @@ pub async fn migrate_routing_rules_for_profile(
     .await
 }
 
-async fn get_merchant_account(
-    state: &super::SessionState,
-    merchant_id: &common_utils::id_type::MerchantId,
-) -> common_utils::errors::CustomResult<(MerchantKeyStore, domain::MerchantAccount), ApiErrorResponse>
-{
-    let key_store = state
-        .store
-        .get_merchant_key_store_by_merchant_id(
-            merchant_id,
-            &state.store.get_master_key().to_vec().into(),
-        )
-        .await
-        .to_not_found_response(ApiErrorResponse::MerchantAccountNotFound)?;
-
-    let merchant_account = state
-        .store
-        .find_merchant_account_by_merchant_id(merchant_id, &key_store)
-        .await
-        .to_not_found_response(ApiErrorResponse::MerchantAccountNotFound)?;
-    Ok((key_store, merchant_account))
-}
-
-#[cfg(all(feature = "olap", feature = "v1", feature = "dynamic_routing"))]
-#[instrument(skip_all)]
-pub async fn call_decide_gateway_open_router(
+#[instrument(skip_all, fields(flow = ?Flow::DecisionEngineRuleMigration))]
+pub async fn migrate_routing_rules(
     state: web::Data<AppState>,
     req: HttpRequest,
-    payload: web::Json<api_models::open_router::OpenRouterDecideGatewayRequest>,
-) -> impl Responder {
-    let flow = Flow::DecisionEngineDecideGatewayCall;
+    json_payload: web::Json<routing_types::RuleMigrationRequest>,
+) -> HttpResponse {
+    let flow = Flow::DecisionEngineRuleMigration;
+
     Box::pin(oss_api::server_wrap(
         flow,
         state,
         &req,
-        payload.clone(),
-        |state, _auth: auth::AuthenticationData, payload, _| {
-            routing::decide_gateway_open_router(state.clone(), payload)
+        json_payload.into_inner(),
+        |state, _, payload, _| async move {
+            let res = Box::pin(routing::migrate_rules_for_profiles(state, payload)).await?;
+            Ok(services::ApplicationResponse::Json(res))
         },
-        &auth::ApiKeyAuth {
-            allow_connected_scope_operation: true,
-            allow_platform_self_operation: false,
-        },
-        api_locking::LockAction::NotApplicable,
-    ))
-    .await
-}
-
-#[cfg(all(feature = "olap", feature = "v1", feature = "dynamic_routing"))]
-#[instrument(skip_all)]
-pub async fn call_update_gateway_score_open_router(
-    state: web::Data<AppState>,
-    req: HttpRequest,
-    payload: web::Json<api_models::open_router::UpdateScorePayload>,
-) -> impl Responder {
-    let flow = Flow::DecisionEngineGatewayFeedbackCall;
-    Box::pin(oss_api::server_wrap(
-        flow,
-        state,
-        &req,
-        payload.clone(),
-        |state, _auth: auth::AuthenticationData, payload, _| {
-            routing::update_gateway_score_open_router(state.clone(), payload)
-        },
-        &auth::ApiKeyAuth {
-            allow_connected_scope_operation: true,
-            allow_platform_self_operation: false,
-        },
+        &auth::AdminApiAuth,
         api_locking::LockAction::NotApplicable,
     ))
     .await

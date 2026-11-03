@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use smithy::SmithyModel;
 use utoipa::ToSchema;
 
-pub use super::enums::{PaymentMethod, PayoutType};
+#[cfg(feature = "payouts")]
+use super::enums;
+pub use super::enums::{AuthenticationType, PaymentMethod, PayoutType};
 pub use crate::PaymentMethodType;
 
 // A connector is an integration to fulfill payments
@@ -23,7 +25,7 @@ pub use crate::PaymentMethodType;
     Hash,
     SmithyModel,
 )]
-#[router_derive::diesel_enum(storage_type = "text")]
+#[cfg_attr(feature = "diesel", router_derive::diesel_enum(storage_type = "text"))]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 #[smithy(namespace = "com.hyperswitch.smithy.types")]
@@ -89,6 +91,7 @@ pub enum Connector {
     Chargebee,
     Checkbook,
     Checkout,
+    Citigate,
     Coinbase,
     Coingate,
     Custombilling,
@@ -97,14 +100,18 @@ pub enum Connector {
     CtpVisa,
     Cybersource,
     Cybersourcedecisionmanager,
+    D24,
     Datatrans,
     Deutschebank,
     Digitalvirgo,
     Dlocal,
     Dwolla,
     Ebanx,
+    Ecommpay,
     Envoy,
     Elavon,
+    Etisalat,
+    ElavonPg,
     Facilitapay,
     Finix,
     Fiserv,
@@ -115,9 +122,13 @@ pub enum Connector {
     Forte,
     Getnet,
     Gigadat,
+    Givepayments,
     Globalpay,
+    GlobalpaymentsHeartland,
+    GlobalpaymentsRealex,
     Globepay,
     Gocardless,
+    GotymeSanlam,
     Gpayments,
     Hipay,
     Helcim,
@@ -127,12 +138,16 @@ pub enum Connector {
     Interpayments,
     Inespay,
     Iatapay,
+    Ilixium,
     Imerchantsolutions,
     Itaubank,
     Jpmorgan,
+    JpmorganOrbital,
+    Juspay,
     Juspaythreedsserver,
     Klarna,
     Loonio,
+    Merchante,
     Mifinity,
     Mollie,
     Moneris,
@@ -149,9 +164,11 @@ pub enum Connector {
     // Opayo, added as template code for future usage
     Opennode,
     Paybox,
+    Paydotcom,
     // Payeezy, As psync and rsync are not supported by this connector, it is added as template code for future usage
     Payload,
     Payme,
+    Paynearme,
     Payone,
     Paypal,
     Paysafe,
@@ -171,6 +188,7 @@ pub enum Connector {
     Recurly,
     Redsys,
     Revolv3,
+    Saferpay,
     Santander,
     Shift4,
     Silverflow,
@@ -190,6 +208,7 @@ pub enum Connector {
     Trustpay,
     Trustpayments,
     Tsys,
+    TsysTransit,
     // UnifiedAuthenticationService,
     Vgs,
     Volt,
@@ -198,12 +217,15 @@ pub enum Connector {
     Wise,
     Worldline,
     Worldpay,
+    Worldpayraft,
     Worldpayvantiv,
     Worldpayxml,
     Worldpaymodular,
     Signifyd,
+    Nsure,
     Plaid,
     Riskified,
+    SanlamPayshield,
     Xendit,
     Zen,
     Zift,
@@ -223,21 +245,50 @@ impl Connector {
                 | (Self::Loonio, _)
                 | (Self::Truelayer, _)
                 | (Self::Trustly, _)
+                | (Self::GotymeSanlam, _)
                 | (Self::Worldpay, Some(PayoutType::Wallet))
                 | (Self::Worldpayxml, Some(PayoutType::Wallet))
                 | (Self::Itaubank, Some(PayoutType::Bank))
+                | (Self::Deutschebank, Some(PayoutType::Bank))
+                | (Self::Mifinity, Some(PayoutType::Wallet | PayoutType::Bank))
         )
     }
     #[cfg(feature = "payouts")]
-    pub fn supports_create_recipient(self, payout_method: Option<PayoutType>) -> bool {
+    pub fn supports_create_recipient(
+        self,
+        payout_method: Option<PayoutType>,
+        is_passthrough: bool,
+    ) -> bool {
+        if matches!(self, Self::Mifinity) {
+            false
+        } else if matches!(self, Self::Trustly) {
+            !is_passthrough
+        } else {
+            matches!(payout_method, Some(PayoutType::Bank))
+        }
+    }
+    #[cfg(feature = "payouts")]
+    pub fn supports_payout_eligibility(
+        self,
+        execution_kind: enums::PayoutExecutionKind,
+        payout_method: Option<PayoutType>,
+    ) -> bool {
+        match execution_kind {
+            enums::PayoutExecutionKind::Normal => matches!(
+                (self, payout_method),
+                (_, Some(PayoutType::Card)) | (Self::Deutschebank, Some(PayoutType::Bank))
+            ),
+            enums::PayoutExecutionKind::ExternalVaultProxy => {
+                matches!((self, payout_method), (Self::Adyen, Some(PayoutType::Card)))
+            }
+        }
+    }
+    #[cfg(feature = "payouts")]
+    pub fn requires_source_bank_data_for_sync(self, payout_method: Option<PayoutType>) -> bool {
         matches!(
             (self, payout_method),
-            (_, Some(PayoutType::Bank)) | (Self::Trustly, _)
+            (Self::Deutschebank, Some(PayoutType::Bank))
         )
-    }
-    #[cfg(feature = "payouts")]
-    pub fn supports_payout_eligibility(self, payout_method: Option<PayoutType>) -> bool {
-        matches!((self, payout_method), (_, Some(PayoutType::Card)))
     }
     #[cfg(feature = "payouts")]
     pub fn is_payout_quote_call_required(self) -> bool {
@@ -247,7 +298,10 @@ impl Connector {
     pub fn supports_access_token_for_payout(self, payout_method: Option<PayoutType>) -> bool {
         matches!(
             (self, payout_method),
-            (Self::Paypal, _) | (Self::Truelayer, _) | (Self::Itaubank, _)
+            (Self::Paypal, _)
+                | (Self::Truelayer, _)
+                | (Self::Itaubank, _)
+                | (Self::Santander, Some(PayoutType::Bank))
         )
     }
     #[cfg(feature = "payouts")]
@@ -257,6 +311,12 @@ impl Connector {
     #[cfg(feature = "payouts")]
     pub fn supports_vendor_disburse_account_create_for_payout(self) -> bool {
         matches!(self, Self::Stripe | Self::Nomupay)
+    }
+    /// Whether this FRM provider's risk API is bearer-authenticated, so a token
+    /// must be fetched before the risk check. Static-key providers (nSure) and
+    /// the in-process ones need none; add a provider here when it requires one.
+    pub fn supports_access_token_for_frm(self) -> bool {
+        false
     }
     pub fn supports_access_token(self, payment_method: PaymentMethod) -> bool {
         matches!(
@@ -344,19 +404,22 @@ impl Connector {
             | Self::Envoy
             | Self::Ebanx
             | Self::Elavon
+            | Self::Etisalat
+            | Self::ElavonPg
             | Self::Facilitapay
             | Self::Finix
             | Self::Fiserv
             | Self::Fiservemea
-            | Self::Fiservcommercehub
             | Self::Fiuu
             | Self::Flexiti
             | Self::Forte
             | Self::Getnet
             | Self::Gigadat
             | Self::Globalpay
+            | Self::GlobalpaymentsRealex
             | Self::Globepay
             | Self::Gocardless
+            | Self::GotymeSanlam
             | Self::Gpayments
             | Self::Hipay
             | Self::Helcim
@@ -366,9 +429,11 @@ impl Connector {
 			| Self::Inespay
             | Self::Itaubank
             | Self::Jpmorgan
+            | Self::Juspay
             | Self::Juspaythreedsserver
             | Self::Klarna
             | Self::Loonio
+            | Self::Merchante
             | Self::Mifinity
             | Self::Mollie
             | Self::Moneris
@@ -380,14 +445,15 @@ impl Connector {
             | Self::Novalnet
             | Self::Opennode
             | Self::Paybox
+            | Self::Paydotcom
             | Self::Payload
             | Self::Payme
+            | Self::Paynearme
             | Self::Payone
             | Self::Paypal
             | Self::Paysafe
             | Self::Paystack
             | Self::Payu
-            | Self::Peachpayments
             | Self::Placetopay
             | Self::Powertranz
             | Self::Prophetpay
@@ -395,6 +461,7 @@ impl Connector {
             | Self::Recurly
             | Self::Redsys
             | Self::Revolv3
+            | Self::Saferpay
             | Self::Santander
             | Self::Shift4
             | Self::Silverflow
@@ -411,6 +478,7 @@ impl Connector {
             | Self::Trustpayments
             // | Self::Tokenio
             | Self::Tsys
+            | Self::TsysTransit
             // | Self::UnifiedAuthenticationService
             | Self::Vgs
             | Self::Volt
@@ -421,14 +489,15 @@ impl Connector {
             | Self::Worldpay
             | Self::Worldpaymodular
             | Self::Worldpayvantiv
-            | Self::Worldpayxml
             | Self::Xendit
             | Self::Zen
             | Self::Zsl
             | Self::Signifyd
+            | Self::Nsure
             | Self::Plaid
             | Self::Razorpay
             | Self::Riskified
+            | Self::SanlamPayshield
             | Self::Threedsecureio
             | Self::Netcetera
             | Self::CtpMastercard
@@ -440,12 +509,23 @@ impl Connector {
             | Self::Datatrans
             | Self::Paytm
             | Self::Payconex
+            | Self::Citigate
+            | Self::D24
+            | Self::Worldpayraft
             | Self::Payjustnow
             | Self::Payjustnowinstore
             | Self::Phonepe
-            | Self::Imerchantsolutions => false,
+            | Self::Imerchantsolutions
+            | Self::Ilixium
+            | Self::Ecommpay
+            | Self::JpmorganOrbital
+            | Self::Givepayments => false,
             Self::Stripe | Self::Checkout | Self::Zift | Self::Nmi | Self::Braintree|
-            Self::Cybersource | Self::Archipel | Self::Nuvei | Self::Adyen => true,
+            Self::Cybersource | Self::Archipel | Self::Nuvei | Self::Adyen | Self::Fiservcommercehub | Self::Worldpayxml
+            | Self::Peachpayments
+            // Portico cannot authenticate: its Secure3D block only carries results computed
+            // by a separate authentication connector, so external 3DS is its only 3DS mode.
+            | Self::GlobalpaymentsHeartland => true,
         }
     }
 
@@ -464,6 +544,19 @@ impl Connector {
 
     pub fn should_acknowledge_webhook_for_resource_not_found_errors(self) -> bool {
         matches!(self, Self::Adyenplatform | Self::Adyen)
+    }
+
+    pub fn should_store_google_pay_pan_only_for_three_ds(
+        self,
+        payment_method: PaymentMethod,
+        authentication_type: Option<AuthenticationType>,
+        is_google_pay_transaction_pan_only: bool,
+    ) -> bool {
+        // Add connectors in the future as required
+        matches!(self, Self::Cybersource)
+            && payment_method == PaymentMethod::Wallet
+            && authentication_type.is_some_and(|auth_type| auth_type.is_three_ds())
+            && is_google_pay_transaction_pan_only
     }
 
     /// Validates if dummy connector can be created
@@ -487,15 +580,18 @@ impl Connector {
 #[derive(
     Debug,
     Clone,
+    Copy,
     PartialEq,
     Eq,
+    Hash,
     serde::Deserialize,
     serde::Serialize,
     strum::Display,
+    strum::EnumIter,
     strum::EnumString,
     ToSchema,
 )]
-#[router_derive::diesel_enum(storage_type = "text")]
+#[cfg_attr(feature = "diesel", router_derive::diesel_enum(storage_type = "text"))]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum InvoiceStatus {

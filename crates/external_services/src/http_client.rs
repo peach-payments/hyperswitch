@@ -10,8 +10,20 @@ use router_env::{instrument, logger, tracing};
 pub mod client;
 /// metrics module
 pub mod metrics;
+/// outbound_destination module
+pub mod outbound_destination;
 /// request module
 pub mod request;
+
+/// Boundary capture/replay for the outgoing HTTP client.
+///
+/// Public so the tape-conformance gate can reconstruct a recorded response
+/// through the SAME codec replay runs, rather than reimplementing what that
+/// codec accepts — a second copy of the rule is free to drift from the one that
+/// actually decides whether a worker lives.
+#[cfg(feature = "deja")]
+pub mod boundary;
+
 use std::{error::Error, time::Duration};
 
 pub use common_utils::request::{ContentType, Method, RequestBuilder};
@@ -63,6 +75,37 @@ pub fn serialize_to_xml_bytes<T: serde::Serialize>(
 }
 
 #[allow(missing_docs)]
+#[cfg_attr(
+    feature = "deja",
+    deja::http(outgoing,
+        component = "external_services::http_client",
+        operation = "send_request",
+        correlation = boundary::request_id(&request),
+        // The deja handoff: expose the Secret-wrapped payload so the tape
+        // records full fidelity (Secret only redacts Debug/log output).
+        args = hyperswitch_masking::ExposeInterface::expose(boundary::request_args(&request, option_timeout_secs)),
+        // Rebuild the recorded reqwest::Response (status+headers+body) so the
+        // outgoing call (e.g. Stripe) is served from the lookup table with no
+        // network. A recorded value this build cannot reconstruct fail-stops the
+        // request; it is not a silent fallback to a live call.
+        owned_codec = boundary::HttpResponseCodec,
+        // A miss answers as a send failure: nobody answered, and a fabricated status
+        // could report a payment outcome that never happened. The url comes from the
+        // recorded args because the real call moves `request`.
+        on_miss = Err(HttpClientError::RequestNotSent(
+            format!(
+                "deja: no recorded response for this outbound call (url {}, occurrence {})",
+                __deja_miss
+                    .args
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown"),
+                __deja_miss.occurrence,
+            ),
+        )
+        .into()),
+    )
+)]
 #[instrument(skip_all)]
 pub async fn send_request(
     client_proxy: &Proxy,
@@ -144,22 +187,29 @@ pub async fn send_request(
         option_timeout_secs.unwrap_or(consts::REQUEST_TIME_OUT),
     ));
 
+    // Retain the typed cause so callers can distinguish transport errors from
+    // request-construction errors within RequestNotSent, including on retries.
+    let map_request_error = |error: reqwest::Error| {
+        let context = match &error {
+            error if error.is_timeout() => {
+                metrics::REQUEST_BUILD_FAILURE.add(1, metrics_tag);
+                HttpClientError::RequestTimeoutReceived
+            }
+            error if is_connection_closed_before_message_could_complete(error) => {
+                metrics::REQUEST_BUILD_FAILURE.add(1, metrics_tag);
+                HttpClientError::ConnectionClosedIncompleteMessage
+            }
+            _ => HttpClientError::RequestNotSent(error.to_string()),
+        };
+        error_stack::Report::new(error).change_context(context)
+    };
+
     // We cannot clone the request type, because it has Form trait which is not cloneable. So we are cloning the request builder here.
     let cloned_send_request = request.try_clone().map(|cloned_request| async {
         cloned_request
             .send()
             .await
-            .map_err(|error| match error {
-                error if error.is_timeout() => {
-                    metrics::REQUEST_BUILD_FAILURE.add(1, metrics_tag);
-                    HttpClientError::RequestTimeoutReceived
-                }
-                error if is_connection_closed_before_message_could_complete(&error) => {
-                    metrics::REQUEST_BUILD_FAILURE.add(1, metrics_tag);
-                    HttpClientError::ConnectionClosedIncompleteMessage
-                }
-                _ => HttpClientError::RequestNotSent(error.to_string()),
-            })
+            .map_err(map_request_error)
             .attach_printable("Unable to send request to connector")
     });
 
@@ -167,17 +217,7 @@ pub async fn send_request(
         request
             .send()
             .await
-            .map_err(|error| match error {
-                error if error.is_timeout() => {
-                    metrics::REQUEST_BUILD_FAILURE.add(1, metrics_tag);
-                    HttpClientError::RequestTimeoutReceived
-                }
-                error if is_connection_closed_before_message_could_complete(&error) => {
-                    metrics::REQUEST_BUILD_FAILURE.add(1, metrics_tag);
-                    HttpClientError::ConnectionClosedIncompleteMessage
-                }
-                _ => HttpClientError::RequestNotSent(error.to_string()),
-            })
+            .map_err(map_request_error)
             .attach_printable("Unable to send request to connector")
     };
 
@@ -196,8 +236,7 @@ pub async fn send_request(
     // and written to at the same time the server is deciding to close the connection.
     // Since hyper already wrote some of the request,
     // it can’t really retry it automatically on a new connection, since the server may have acted already
-    match response {
-        Ok(response) => Ok(response),
+    let response = match response {
         Err(error)
             if error.current_context() == &HttpClientError::ConnectionClosedIncompleteMessage =>
         {
@@ -220,8 +259,10 @@ pub async fn send_request(
                 }
             }
         }
-        err @ Err(_) => err,
-    }
+        response => response,
+    };
+
+    response
 }
 
 fn is_connection_closed_before_message_could_complete(error: &reqwest::Error) -> bool {
